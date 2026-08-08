@@ -6,6 +6,16 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [0.9.0] - 2026-08-08
+
+### Added / 新增
+- 「下载成功」打赏面板：下载完成后展示作者、GitHub、邮箱、微信收款码与打赏语「觉得好用的话就打赏一杯奶茶钱吧 ☕」。
+- 服务器新增 `GET /qr` 接口：提供 `watermark/` 目录中的收款码图片（支持 png/jpg/webp/gif）。
+- 新增 `watermark/` 目录与 `package.json`。
+
+### Removed / 移除
+- 移除服务器端图片水印（sharp 依赖及 `applyWatermark`），改为浏览器端打赏面板。
+
 ## [0.8.0] - 2026-08-08
 
 ### Added / 新增

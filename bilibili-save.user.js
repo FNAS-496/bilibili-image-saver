@@ -2,7 +2,7 @@
 // @name         哔哩哔哩 收藏夹/动态/作品 原图自动下载（B站二次元图片批量保存）
 // @name:en      Bilibili Auto-Download Original Images
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.8.0
+// @version      0.9.0
 // @author       FNAS-496 <sijiudeliu@outlook.com>
 // @description  自动下载 B 站收藏夹、动态、作品(opus)、空间中的原图到本地（自动运行，无需点击；需配合“一键保存.bat”启动本地服务）
 // @description:en Auto-download original images from Bilibili favorites, dynamics, opus posts and space pages (runs automatically; needs the local server started via "一键保存.bat")
@@ -20,6 +20,7 @@
 // @license      CC BY-NC-SA 4.0
 // ==/UserScript==
 
+
 (function(){
     'use strict';
 
@@ -27,10 +28,10 @@
     const MSG_TYPE = 'bilibili-opus-image-save';
     const AUTO_SAVE_PARAM = 'bili_auto_save';
 
-    // ===== 配置 =====
-    const AUTO_RUN = true;                 // 打开页面后自动提取保存（URL 加 ?bili_auto_save=0 可关闭）
-    const MAX_CHILD_PAGES = 200;           // 收藏夹页最多抓取的子页面数（上限已提高）
-    const CHILD_CONCURRENCY = 6;           // 抓取子页面的并发数
+                      
+    const AUTO_RUN = true;                                                             
+    const MAX_CHILD_PAGES = 200;                                   
+    const CHILD_CONCURRENCY = 6;                        
     const TOAST_MS = 4000;
     const DIR_ASKED_KEY = 'bili_save_dir_asked_v1';
 
@@ -47,11 +48,11 @@
         }
     }
 
-    // 把任意 B 站图片地址规范化为“原图 URL”：
-    //  1) 反转义 JSON 中的 \u002F / \/（B 站把图片 URL 以转义形式藏在 JS 里）
-    //  2) 补全协议相对 // 前缀
-    //  3) 去掉 @ 缩略参数（xxx.png@316w_560h_1e_1c -> xxx.png，即原图）
-    //  4) webp/avif 统一转为 jpg（hdslb/bilibili 域）
+                                
+                                                            
+                        
+                                                             
+                                                
     function toOriginalImageUrl(raw){
         if(!raw) return null;
         let u = String(raw).trim()
@@ -74,8 +75,8 @@
         }
     }
 
-    // 判断是否为 B 站“内容图”（收藏/动态/文章里的图），
-    // 排除头像(bfs/face)、favicon、活动图(activity-plat)、vip 图等无关图片。
+                                    
+                                                             
     function isContentImageUrl(url){
         if(!url) return false;
         if(!/\.(jpe?g|png|gif|webp|bmp)(?:[?#]|$)/i.test(url)) return false;
@@ -108,7 +109,7 @@
             }
         });
 
-        // B 站新版页面图片主要放在 <picture><source srcset="..."> 中，必须单独提取
+                                                                 
         doc.querySelectorAll('source').forEach(src => {
             const srcset = src.getAttribute('srcset') || src.getAttribute('data-srcset');
             if(srcset){
@@ -121,7 +122,7 @@
             if(srcAttr) add(srcAttr);
         });
 
-        // 视频封面 poster 兜底
+                          
         doc.querySelectorAll('video').forEach(v => {
             const p = v.getAttribute('poster') || v.getAttribute('data-poster');
             if(p) add(p);
@@ -182,7 +183,7 @@
             if(!href) return;
             const normalized = normalizeUrl(href, window.location.href);
             if(!normalized) return;
-            // 作品(opus)或动态(t.bilibili.com/{id})详情页链接
+                                                     
             if(/\/opus\/(\d+)/.test(normalized) || /t\.bilibili\.com\/(\d+)/.test(normalized)){
                 links.add(normalized.split('#')[0]);
             }
@@ -198,7 +199,7 @@
             links.add(u.split('#')[0]);
         };
 
-        // 作品页 https://www.bilibili.com/opus/{id}
+                                                  
         const regexOpus = /https?:\/\/(?:www\.)?bilibili\.com\/opus\/(\d+)(?:\S*)/gi;
         let match;
         while((match = regexOpus.exec(text))) addNormalized(match[0]);
@@ -209,7 +210,7 @@
             links.add(normalizeUrl(match[0], window.location.origin).split('#')[0]);
         }
 
-        // 动态详情页 https://t.bilibili.com/{id}
+                                             
         const regexT = /https?:\/\/t\.bilibili\.com\/(\d+)(?:\S*)/gi;
         while((match = regexT.exec(text))) addNormalized(match[0]);
         const regexTRel = /(?:https?:)?\/\/t\.bilibili\.com\/(\d+)(?:\S*)/gi;
@@ -249,7 +250,7 @@
     }
 
     function parseUrlsFromHtml(html, baseUrl){
-        // B 站把图片 URL 以 \u002F 转义形式藏在 JS 数据里，先全局反转义再提取
+                                                       
         html = html.replace(/\\u002F/g, '/').replace(/\\\//g, '/');
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
@@ -284,7 +285,7 @@
         }
     }
 
-    // ===== UI 工具：状态栏（带进度/停止按钮）与 toast 提示 =====
+                                                 
     let statusEl = null;
     function ensureStatusEl(){
         if(statusEl && statusEl.isConnected) return statusEl;
@@ -333,7 +334,7 @@
         return el;
     }
 
-    // ===== 发送到本地保存服务（优先 GM_xmlhttpRequest，不受 CORS 限制） =====
+                                                              
     function postJsonToServer(payload){
         if(typeof GM_xmlhttpRequest === 'function'){
             return new Promise((resolve, reject) => {
@@ -342,7 +343,7 @@
                     url: LOCAL_SERVER,
                     headers: { 'Content-Type': 'application/json' },
                     data: JSON.stringify(payload),
-                    timeout: 300000, // 大批量下载可能耗时较长
+                    timeout: 300000,                
                     onload: function(response){
                         if(response.status >= 200 && response.status < 300){
                             try{ resolve(JSON.parse(response.responseText)); }
@@ -389,43 +390,43 @@
         return new URL(location.href).searchParams.get(AUTO_SAVE_PARAM) === '1';
     }
 
-    // ===== 智能页面识别：判断当前 B 站页面类型 =====
-    // 返回 { type, uid, imagePage, label }
-    // type: favlist | dynamic-list | dynamic-detail | opus | space-other | other
+                                       
+                                          
+                                                                                  
     function detectPageType(){
         const host = location.hostname;
         const path = location.pathname;
         const isSpace = host === 'space.bilibili.com';
         const uid = (isSpace && /^\/(\d+)/.test(path)) ? path.match(/^\/(\d+)/)[1] : null;
 
-        // 收藏夹
+               
         if(isSpace && /\/favlist/.test(path)){
             return { type:'favlist', uid, imagePage:true, label:'收藏夹' };
         }
-        // 动态列表（空间动态 tab）
+                          
         if(isSpace && /\/dynamic/.test(path)){
             return { type:'dynamic-list', uid, imagePage:true, label:'动态列表' };
         }
-        // 动态详情 t.bilibili.com/{id}
+                                    
         if(host === 't.bilibili.com' && /^\d+$/.test(path.replace(/^\//,'').replace(/\/$/,''))){
             return { type:'dynamic-detail', uid, imagePage:true, label:'动态' };
         }
-        // 作品 opus
+                   
         if(/\/opus\//.test(path)){
             return { type:'opus', uid, imagePage:true, label:'作品' };
         }
-        // 空间其它 tab（视频/专栏等）或空间首页
+                                 
         if(isSpace){
             const seg = path.split('/')[2] || '';
             const tabName = seg || '首页';
             return { type:'space-other', uid, imagePage:false, label:'空间·' + tabName };
         }
-        // 其它 B 站页面（视频页、番剧等）——不作为图片页自动运行
+                                         
         return { type:'other', uid, imagePage:false, label:'页面' };
     }
 
-    // ===== 空间归属检测：自己的空间 or 他人的空间 =====
-    // 自己的空间：有“编辑资料/投稿管理/更换头像”等入口；他人的空间：有“关注”按钮
+                                         
+                                                
     function detectOwnership(){
         const ownSelectors = [
             'a[href*="/account/accountinfo"]',
@@ -445,7 +446,7 @@
             '[class*="header-follow"]'
         ].join(',');
         if(document.querySelector(otherSelectors)) return 'other';
-        // 兜底：空间页 URL 有 uid 但无法判断
+                                  
         return null;
     }
 
@@ -500,6 +501,44 @@
         };
     }
 
+                                               
+    function showDonatePanel(stats){
+        const existing = document.getElementById('bili-donate-panel');
+        if(existing) existing.remove();
+        const panel = document.createElement('div');
+        panel.id = 'bili-donate-panel';
+        Object.assign(panel.style, {
+            position:'fixed', right:'20px', bottom:'180px', zIndex:999999,
+            background:'#fff', color:'#222', padding:'16px', borderRadius:'12px',
+            width:'330px', boxShadow:'0 8px 28px rgba(0,0,0,0.3)', fontSize:'13px'
+        });
+        const statText = stats
+            ? `<span style="margin-left:auto;color:#888;font-size:12px;">新增 ${stats.saved} · 已存在 ${stats.exists} · 失败 ${stats.failed}</span>`
+            : '';
+        panel.innerHTML =
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">' +
+            '<span style="font-size:18px;">✅</span>' +
+            '<b style="font-size:15px;color:#00a1d6;">下载成功！</b>' + statText +
+            '</div>' +
+            '<div style="display:flex;gap:14px;align-items:flex-start;">' +
+            '<img src="http://127.0.0.1:8765/qr" alt="收款码" style="width:110px;height:110px;border:1px solid #eee;border-radius:8px;flex-shrink:0;background:#f7f7f7;" onerror="this.style.display=\'none\'">' +
+            '<div style="line-height:1.8;">' +
+            '<div><b>似玖得六（FNAS）</b></div>' +
+            '<div style="color:#555;word-break:break-all;">GitHub: github.com/FNAS-496/bilibili-image-saver</div>' +
+            '<div style="color:#555;">邮箱: sijiudeliu@outlook.com</div>' +
+            '</div>' +
+            '</div>' +
+            '<div style="margin-top:10px;background:#fff8e1;border:1px solid #ffd700;color:#8a6d00;border-radius:8px;padding:8px 10px;text-align:center;">' +
+            '觉得好用的话就打赏一杯奶茶钱吧 ☕' +
+            '</div>' +
+            '<div style="margin-top:12px;text-align:right;">' +
+            '<button id="bili-donate-close" style="padding:6px 16px;border:none;background:#00a1d6;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;">知道了</button>' +
+            '</div>';
+        document.body.appendChild(panel);
+        panel.querySelector('#bili-donate-close').addEventListener('click', () => panel.remove());
+        setTimeout(() => { if(panel.isConnected) panel.remove(); }, 8000);
+    }
+
     async function collectAndSave(){
         stopFlag.stop = false;
         const pageUrls = new Set(extractUrlsFromDoc(document));
@@ -508,8 +547,8 @@
         const jsonUrls = extractUrlsFromJsonText(document.documentElement.innerHTML);
         jsonUrls.forEach(u => pageUrls.add(u));
 
-        // 只有收藏夹页需要逐个抓子页面（收藏夹只显示封面缩略图）；
-        // 动态列表页本身已包含每条动态的全部图片，直接提取即可，无需抓子页面。
+                                        
+                                              
         const info = detectPageType();
         let failCount = 0;
 
@@ -546,7 +585,7 @@
 
         const urls = Array.from(pageUrls).filter(isContentImageUrl);
         if(urls.length === 0){
-            // SPA 页面内容可能尚未加载完成，自动延时重试（最多 3 次）
+                                               
             const retry = (window.__biliRetryCount || 0) + 1;
             if(retry <= 3){
                 window.__biliRetryCount = retry;
@@ -557,7 +596,6 @@
                 showToast('未检索到可用图片地址。\n可能是该空间动态未公开，或请刷新页面后重试。');
             }
             return;
-            return;
         }
 
         showProgress(`正在下载 ${urls.length} 张原图到本地...`, () => { stopFlag.stop = true; });
@@ -566,11 +604,12 @@
         if(json && json.results){
             const c = countResults(json);
             showToast(`保存完成：新增 ${c.saved} 张，已存在 ${c.exists} 张，失败 ${c.failed} 张\n图片已保存到 bilibili_images 目录`);
+            showDonatePanel(c);                   
             if(failCount) console.warn('解析失败的作品数:', failCount);
         }
     }
 
-    // ===== 动态列表页：滚动加载出新动态后自动增量提取保存 =====
+                                           
     function setupDynamicListWatcher(){
         const info = detectPageType();
         if(!info || info.type !== 'dynamic-list') return;
@@ -599,7 +638,7 @@
         window.addEventListener('scroll', collect, { passive: true });
     }
 
-    // ===== 保存目录设置（服务器 POST /setdir、GET /getdir） =====
+                                                        
     function serverApi(path, body){
         const req = body ? { method:'POST', headers:{'Content-Type':'application/json'}, data: JSON.stringify(body) } : { method:'GET' };
         return new Promise(resolve => {
@@ -661,7 +700,7 @@
         });
     }
 
-    // 首次使用：自动弹出一次“选择保存位置”窗口（之后可在设置中修改）
+                                        
     function maybeAskDirOnce(){
         try{
             if(localStorage.getItem(DIR_ASKED_KEY) === '1') return;
@@ -700,18 +739,18 @@
         document.body.appendChild(wrap);
     }
 
-    // ===== 自动运行：打开页面即自动提取保存，无需点击 =====
+                                         
     let autoStarted = false;
     function maybeAutoRun(){
         if(autoStarted) return;
         autoStarted = true;
-        // 弹窗自动保存模式（收藏夹页打开的子页）→ 保存当前页后关闭
+                                         
         if(isAutoSaveMode()){
             setTimeout(autoSaveCurrentOpusPage, 800);
             return;
         }
         if(!AUTO_RUN) return;
-        // 智能识别页面类型：仅对包含图片的页面自动运行（整个 B 站注入，其余页面不干扰）
+                                                    
         const info = detectPageType();
         if(!info || !info.imagePage){
             if(info && info.type === 'space-other'){

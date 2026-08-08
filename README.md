@@ -5,7 +5,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-0.8.0-00a1d6)
+![Version](https://img.shields.io/badge/version-0.9.0-00a1d6)
 ![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-orange)
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -27,11 +27,14 @@
 - [快速上手 / Quick Start](#快速上手--quick-start)
 - [详细安装指南 / Detailed Installation](#详细安装指南--detailed-installation)
 - [使用方法 / How to Use](#使用方法--how-to-use)
+- [收款码 / Donate QR](#收款码--donate-qr)
 - [自定义保存位置 / Custom Save Location](#自定义保存位置--custom-save-location)
 - [常见问题 / FAQ](#常见问题--faq)
 - [技术说明 / Technical Notes](#技术说明--technical-notes)
-- [贡献指南 / Contributing](#贡献指南--contributing)
 - [更新日志 / Changelog](#更新日志--changelog)
+- [说明 / Disclaimer](#说明--disclaimer)
+- [贡献指南 / Contributing](#贡献指南--contributing)
+- [作者 / Author](#作者--author)
 - [许可证 / License](#许可证--license)
 
 ---
@@ -66,6 +69,7 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 - ✅ **进度提示**：页面右下角浮窗实时显示进度，可随时「停止」
 - ✅ **多页类型**：支持收藏夹、动态列表、动态详情、作品 (opus) 页
 - ✅ **自定义目录**：页面内「⚙️ 保存位置」窗口自由指定保存位置
+- ✅ **打赏面板**：下载成功后自动弹出提示，显示作者、GitHub、邮箱与微信收款码
 - ✅ **多浏览器**：Chrome / Edge / Firefox / Safari / Opera 等均可使用
 
 ---
@@ -95,10 +99,11 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 ├── save_images_server.js      # 本地 Node.js 保存服务 —— 下载图片并写盘
 ├── 一键保存.bat                # Windows 一键启动（中文界面）
 ├── start_server.bat           # Windows 一键启动（English UI）
+├── watermark/                 # 收款码图片（wechat_qr.png，被 gitignore，不提交）
 ├── README.md                  # 本说明文档（中英双语）
 ├── LICENSE                    # CC BY-NC-SA 4.0 许可协议
 ├── CHANGELOG.md               # 更新日志
-└── .gitignore                 # Git 忽略规则（含 bilibili_images/ 输出目录）
+└── .gitignore                 # Git 忽略规则（含 bilibili_images/ 与收款码）
 ```
 
 > 下载的图片默认保存在 `bilibili_images/`，该目录已加入 `.gitignore`，不会被提交到仓库。
@@ -174,6 +179,20 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 
 ---
 
+## 💳 收款码 / Donate QR
+
+下载成功后，页面右下角会弹出「下载成功」面板，展示作者、GitHub、邮箱与收款码打赏入口。
+
+想让面板显示**你的微信收款码**：
+1. 微信 → 我 → 收付款 → 二维码收款 → 保存收款码图片
+2. 把图片放入项目的 `watermark/` 目录（任意命名，支持 png/jpg；项目已内置一张 `wechat_qr.jpg`，可直接替换）
+3. 重启本地服务（`一键保存.bat`）即可
+
+> 没有放收款码时，面板仍会显示作者/GitHub/邮箱文字，只是不显示收款码图片。
+> 收款码为个人隐私，已加入 `.gitignore`，不会提交到 GitHub。
+
+---
+
 ## 📂 自定义保存位置 / Custom Save Location
 
 ### 方式 A：页面内设置窗口（推荐，适用于所有系统）
@@ -236,12 +255,13 @@ A: 脚本匹配的是电脑端网页（`www.bilibili.com`、`t.bilibili.com`、`
 
 - 浏览器端通过 `GM_xmlhttpRequest` 跨域抓取子页面并解析 `\u002F` 转义、`@` 缩略参数，得到原图 URL。
 - 本地服务监听 **127.0.0.1:8765**（仅本机可访问，不暴露到局域网），通过 Referer + User-Agent 模拟浏览器下载，并校验返回的 Content-Type，避免把风控/错误页存成图片。
-- 下载并发数默认 4（服务器 `CONCURRENCY`），抓取子页并发数默认 3（脚本 `CHILD_CONCURRENCY`）。
+- 下载并发数默认 8（服务器 `CONCURRENCY`），抓取子页并发数默认 6（脚本 `CHILD_CONCURRENCY`）。
 
 ---
 
 ## 📜 更新日志 / Changelog
 
+- **v0.9.0 (2026-08-08)**：新增「下载成功」打赏面板（下载后展示作者、GitHub、邮箱、收款码与打赏语）；服务器新增 `/qr` 接口提供收款码；新增 `watermark/` 目录。
 - **v0.8.1 (2026-08-08)**：开源协议由 MIT 更换为 **CC BY-NC-SA 4.0**（署名 + 非商业性 + 相同方式共享）。
 - **v0.8 (2026-08-08)**：脚本应用到**整个 B 站**（不再限制具体路径）；新增**智能页面识别**（自动判断收藏夹/动态/作品/空间/视频等页面类型，仅图片页自动保存）；新增**个人/他人空间检测**；空结果自动重试（应对页面懒加载）。
 - **v0.7 (2026-08-08)**：修复个人动态页无法识别（补全 `<picture><source srcset>` 图片提取）；动态列表页滚动自动增量保存；新增页面内「⚙️ 保存位置」设置窗口（服务器新增 `/setdir`、`/getdir` 接口）；抓取上限提升到 200。

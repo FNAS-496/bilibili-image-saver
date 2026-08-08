@@ -1,0 +1,17 @@
+{
+  "name": "bilibili-image-saver",
+  "version": "0.9.0",
+  "description": "B站二次元图片批量保存 - 自动下载B站收藏夹/动态/作品原图，下载成功后显示打赏面板（似玖得六 FNAS）",
+  "main": "save_images_server.js",
+  "scripts": {
+    "start": "node save_images_server.js"
+  },
+  "keywords": [
+    "bilibili",
+    "tampermonkey",
+    "userscript",
+    "image-saver",
+    "donate"
+  ],
+  "license": "CC-BY-NC-SA-4.0"
+}

@@ -1,6 +1,11 @@
 # ---- 输出目录（下载的图片，不要提交） ----
 bilibili_images/
-*.png
+# ---- 收款码（个人支付信息，勿提交）----
+watermark/*.png
+watermark/*.jpg
+watermark/*.jpeg
+watermark/*.gif
+watermark/*.webp*.png
 *.jpg
 *.jpeg
 *.gif

@@ -1,20 +1,34 @@
-// Simple local image saver for use with the Tampermonkey userscript.
-// Usage: node save_images_server.js
-// The server listens on http://127.0.0.1:8765 and accepts POST /save with JSON { urls: [ ... ] }
-// It will download images into ./bilibili_images under the script directory.
+                                                                      
+                                     
+                                                                                                  
+                                                                              
 
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const PORT = 8765;
-const CONCURRENCY = 8;   // 同时下载的图片数
+                                                                 
+const QR_DIR = path.join(__dirname, 'watermark');
+function resolveQrPath(){
+    for(const n of ['wechat_qr.png','wechat_qr.jpg','wechat_qr.jpeg','wechat_qr.webp']){
+        const c = path.join(QR_DIR, n);
+        if(fs.existsSync(c)) return c;
+    }
+    if(fs.existsSync(QR_DIR)){
+        const f = fs.readdirSync(QR_DIR).find(n => /\.(png|jpe?g|webp|gif)$/i.test(n));
+        if(f) return path.join(QR_DIR, f);
+    }
+    return null;
+}
 
-// 保存目录优先级：环境变量 BILI_SAVE_DIR > 命令行参数 > 默认 ./bilibili_images
-// 运行期间可通过 POST /setdir 动态修改（浏览器端“保存位置”设置面板调用）
-// 示例：
-//   set BILI_SAVE_DIR=D:\my_pics && node save_images_server.js
-//   node save_images_server.js "D:\my_pics"
+const PORT = 8765;
+const CONCURRENCY = 8;               
+
+                                                             
+                                               
+       
+                                                                
+                                             
 let OUT_DIR = (process.env.BILI_SAVE_DIR && process.env.BILI_SAVE_DIR.trim())
     ? path.resolve(process.env.BILI_SAVE_DIR)
     : (process.argv[2] ? path.resolve(process.argv[2]) : path.join(__dirname, 'bilibili_images'));
@@ -55,8 +69,8 @@ function getWebpToJpgVariant(url){
     return null;
 }
 
-// 服务器端兜底：把任意 B 站图片地址规范化为“原图 URL”
-// （反转义 \u002F、去掉 @ 缩略参数、webp/avif -> jpg），与 userscript 保持一致
+                                  
+                                                             
 function normalizeImageUrl(url){
     try{
         let u = String(url).replace(/\\u002F/g, '/').replace(/\\\//g, '/');
@@ -94,8 +108,8 @@ async function downloadToFile(fileUrl, destPath){
         if(contentType.includes('text/html') || contentType.includes('application/json')){
             throw new Error('Server returned ' + contentType + ' instead of an image (blocked / risk page)');
         }
-        // Node 18+ 全局 fetch 的 res.body 是 Web ReadableStream，没有 .pipe()，
-        // 这里直接用 arrayBuffer 一次性读入后写盘（图片文件完全可接受）
+                                                                         
+                                                 
         const buffer = Buffer.from(await res.arrayBuffer());
         await fs.promises.writeFile(destPath, buffer);
         return { path: destPath, contentType: res.headers.get('content-type') };
@@ -127,7 +141,7 @@ async function tryDownloadFile(rawUrl, index){
     for(const candidate of variants){
         try{
             const ext = extensionFromUrl(candidate) || '.jpg';
-            // 用原图文件名（hash.扩展名）作为保存文件名：同名 = 同一张图，自动去重
+                                                      
             let base = '';
             try{
                 base = path.basename(new URL(candidate).pathname).split('@')[0];
@@ -136,7 +150,7 @@ async function tryDownloadFile(rawUrl, index){
             if(!base || base === '.' || base === '..') base = `image_${index}`;
             if(!path.extname(base)) base += ext;
             const outPath = path.join(OUT_DIR, base);
-            // 已存在且非空 → 同一张图已保存过，跳过
+                                    
             if(fs.existsSync(outPath) && fs.statSync(outPath).size > 0){
                 return { url: candidate, saved: outPath, exists: true };
             }
@@ -200,7 +214,7 @@ const server = http.createServer((req, res) => {
                 return;
             }
 
-            // 规范化 + 同批去重：同一张图只下载一次（避免并发竞态重复下载）
+                                                
             const seen = new Set();
             const urls = [];
             for(const u of rawUrls){
@@ -216,7 +230,7 @@ const server = http.createServer((req, res) => {
                 return;
             }
 
-            // 并发下载 + 自动去重（results 复用上方声明的数组）
+                                              
             let idx = 0;
             const concurrency = Math.min(CONCURRENCY, urls.length);
             async function worker(){
@@ -245,7 +259,7 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // 浏览器端“保存位置”设置：动态修改保存目录
+                             
     if(req.method === 'POST' && req.url === '/setdir'){
         let body = '';
         req.on('data', c => body += c);
@@ -274,6 +288,24 @@ const server = http.createServer((req, res) => {
     if(req.method === 'GET' && req.url === '/getdir'){
         res.writeHead(200, {'Content-Type':'application/json'});
         res.end(JSON.stringify({ ok:true, dir: OUT_DIR }));
+        return;
+    }
+
+                           
+    if(req.method === 'GET' && req.url === '/qr'){
+        const qr = resolveQrPath();
+        if(qr){
+            const ext = path.extname(qr).toLowerCase();
+            const type = ext === '.png' ? 'image/png'
+                : ext === '.gif' ? 'image/gif'
+                : ext === '.webp' ? 'image/webp'
+                : 'image/jpeg';
+            res.writeHead(200, {'Content-Type':type, 'Cache-Control':'no-cache'});
+            res.end(fs.readFileSync(qr));
+        } else {
+            res.writeHead(404, {'Content-Type':'text/plain'});
+            res.end('qr not found (place your QR image in the watermark/ folder)');
+        }
         return;
     }
 
