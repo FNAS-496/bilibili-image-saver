@@ -319,7 +319,12 @@ const server = http.createServer((req, res) => {
     res.end();
 });
 
-server.listen(PORT, '127.0.0.1', ()=> console.log(`save_images_server listening on http://127.0.0.1:${PORT}, output directory: ${OUT_DIR}`));
+server.listen(PORT, '127.0.0.1', ()=>{
+    console.log(`save_images_server listening on http://127.0.0.1:${PORT}, output directory: ${OUT_DIR}`);
+    if(!resolveQrPath()){
+        console.log('[warn] 未在 watermark/ 目录找到收款码，打赏面板将不显示收款码。请放置 wechat_qr.jpg/png（勿删除本目录）。');
+    }
+});
 
 process.on('uncaughtException', (e)=>{ console.error('uncaught', e); });
 process.on('unhandledRejection', (e)=>{ console.error('unhandledRejection', e); });
