@@ -309,9 +309,30 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    if(req.method === 'GET' && req.url.startsWith('/img/')){
+        const name = path.basename(decodeURIComponent(req.url.slice(5)));
+        const filePath = path.join(OUT_DIR, name);
+        if(!filePath.startsWith(OUT_DIR + path.sep) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()){
+            res.writeHead(404, {'Content-Type':'text/plain'});
+            res.end('not found');
+            return;
+        }
+        const ext = path.extname(filePath).toLowerCase();
+        const type = ext === '.png' ? 'image/png' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : ext === '.bmp' ? 'image/bmp' : 'image/jpeg';
+        res.writeHead(200, {'Content-Type':type});
+        res.end(fs.readFileSync(filePath));
+        return;
+    }
+
     if(req.method === 'GET' && req.url === '/'){
-        res.writeHead(200, {'Content-Type':'text/plain'});
-        res.end('save_images_server running');
+        const files = fs.readdirSync(OUT_DIR).filter(n => /\.(png|jpe?g|gif|webp|bmp)$/i.test(n) && fs.statSync(path.join(OUT_DIR, n)).isFile());
+        const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        const items = files.map(n => `<a href="/img/${encodeURIComponent(n)}" target="_blank" title="${esc(n)}"><img src="/img/${encodeURIComponent(n)}" loading="lazy" alt="${esc(n)}"></a>`).join('\n');
+        const html = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>图片相册 - bilibili-image-saver</title>' +
+        '<style>body{font-family:system-ui,sans-serif;background:#f5f6f7;margin:0;padding:16px;}h1{font-size:18px;color:#333;}h1 small{color:#999;font-weight:normal;font-size:13px;}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:12px;}.grid a{display:block;background:#fff;border-radius:8px;padding:6px;box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden;}.grid img{width:100%;height:150px;object-fit:cover;border-radius:6px;display:block;}.empty{color:#999;padding:40px;text-align:center;}</style></head>' +
+        '<body><h1>图片相册 <small>共 ' + files.length + ' 张 · ' + esc(OUT_DIR) + '</small></h1><div class="grid">' + (items || '<div class="empty">还没有图片，去 B 站页面触发下载吧</div>') + '</div></body></html>';
+        res.writeHead(200, {'Content-Type':'text/html; charset=utf-8'});
+        res.end(html);
         return;
     }
 

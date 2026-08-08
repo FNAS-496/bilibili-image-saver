@@ -98,10 +98,10 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 ├── save_images_server.js      # 本地 Node.js 保存服务 —— 下载图片并写盘
 ├── 一键保存.bat                # Windows 一键启动（中文界面）
 ├── start_server.bat           # Windows 一键启动（English UI）
-├── watermark/                 # 收款码图片（wechat_qr.png，被 gitignore，不提交）
+├── watermark/                 # 收款码源图（wechat_qr.jpg，已内嵌进 user.js）
 ├── README.md                  # 本说明文档（中英双语）
 ├── LICENSE                    # CC BY-NC-SA 4.0 许可协议
-└── .gitignore                 # Git 忽略规则（含 bilibili_images/ 与收款码）
+└── .gitignore                 # Git 忽略规则（含 bilibili_images/ 与 watermark/ 源图）
 ```
 
 > 下载的图片默认保存在 `bilibili_images/`，该目录已加入 `.gitignore`，不会被提交到仓库。
@@ -181,13 +181,19 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 
 下载成功后，页面右下角会弹出「下载成功」面板，展示作者、GitHub、邮箱与收款码打赏入口。
 
-想让面板显示**你的微信收款码**：
-1. 微信 → 我 → 收付款 → 二维码收款 → 保存收款码图片
-2. 把图片放入项目的 `watermark/` 目录（任意命名，支持 png/jpg；项目已内置一张 `wechat_qr.jpg`，可直接替换）
-3. 重启本地服务（`一键保存.bat`）即可
+收款码已**直接内嵌在 `bilibili-save.user.js` 中**（data URI 形式，随脚本一起分发），无需本地服务器提供，安装脚本即可显示；脚本启动校验会自动检查收款码是否内置（控制台输出 `[check] 收款码: ready / missing`）。
 
-> 没有放收款码时，面板仍会显示作者/GitHub/邮箱文字，只是不显示收款码图片。
-> 收款码为个人隐私，已加入 `.gitignore`，不会提交到 GitHub。
+**更换成你自己的收款码**：
+1. 微信 → 我 → 收付款 → 二维码收款 → 保存收款码图片
+2. 用新图片**同名覆盖** `watermark/wechat_qr.jpg`
+3. 生成 base64 并替换脚本中 `DONATE_QR` 常量的数据段：
+   ```bash
+   node -e "process.stdout.write('data:image/jpeg;base64,'+require('fs').readFileSync('watermark/wechat_qr.jpg').toString('base64'))"
+   ```
+4. 将生成的 data URI 粘贴到 `bilibili-save.user.js` 的 `const DONATE_QR = '...'` 中，重新在 Tampermonkey 导入脚本
+
+> 没有内置收款码时，面板仍会显示作者/GitHub/邮箱文字，脚本会提示「文件不全，请下载完整版」。
+> 收款码随 `bilibili-save.user.js` 一起发布到仓库；若不想公开，可用上面的方法替换成自己的收款码后私有使用。
 
 ---
 
