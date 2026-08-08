@@ -769,12 +769,24 @@
         }, 1500);
     }
 
+    function verifySetup(){
+        fetch('http://127.0.0.1:8765/getdir').then(r => r.json()).then(info => {
+            console.log('[check] 本地保存服务: ' + (info && info.dir ? 'connected (' + info.dir + ')' : 'not connected'));
+        }).catch(() => {
+            console.log('[check] 本地保存服务: not connected');
+        });
+        fetch('http://127.0.0.1:8765/qr').then(r => {
+            console.log('[check] 收款码: ' + (r.status === 200 ? 'ready' : 'missing'));
+        }).catch(() => {});
+    }
+
     function init(){
         setupOpusAutoSaveMessageListener();
         makeButton();
         setupDynamicListWatcher();
         maybeAutoRun();
         maybeAskDirOnce();
+        verifySetup();
     }
 
     if(document.readyState === 'complete' || document.readyState === 'interactive'){
