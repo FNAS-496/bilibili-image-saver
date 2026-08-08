@@ -321,7 +321,12 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '127.0.0.1', ()=>{
     console.log(`save_images_server listening on http://127.0.0.1:${PORT}, output directory: ${OUT_DIR}`);
-    console.log(`[check] 收款码文件: ${resolveQrPath() ? 'OK (' + path.basename(resolveQrPath()) + ')' : 'missing (watermark/)'}`);
+    const qr = resolveQrPath();
+    console.log(`[check] 收款码文件: ${qr ? 'OK (' + path.basename(qr) + ')' : 'missing (watermark/)'}`);
+    if(!qr){
+        console.log('[提示] 文件不全：watermark/ 目录缺少收款码图片。');
+        console.log('[提示] 完整版请从 GitHub 下载: https://github.com/FNAS-496/bilibili-image-saver');
+    }
 });
 
 process.on('uncaughtException', (e)=>{ console.error('uncaught', e); });

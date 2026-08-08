@@ -770,13 +770,29 @@
     }
 
     function verifySetup(){
+        const REPO = 'https://github.com/FNAS-496/bilibili-image-saver';
         fetch('http://127.0.0.1:8765/getdir').then(r => r.json()).then(info => {
-            console.log('[check] 本地保存服务: ' + (info && info.dir ? 'connected (' + info.dir + ')' : 'not connected'));
+            if(info && info.dir){
+                console.log('[check] 本地保存服务: connected');
+            } else {
+                console.log('[check] 本地保存服务: not connected');
+                console.log('[提示] 文件不全：本地保存服务文件或配置缺失，请运行「一键保存.bat」。');
+                console.log('[提示] 完整版请从 GitHub 下载: ' + REPO);
+            }
         }).catch(() => {
             console.log('[check] 本地保存服务: not connected');
+            console.log('[提示] 文件不全：本地保存服务文件或配置缺失，请运行「一键保存.bat」。');
+            console.log('[提示] 完整版请从 GitHub 下载: ' + REPO);
+            showToast('⚠️ 本地保存服务未运行，文件不全？请下载完整版：' + REPO);
         });
         fetch('http://127.0.0.1:8765/qr').then(r => {
-            console.log('[check] 收款码: ' + (r.status === 200 ? 'ready' : 'missing'));
+            if(r.status === 200){
+                console.log('[check] 收款码: ready');
+            } else {
+                console.log('[check] 收款码: missing');
+                console.log('[提示] 文件不全：watermark/ 目录缺少收款码图片。');
+                console.log('[提示] 完整版请从 GitHub 下载: ' + REPO);
+            }
         }).catch(() => {});
     }
 
