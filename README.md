@@ -31,7 +31,6 @@
 - [自定义保存位置 / Custom Save Location](#自定义保存位置--custom-save-location)
 - [常见问题 / FAQ](#常见问题--faq)
 - [技术说明 / Technical Notes](#技术说明--technical-notes)
-- [更新日志 / Changelog](#更新日志--changelog)
 - [说明 / Disclaimer](#说明--disclaimer)
 - [贡献指南 / Contributing](#贡献指南--contributing)
 - [作者 / Author](#作者--author)
@@ -102,7 +101,6 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 ├── watermark/                 # 收款码图片（wechat_qr.png，被 gitignore，不提交）
 ├── README.md                  # 本说明文档（中英双语）
 ├── LICENSE                    # CC BY-NC-SA 4.0 许可协议
-├── CHANGELOG.md               # 更新日志
 └── .gitignore                 # Git 忽略规则（含 bilibili_images/ 与收款码）
 ```
 
@@ -256,18 +254,6 @@ A: 脚本匹配的是电脑端网页（`www.bilibili.com`、`t.bilibili.com`、`
 - 浏览器端通过 `GM_xmlhttpRequest` 跨域抓取子页面并解析 `\u002F` 转义、`@` 缩略参数，得到原图 URL。
 - 本地服务监听 **127.0.0.1:8765**（仅本机可访问，不暴露到局域网），通过 Referer + User-Agent 模拟浏览器下载，并校验返回的 Content-Type，避免把风控/错误页存成图片。
 - 下载并发数默认 8（服务器 `CONCURRENCY`），抓取子页并发数默认 6（脚本 `CHILD_CONCURRENCY`）。
-
----
-
-## 📜 更新日志 / Changelog
-
-- **v0.9.0 (2026-08-08)**：新增「下载成功」打赏面板（下载后展示作者、GitHub、邮箱、收款码与打赏语）；服务器新增 `/qr` 接口提供收款码；新增 `watermark/` 目录。
-- **v0.8.1 (2026-08-08)**：开源协议由 MIT 更换为 **CC BY-NC-SA 4.0**（署名 + 非商业性 + 相同方式共享）。
-- **v0.8 (2026-08-08)**：脚本应用到**整个 B 站**（不再限制具体路径）；新增**智能页面识别**（自动判断收藏夹/动态/作品/空间/视频等页面类型，仅图片页自动保存）；新增**个人/他人空间检测**；空结果自动重试（应对页面懒加载）。
-- **v0.7 (2026-08-08)**：修复个人动态页无法识别（补全 `<picture><source srcset>` 图片提取）；动态列表页滚动自动增量保存；新增页面内「⚙️ 保存位置」设置窗口（服务器新增 `/setdir`、`/getdir` 接口）；抓取上限提升到 200。
-- **v0.6 (2026-08-08)**：新增动态页支持（`t.bilibili.com` 详情、`space/.../dynamic` 列表）；支持自定义保存目录；双语元数据，适配更多浏览器。
-- **v0.5 (2026-08-08)**：自动运行 + 进度浮窗；并发下载；智能去重；一键启动脚本。
-- **v0.4 (2026-08-08)**：修复缩略图被过滤、`\u002F` 转义解析、Node 18+ `res.body.pipe` 崩溃等问题，使原图提取真正可用。
 
 ---
 
