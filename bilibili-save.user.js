@@ -2,7 +2,7 @@
 // @name         哔哩哔哩 收藏夹/动态/作品 原图自动下载（B站二次元图片批量保存）
 // @name:en      Bilibili Auto-Download Original Images
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.0
+// @version      0.9.1
 // @author       FNAS-496 <sijiudeliu@outlook.com>
 // @description  自动下载 B 站收藏夹、动态、作品(opus)、空间中的原图到本地（自动运行，无需点击；需配合“一键保存.bat”启动本地服务）
 // @description:en Auto-download original images from Bilibili favorites, dynamics, opus posts and space pages (runs automatically; needs the local server started via "一键保存.bat")
@@ -512,7 +512,7 @@
         Object.assign(panel.style, {
             position:'fixed', right:'20px', bottom:'180px', zIndex:999999,
             background:'#fff', color:'#222', padding:'16px', borderRadius:'12px',
-            width:'330px', boxShadow:'0 8px 28px rgba(0,0,0,0.3)', fontSize:'13px'
+            width:'370px', boxShadow:'0 8px 28px rgba(0,0,0,0.3)', fontSize:'13px'
         });
         const statText = stats
             ? `<span style="margin-left:auto;color:#888;font-size:12px;">新增 ${stats.saved} · 已存在 ${stats.exists} · 失败 ${stats.failed}</span>`
@@ -523,7 +523,7 @@
             '<b style="font-size:15px;color:#00a1d6;">下载成功！</b>' + statText +
             '</div>' +
             '<div style="display:flex;gap:14px;align-items:flex-start;">' +
-            '<img src="' + DONATE_QR + '" alt="收款码" style="width:110px;height:110px;border:1px solid #eee;border-radius:8px;flex-shrink:0;background:#f7f7f7;">' +
+            '<img id="bili-donate-qr" src="' + DONATE_QR + '" alt="收款码（点击放大）" title="点击放大收款码" style="width:150px;height:150px;border:1px solid #eee;border-radius:8px;flex-shrink:0;background:#f7f7f7;cursor:zoom-in;">' +
             '<div style="line-height:1.8;">' +
             '<div><b>似玖得六（FNAS）</b></div>' +
             '<div style="color:#555;word-break:break-all;">GitHub: github.com/FNAS-496/bilibili-image-saver</div>' +
@@ -531,7 +531,7 @@
             '</div>' +
             '</div>' +
             '<div style="margin-top:10px;background:#fff8e1;border:1px solid #ffd700;color:#8a6d00;border-radius:8px;padding:8px 10px;text-align:center;">' +
-            '觉得好用的话就打赏一杯奶茶钱吧 ☕' +
+            '觉得好用的话就打赏一杯奶茶钱吧 ☕<span style="color:#b00;">（点击收款码可放大）</span>' +
             '</div>' +
             '<div style="margin-top:12px;text-align:right;">' +
             '<a id="bili-donate-view" href="http://127.0.0.1:8765/" target="_blank" rel="noopener" style="margin-right:8px;padding:6px 16px;border:1px solid #00a1d6;color:#00a1d6;border-radius:6px;text-decoration:none;font-size:13px;display:inline-block;">查看图片</a>' +
@@ -539,7 +539,28 @@
             '</div>';
         document.body.appendChild(panel);
         panel.querySelector('#bili-donate-close').addEventListener('click', () => panel.remove());
-        setTimeout(() => { if(panel.isConnected) panel.remove(); }, 8000);
+        panel.querySelector('#bili-donate-qr').addEventListener('click', () => {
+            const overlay = document.createElement('div');
+            overlay.id = 'bili-donate-lightbox';
+            Object.assign(overlay.style, {
+                position:'fixed', inset:'0', zIndex:9999999, background:'rgba(0,0,0,0.78)',
+                display:'flex', alignItems:'center', justifyContent:'center', cursor:'zoom-out'
+            });
+            const big = document.createElement('img');
+            big.src = DONATE_QR;
+            big.alt = '收款码';
+            Object.assign(big.style, {
+                maxWidth:'min(520px, 92vw)', maxHeight:'92vh', background:'#fff',
+                padding:'14px', borderRadius:'14px', boxShadow:'0 8px 40px rgba(0,0,0,0.5)'
+            });
+            overlay.appendChild(big);
+            const close = () => overlay.remove();
+            overlay.addEventListener('click', close);
+            document.addEventListener('keydown', function onKey(e){
+                if(e.key === 'Escape'){ close(); document.removeEventListener('keydown', onKey); }
+            });
+            document.body.appendChild(overlay);
+        });
     }
 
     async function collectAndSave(){
@@ -774,19 +795,15 @@
 
     function verifySetup(){
         const REPO = 'https://github.com/FNAS-496/bilibili-image-saver';
-        fetch('http://127.0.0.1:8765/getdir').then(r => r.json()).then(info => {
+        getSaveDir().then(info => {
             if(info && info.dir){
                 console.log('[check] 本地保存服务: connected');
             } else {
                 console.log('[check] 本地保存服务: not connected');
                 console.log('[提示] 文件不全：本地保存服务文件或配置缺失，请运行「一键保存.bat」。');
                 console.log('[提示] 完整版请从 GitHub 下载: ' + REPO);
+                showToast('⚠️ 本地保存服务未运行，文件不全？请下载完整版：' + REPO);
             }
-        }).catch(() => {
-            console.log('[check] 本地保存服务: not connected');
-            console.log('[提示] 文件不全：本地保存服务文件或配置缺失，请运行「一键保存.bat」。');
-            console.log('[提示] 完整版请从 GitHub 下载: ' + REPO);
-            showToast('⚠️ 本地保存服务未运行，文件不全？请下载完整版：' + REPO);
         });
         if(DONATE_QR && DONATE_QR.indexOf('__QR_B64__') === -1 && DONATE_QR.length > 100){
             console.log('[check] 收款码: ready');
