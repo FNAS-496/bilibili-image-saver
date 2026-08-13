@@ -29,9 +29,16 @@ const CONCURRENCY = 8;
        
                                                                 
                                              
+const DIR_FILE = path.join(__dirname, 'outdir.txt');
 let OUT_DIR = (process.env.BILI_SAVE_DIR && process.env.BILI_SAVE_DIR.trim())
     ? path.resolve(process.env.BILI_SAVE_DIR)
-    : (process.argv[2] ? path.resolve(process.argv[2]) : path.join(__dirname, 'bilibili_images'));
+    : (process.argv[2] ? path.resolve(process.argv[2]) : (() => {
+        try{
+            const persisted = fs.existsSync(DIR_FILE) ? fs.readFileSync(DIR_FILE, 'utf8').trim() : '';
+            if(persisted) return path.resolve(persisted);
+        }catch(e){}
+        return path.join(__dirname, 'bilibili_images');
+    })());
 if(!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
 function extensionFromUrl(u){
@@ -44,7 +51,9 @@ function extensionFromUrl(u){
 }
 
 function sanitizeFilename(name){
-    return name.replace(/[^a-z0-9._-]/gi, '_');
+    let s = String(name).replace(/[^a-z0-9._-]/gi, '_').replace(/\.{2,}/g, '_');
+    if(!s || s === '.' || s === '..') s = '_';
+    return s;
 }
 
 function getRequestHeaders(){
@@ -138,34 +147,43 @@ async function tryDownloadFile(rawUrl, index){
     if(jpgVariant && jpgVariant !== url) variants.unshift(jpgVariant);
 
     let lastError;
-    for(const candidate of variants){
-        try{
-            const ext = extensionFromUrl(candidate) || '.jpg';
-                                                      
-            let base = '';
+    for(let attempt = 0; attempt < 2; attempt++){
+        for(const candidate of variants){
             try{
-                base = path.basename(new URL(candidate).pathname).split('@')[0];
-            }catch(e){}
-            base = sanitizeFilename(base);
-            if(!base || base === '.' || base === '..') base = `image_${index}`;
-            if(!path.extname(base)) base += ext;
-            const outPath = path.join(OUT_DIR, base);
-                                    
-            if(fs.existsSync(outPath) && fs.statSync(outPath).size > 0){
-                return { url: candidate, saved: outPath, exists: true };
+                const ext = extensionFromUrl(candidate) || '.jpg';
+                let base = '';
+                try{
+                    base = path.basename(new URL(candidate).pathname).split('@')[0];
+                }catch(e){}
+                base = sanitizeFilename(base);
+                if(!base || base === '.' || base === '..') base = `image_${index}`;
+                if(!path.extname(base)) base += ext;
+                const outPath = path.join(OUT_DIR, base);
+                if(fs.existsSync(outPath) && fs.statSync(outPath).size > 0){
+                    return { url: candidate, saved: outPath, exists: true };
+                }
+                const result = await downloadToFile(candidate, outPath);
+                return { url: candidate, saved: outPath, contentType: result.contentType };
+            }catch(err){
+                lastError = err;
+                console.warn('Download failed for', candidate, 'attempt', attempt + 1, err.message);
             }
-            const result = await downloadToFile(candidate, outPath);
-            return { url: candidate, saved: outPath, contentType: result.contentType };
-        }catch(err){
-            lastError = err;
-            console.warn('Download failed for', candidate, err.message);
         }
     }
     throw lastError || new Error('Download failed');
 }
 
 const server = http.createServer((req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const origin = String(req.headers.origin || '');
+    const trusted = !origin
+        || /^https?:\/\/([\w-]+\.)*bilibili\.com(:[0-9]+)?$/i.test(origin)
+        || /^http:\/\/(127\.0\.0\.1|localhost)(:[0-9]+)?$/i.test(origin);
+    if(!trusted){
+        res.writeHead(403, {'Content-Type':'text/plain'});
+        res.end('forbidden origin');
+        return;
+    }
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -177,7 +195,10 @@ const server = http.createServer((req, res) => {
 
     if(req.method === 'POST' && req.url === '/save'){
         let body = '';
-        req.on('data', chunk => body += chunk);
+        req.on('data', chunk => {
+            body += chunk;
+            if(body.length > 50 * 1024 * 1024){ req.destroy(); }
+        });
         req.on('end', async () => {
             let payload;
             try{
@@ -270,6 +291,7 @@ const server = http.createServer((req, res) => {
                 if(dir){
                     OUT_DIR = path.resolve(dir);
                     fs.mkdirSync(OUT_DIR, { recursive: true });
+                    try{ fs.writeFileSync(DIR_FILE, OUT_DIR, 'utf8'); }catch(e){}
                     console.log('保存目录已更新为', OUT_DIR);
                     res.writeHead(200, {'Content-Type':'application/json'});
                     res.end(JSON.stringify({ ok:true, dir: OUT_DIR }));
@@ -310,7 +332,14 @@ const server = http.createServer((req, res) => {
     }
 
     if(req.method === 'GET' && req.url.startsWith('/img/')){
-        const name = path.basename(decodeURIComponent(req.url.slice(5)));
+        let name;
+        try{
+            name = path.basename(decodeURIComponent(req.url.slice(5)));
+        }catch(e){
+            res.writeHead(400, {'Content-Type':'text/plain'});
+            res.end('bad request');
+            return;
+        }
         const filePath = path.join(OUT_DIR, name);
         if(!filePath.startsWith(OUT_DIR + path.sep) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()){
             res.writeHead(404, {'Content-Type':'text/plain'});
@@ -343,11 +372,7 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, '127.0.0.1', ()=>{
     console.log(`save_images_server listening on http://127.0.0.1:${PORT}, output directory: ${OUT_DIR}`);
     const qr = resolveQrPath();
-    console.log(`[check] 收款码文件: ${qr ? 'OK (' + path.basename(qr) + ')' : 'missing (watermark/)'}`);
-    if(!qr){
-        console.log('[提示] 文件不全：watermark/ 目录缺少收款码图片。');
-        console.log('[提示] 完整版请从 GitHub 下载: https://github.com/FNAS-496/bilibili-image-saver');
-    }
+    console.log(`[check] 打赏收款码(兼容 /qr): ${qr ? 'OK (' + path.basename(qr) + ')' : '无（脚本已内嵌收款码，不影响使用）'}`);
 });
 
 process.on('uncaughtException', (e)=>{ console.error('uncaught', e); });

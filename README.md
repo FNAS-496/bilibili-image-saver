@@ -5,7 +5,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-0.9.1-00a1d6)
+![Version](https://img.shields.io/badge/version-0.9.2-00a1d6)
 ![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-orange)
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -130,16 +130,16 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 1. 打开 https://nodejs.org ，下载 **LTS 版本**并安装（一路默认即可）。
 2. 验证是否成功：打开终端（CMD 或 PowerShell）输入 `node -v`，能显示版本号（如 `v20.x.x`）即成功。
 
-### 第 2 步：安装浏览器脚本并导入（仅第一次）
+### 第 2 步：安装浏览器脚本（仅第一次）
 
 1. 安装 Tampermonkey 插件（见上表链接），浏览器右上角会出现它的图标。
-2. 打开 Tampermonkey 管理面板 → 「添加新脚本 / Create a new script」。
-3. **全选删除**编辑区内容，把 `bilibili-save.user.js` 的**全部内容**粘贴进去，按 `Ctrl+S` 保存。
-   > 也可以直接把 `.user.js` 文件拖进浏览器窗口，Tampermonkey 会弹出安装页面。
+2. 双击 `一键部署.bat` 会自动打开脚本安装页；确认 Tampermonkey 弹出「安装」后点安装即可。
+   > 若未自动弹出安装页：打开 Tampermonkey 管理面板 → 设置 → 勾选「**允许访问文件网址**」，然后重新运行 `一键部署.bat`。
+   > 也可以手动导入：Tampermonkey 管理面板 → 「添加新脚本」→ 全选删除后粘贴 `bilibili-save.user.js` 的全部内容，`Ctrl+S` 保存。
 
 ### 第 3 步：启动本地保存服务（每次使用前）
 
-- **Windows**：双击 `一键保存.bat`（中文界面）或 `start_server.bat`（English UI），它会自动检测并启动服务、打开浏览器。
+- **Windows**：双击 `一键部署.bat`（推荐，自动完成检查、释放文件、启动服务、打开安装页）或 `一键保存.bat`；它们会自动检测并启动服务、打开浏览器。
 - **macOS / Linux**：打开终端，进入项目目录后运行：
   ```bash
   node save_images_server.js
@@ -232,14 +232,17 @@ node save_images_server.js "/Users/me/Pictures/bili"
 BILI_SAVE_DIR="/Users/me/Pictures/bili" node save_images_server.js
 ```
 
-> 说明：页面内设置（方式 A）即时生效且无需重启服务；`一键保存.bat` 与命令行在服务**启动时**设定默认目录。优先级：页面内设置（运行时）> 环境变量 / 命令行参数 > 默认 `bilibili_images`。
+> 说明：页面内设置（方式 A）即时生效并**自动记忆**（重启服务后仍然有效）；`一键保存.bat` 与命令行在服务**启动时**设定目录。优先级：环境变量 / 命令行参数 > 页面内设置（持久化）> 默认 `bilibili_images`。
 
 ---
 
 ## ❓ 常见问题 / FAQ
 
 **Q: 提示「未连接本地保存服务」怎么办？**
-A: 说明本地服务没启动。Windows 双击 `一键保存.bat`；macOS/Linux 运行 `node save_images_server.js`，然后**刷新** B 站页面。
+A: 说明本地服务没启动。Windows 双击 `一键部署.bat`（或 `一键保存.bat`）；macOS/Linux 运行 `node save_images_server.js`，然后**刷新** B 站页面。
+
+**Q: 如何更新脚本到新版本？**
+A: 重新运行一次 `一键部署.bat` 即可（它会用内置的最新版覆盖旧文件），或手动重新导入 `bilibili-save.user.js`。
 
 **Q: 图片保存在哪里？**
 A: 默认在项目目录的 `bilibili_images/`；可在 `一键保存.bat` 顶部或命令行指定其他目录（见上节）。

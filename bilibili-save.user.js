@@ -2,19 +2,18 @@
 // @name         哔哩哔哩 收藏夹/动态/作品 原图自动下载（B站二次元图片批量保存）
 // @name:en      Bilibili Auto-Download Original Images
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.1
+// @version      0.9.2
 // @author       FNAS-496 <sijiudeliu@outlook.com>
-// @description  自动下载 B 站收藏夹、动态、作品(opus)、空间中的原图到本地（自动运行，无需点击；需配合“一键保存.bat”启动本地服务）
-// @description:en Auto-download original images from Bilibili favorites, dynamics, opus posts and space pages (runs automatically; needs the local server started via "一键保存.bat")
+// @description  自动下载 B 站收藏夹、动态、作品(opus)、空间中的原图到本地（自动运行，无需点击；需配合“一键部署.bat”启动本地服务）
+// @description:en Auto-download original images from Bilibili favorites, dynamics, opus posts and space pages (runs automatically; needs the local server started via "一键部署.bat")
 // @homepageURL  https://github.com/FNAS-496/bilibili-image-saver
 // @supportURL   https://github.com/FNAS-496/bilibili-image-saver/issues
-// @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
-// @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @match        *://*.bilibili.com/*
 // @match        *://bilibili.com/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
-// @connect      *
+// @connect      hdslb.com
+// @connect      bilibili.com
 // @connect      127.0.0.1
 // @noframes
 // @license      CC BY-NC-SA 4.0
@@ -25,7 +24,6 @@
     'use strict';
 
     const LOCAL_SERVER = 'http://127.0.0.1:8765/save';
-    const MSG_TYPE = 'bilibili-opus-image-save';
     const AUTO_SAVE_PARAM = 'bili_auto_save';
 
                       
@@ -228,6 +226,7 @@
                     responseType: 'text',
                     withCredentials: true,
                     headers: {
+                    timeout: 20000,
                         'User-Agent': navigator.userAgent,
                         'Referer': 'https://www.bilibili.com/',
                         'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8'
@@ -244,9 +243,15 @@
                 });
             });
         }
-        const resp = await fetch(url, { credentials: 'include' });
-        if(!resp.ok) throw new Error('Fetch failed ' + resp.status + ' for ' + url);
-        return await resp.text();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 20000);
+        try{
+            const resp = await fetch(url, { credentials: 'include', signal: controller.signal });
+            if(!resp.ok) throw new Error('Fetch failed ' + resp.status + ' for ' + url);
+            return await resp.text();
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     function parseUrlsFromHtml(html, baseUrl){
@@ -372,7 +377,7 @@
             return json;
         }catch(err){
             console.error(err);
-            showToast('❌ 未连接本地保存服务：\n请先双击「一键保存.bat」启动，然后刷新本页重试');
+            showToast('❌ 未连接本地保存服务：\n请先双击「一键部署.bat」启动，然后刷新本页重试');
             return { ok:false, error: err.message };
         }
     }
@@ -384,10 +389,6 @@
         const jsonUrls = extractUrlsFromJsonText(document.documentElement.innerHTML);
         jsonUrls.forEach(u => pageUrls.add(u));
         return Array.from(pageUrls).filter(isContentImageUrl);
-    }
-
-    function isAutoSaveMode(){
-        return new URL(location.href).searchParams.get(AUTO_SAVE_PARAM) === '1';
     }
 
                                        
@@ -459,36 +460,6 @@
         return info.label;
     }
  
-    function setupOpusAutoSaveMessageListener(){
-        window.addEventListener('message', event => {
-            const data = event.data;
-            if(data && data.type === MSG_TYPE){
-                console.log('收到子页面自动保存消息', data.page, data.urls);
-            }
-        });
-    }
- 
-    async function autoSaveCurrentOpusPage(){
-        const urls = collectPageImageUrls();
-        if(!urls.length){
-            console.warn('Auto-save: no images found on', location.href);
-            return;
-        }
-        await sendUrlsToServer(urls);
-        if(window.opener && window.opener !== window){
-            try{
-                window.opener.postMessage({ type: MSG_TYPE, page: location.href, urls }, '*');
-            }catch(e){
-                console.warn('Cannot postMessage to opener', e);
-            }
-        }
-        try{
-            window.close();
-        }catch(e){
-            console.warn('Unable to close window automatically', e);
-        }
-    }
-
     const stopFlag = { stop: false };
 
     function countResults(json){
@@ -554,11 +525,15 @@
                 padding:'14px', borderRadius:'14px', boxShadow:'0 8px 40px rgba(0,0,0,0.5)'
             });
             overlay.appendChild(big);
-            const close = () => overlay.remove();
+            const close = () => {
+                overlay.remove();
+                document.removeEventListener('keydown', onKey);
+            };
+            function onKey(e){
+                if(e.key === 'Escape') close();
+            }
             overlay.addEventListener('click', close);
-            document.addEventListener('keydown', function onKey(e){
-                if(e.key === 'Escape'){ close(); document.removeEventListener('keydown', onKey); }
-            });
+            document.addEventListener('keydown', onKey);
             document.body.appendChild(overlay);
         });
     }
@@ -718,7 +693,7 @@
                 showToast('✅ 保存目录已设置：' + info.dir);
                 panel.style.display = 'none';
             } else {
-                showToast('❌ 设置失败：请先双击「一键保存.bat」启动本地服务');
+                showToast('❌ 设置失败：请先双击「一键部署.bat」启动本地服务');
             }
             try{ localStorage.setItem(DIR_ASKED_KEY, '1'); }catch(e){}
         });
@@ -726,6 +701,8 @@
 
                                         
     function maybeAskDirOnce(){
+        const pageInfo = detectPageType();
+        if(!pageInfo || !pageInfo.imagePage) return;
         try{
             if(localStorage.getItem(DIR_ASKED_KEY) === '1') return;
         }catch(e){}
@@ -768,11 +745,9 @@
     function maybeAutoRun(){
         if(autoStarted) return;
         autoStarted = true;
-                                         
-        if(isAutoSaveMode()){
-            setTimeout(autoSaveCurrentOpusPage, 800);
-            return;
-        }
+        try{
+            if(new URL(location.href).searchParams.get(AUTO_SAVE_PARAM) === '0') return;
+        }catch(e){}
         if(!AUTO_RUN) return;
                                                     
         const info = detectPageType();
@@ -795,14 +770,18 @@
 
     function verifySetup(){
         const REPO = 'https://github.com/FNAS-496/bilibili-image-saver';
-        getSaveDir().then(info => {
-            if(info && info.dir){
+        const pageInfo = detectPageType();
+        const isImagePage = !!(pageInfo && pageInfo.imagePage);
+        getSaveDir().then(dirInfo => {
+            if(dirInfo && dirInfo.dir){
                 console.log('[check] 本地保存服务: connected');
             } else {
                 console.log('[check] 本地保存服务: not connected');
-                console.log('[提示] 文件不全：本地保存服务文件或配置缺失，请运行「一键保存.bat」。');
+                console.log('[提示] 文件不全：本地保存服务文件或配置缺失，请运行「一键部署.bat」。');
                 console.log('[提示] 完整版请从 GitHub 下载: ' + REPO);
-                showToast('⚠️ 本地保存服务未运行，文件不全？请下载完整版：' + REPO);
+                if(isImagePage){
+                    showToast('⚠️ 本地保存服务未运行，文件不全？请下载完整版：' + REPO);
+                }
             }
         });
         if(DONATE_QR && DONATE_QR.indexOf('__QR_B64__') === -1 && DONATE_QR.length > 100){
@@ -815,7 +794,6 @@
     }
 
     function init(){
-        setupOpusAutoSaveMessageListener();
         makeButton();
         setupDynamicListWatcher();
         maybeAutoRun();
