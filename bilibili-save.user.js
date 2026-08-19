@@ -2,7 +2,7 @@
 // @name         哔哩哔哩 收藏夹/动态/作品 原图自动下载（B站二次元图片批量保存）
 // @name:en      Bilibili Auto-Download Original Images
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.6
+// @version      0.9.7
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -629,13 +629,20 @@
         const upInfo = extractUpInfo();
         const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         panel.innerHTML =
-            '<div id="bili-review-left" style="width:230px;padding:20px;border-right:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';overflow:auto;display:flex;flexDirection:column;">' +
-            '<div style="font-weight:bold;font-size:15px;margin-bottom:12px;">📖 使用教程</div>' +
+            '<div id="bili-review-left" style="width:240px;padding:20px;border-right:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';overflow:auto;display:flex;flexDirection:column;">' +
+            '<div style="font-weight:bold;font-size:15px;margin-bottom:8px;">⌨️ 键位设置 / Keys</div>' +
             '<div style="line-height:2;font-size:13px;">' +
             '<div>⏬ <b>方向下键 ↓</b>：下载当前图</div>' +
             '<div>⬅️➡️ <b>方向左右键</b>：翻页切换图片</div>' +
             '<div>🖱️ 鼠标滚轮：翻页</div>' +
             '<div>🚪 <b>Esc</b>：退出审查</div>' +
+            '</div>' +
+            '<div style="margin-top:14px;padding-top:12px;border-top:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';font-size:12px;color:' + (dark ? '#999' : '#888') + ';line-height:1.8;">' +
+            '<div style="font-weight:bold;margin-bottom:4px;">📋 审查模式说明</div>' +
+            '<div>· 单张预览，满意后再下载</div>' +
+            '<div>· 按下键 ↓ 保存当前这张</div>' +
+            '<div>· 下载过的图会标记 ✅</div>' +
+            '<div>· 「全部下载」可一键保存所有</div>' +
             '</div>' +
             '<div style="margin-top:auto;padding-top:14px;border-top:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';font-size:13px;color:' + (dark ? '#999' : '#888') + ';">当前已下载 <b id="bili-review-dl-count" style="color:#00a1d6;">0</b> 张</div>' +
             '</div>' +
@@ -658,6 +665,7 @@
 
         let index = 0;
         let downloaded = new Set();
+        let busy = false;
         const imgEl = panel.querySelector('#bili-review-img');
         const progressEl = panel.querySelector('#bili-review-progress');
         const countEl = panel.querySelector('#bili-review-dl-count');
@@ -675,38 +683,51 @@
         };
 
         const dlCurrent = async () => {
+            if(busy) return;
             if(downloaded.has(index)){ showToast('这张已经下载过了'); return; }
+            busy = true;
             showToast('⬇️ 正在下载第 ' + (index + 1) + ' 张...');
-            const json = await sendUrlsToServer([urls[index]]);
-            if(json && json.results){
-                const c = countResults(json);
-                if(c.saved || c.exists){
-                    downloaded.add(index);
-                    countEl.textContent = downloaded.size;
-                    progressEl.textContent = (index + 1) + ' / ' + urls.length + '  ✅已下载';
-                    showToast('✅ 下载完成（新增 ' + c.saved + '，已存在 ' + c.exists + '）');
-                } else {
-                    showToast('❌ 下载失败，请检查本地服务');
+            try{
+                const json = await sendUrlsToServer([urls[index]]);
+                if(json && json.results){
+                    const c = countResults(json);
+                    if(c.saved || c.exists){
+                        downloaded.add(index);
+                        countEl.textContent = downloaded.size;
+                        progressEl.textContent = (index + 1) + ' / ' + urls.length + '  ✅已下载';
+                        showToast('✅ 下载完成（新增 ' + c.saved + '，已存在 ' + c.exists + '）');
+                    } else {
+                        showToast('❌ 下载失败，请检查本地服务');
+                    }
                 }
+            } finally {
+                busy = false;
             }
         };
 
         const dlAll = async () => {
+            if(busy) return;
             const remaining = urls.filter((u, i) => !downloaded.has(i));
             if(!remaining.length){ showToast('全部已下载'); return; }
-            showProgress(`正在下载 ${remaining.length} 张...`, () => { stopFlag.stop = true; });
-            const json = await sendUrlsToServer(remaining);
-            if(json && json.results){
-                urls.forEach((u, i) => { if(!downloaded.has(i)) downloaded.add(i); });
-                countEl.textContent = downloaded.size;
-                const c = countResults(json);
-                showToast(`✅ 全部下载完成：新增 ${c.saved} 张，已存在 ${c.exists} 张，失败 ${c.failed} 张`);
-                showDonatePanel(c);
-                close();
+            busy = true;
+            showToast('⬇️ 正在全部下载 ' + remaining.length + ' 张...');
+            try{
+                const json = await sendUrlsToServer(remaining);
+                if(json && json.results){
+                    urls.forEach((u, i) => { if(!downloaded.has(i)) downloaded.add(i); });
+                    countEl.textContent = downloaded.size;
+                    const c = countResults(json);
+                    showToast(`✅ 全部下载完成：新增 ${c.saved} 张，已存在 ${c.exists} 张，失败 ${c.failed} 张`);
+                    showDonatePanel(c);
+                    close();
+                }
+            } finally {
+                busy = false;
             }
         };
 
         function onKey(e){
+            if(busy){ return; }
             if(e.key === 'ArrowDown'){ e.preventDefault(); dlCurrent(); }
             else if(e.key === 'ArrowRight'){ e.preventDefault(); index = Math.min(urls.length - 1, index + 1); render(); }
             else if(e.key === 'ArrowLeft'){ e.preventDefault(); index = Math.max(0, index - 1); render(); }
@@ -715,6 +736,7 @@
         document.addEventListener('keydown', onKey);
 
         panel.addEventListener('wheel', (e) => {
+            if(busy) return;
             if(e.deltaY > 0) index = Math.min(urls.length - 1, index + 1);
             else index = Math.max(0, index - 1);
             render();
@@ -813,7 +835,6 @@
             return;
         }
 
-        showProgress(`正在下载 ${urls.length} 张原图到本地...`, () => { stopFlag.stop = true; });
         window.__biliRetryCount = 0;
         if(settings.downloadMode === 'review'){
             const statusEl = document.getElementById('bili-save-status');
@@ -827,6 +848,7 @@
             });
             return;
         }
+        showProgress(`正在下载 ${urls.length} 张原图到本地...`, () => { stopFlag.stop = true; });
         const json = await sendUrlsToServer(urls, settings);
         if(json && json.results){
             const c = countResults(json);
