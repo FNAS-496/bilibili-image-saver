@@ -2,7 +2,7 @@
 // @name         哔哩哔哩 收藏夹/动态/作品 原图自动下载（B站二次元图片批量保存）
 // @name:en      Bilibili Auto-Download Original Images
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.5
+// @version      0.9.6
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -591,17 +591,26 @@
     function extractUpInfo(){
         let upName = '';
         let upText = '';
+        const path = location.pathname;
         const st = window.__INITIAL_STATE__;
         if(st){
-            if(st.user && st.user.name) upName = st.user.name;
             if(st.videoData && st.videoData.owner && st.videoData.owner.name) upName = st.videoData.owner.name;
+            if(st.opusData && st.opusData.owner && st.opusData.owner.name) upName = st.opusData.owner.name;
+            if(!upName && st.user && st.user.name) upName = st.user.name;
+            if(!upText && st.videoData && st.videoData.title) upText = st.videoData.title;
         }
         if(!upName){
-            const el = document.querySelector('.up-name, .username, [class*="up-name"], [class*="username"], [class*="author__name"], [class*="author-name"], [class*="dyn-name"], a[href*="space.bilibili.com"] [class*="name"]');
+            const el = document.querySelector('.opus-module-author__name, [class*="opus-module-author__name"], .bili-dyn-item__author, [class*="dyn-item__author"], .up-name, .name.medium, [class*="author__name"], .bili-video-card__info--owner, [class*="video-card__info--owner"], [class*="owner-name"], .header-info__username, a[href*="space.bilibili.com"] .bili-dyn-item__author');
             if(el) upName = (el.textContent || '').trim();
         }
-        const txtEl = document.querySelector('.bili-dyn-content, .dyn-content, [class*="dyn-content"], .opus-detail__content, [class*="post-content"], .desc-info, .video-desc, .opus-module-title__content, [class*="module-title__content"], [class*="module-title__text"]');
-        if(txtEl) upText = (txtEl.textContent || '').trim().slice(0, 500);
+        if(!upName){
+            const link = document.querySelector('.opus-module-author a[href*="space.bilibili.com"], .bili-dyn-item__author a[href*="space.bilibili.com"], a[href*="space.bilibili.com"] [class*="author"]');
+            if(link) upName = (link.textContent || '').trim();
+        }
+        if(!upText){
+            const txtEl = document.querySelector('.opus-module-title__content, [class*="module-title__content"], .bili-dyn-content, [class*="dyn-content"], .opus-detail__content, [class*="post-content"], .desc-info, .video-desc');
+            if(txtEl) upText = (txtEl.textContent || '').trim().slice(0, 500);
+        }
         return { upName: upName || '未知UP主', upText };
     }
 
@@ -618,28 +627,29 @@
             color: dark ? '#e6e6e6' : '#222', fontSize:'14px'
         });
         const upInfo = extractUpInfo();
+        const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         panel.innerHTML =
-            '<div id="bili-review-left" style="width:220px;padding:20px;border-right:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';overflow:auto;">' +
+            '<div id="bili-review-left" style="width:230px;padding:20px;border-right:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';overflow:auto;display:flex;flexDirection:column;">' +
             '<div style="font-weight:bold;font-size:15px;margin-bottom:12px;">📖 使用教程</div>' +
             '<div style="line-height:2;font-size:13px;">' +
             '<div>⏬ <b>方向下键 ↓</b>：下载当前图</div>' +
             '<div>⬅️➡️ <b>方向左右键</b>：翻页切换图片</div>' +
             '<div>🖱️ 鼠标滚轮：翻页</div>' +
             '<div>🚪 <b>Esc</b>：退出审查</div>' +
-            '<div style="margin-top:10px;color:' + (dark ? '#999' : '#888') + ';">当前已下载 <b id="bili-review-dl-count" style="color:#00a1d6;">0</b> 张</div>' +
             '</div>' +
+            '<div style="margin-top:auto;padding-top:14px;border-top:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';font-size:13px;color:' + (dark ? '#999' : '#888') + ';">当前已下载 <b id="bili-review-dl-count" style="color:#00a1d6;">0</b> 张</div>' +
             '</div>' +
             '<div id="bili-review-center" style="flex:1;display:flex;flexDirection:column;alignItems:center;justifyContent:center;padding:16px;">' +
             '<div id="bili-review-progress" style="margin-bottom:10px;color:' + (dark ? '#999' : '#888') + ';font-size:13px;"></div>' +
             '<div style="max-width:min(70vw,900px);max-height:70vh;display:flex;alignItems:center;justifyContent:center;overflow:hidden;background:' + (dark ? '#000' : '#fff') + ';border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,0.25);">' +
             '<img id="bili-review-img" src="" alt="预览" style="max-width:100%;max-height:70vh;object-fit:contain;display:block;">' +
             '</div>' +
-            '<div style="margin-top:12px;font-size:13px;color:' + (dark ? '#ccc' : '#555') + ';">↓ 下载当前 · ← → 翻页 · Esc 退出</div>' +
             '</div>' +
-            '<div id="bili-review-right" style="width:260px;padding:20px;border-left:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';overflow:auto;">' +
-            '<div style="font-weight:bold;font-size:15px;margin-bottom:10px;">👤 ' + upInfo.upName.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])) + '</div>' +
-            '<div style="line-height:1.8;font-size:13px;color:' + (dark ? '#ccc' : '#555') + ';white-space:pre-wrap;word-break:break-word;">' + (upInfo.upText ? upInfo.upText.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])) : '（未获取到动态文案）') + '</div>' +
+            '<div id="bili-review-right" style="width:270px;padding:20px;border-left:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';overflow:auto;">' +
+            '<div style="font-weight:bold;font-size:15px;margin-bottom:10px;">👤 ' + esc(upInfo.upName) + '</div>' +
+            '<div style="line-height:1.8;font-size:13px;color:' + (dark ? '#ccc' : '#555') + ';white-space:pre-wrap;word-break:break-word;">' + (upInfo.upText ? esc(upInfo.upText) : '（未获取到动态文案）') + '</div>' +
             '<div style="margin-top:14px;padding-top:12px;border-top:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';font-size:12px;color:' + (dark ? '#999' : '#888') + ';line-height:1.7;">' +
+            '<button id="bili-review-like" style="width:100%;padding:8px 0;border:1px solid #fb7299;background:transparent;color:#fb7299;border-radius:6px;cursor:pointer;font-size:13px;margin-bottom:8px;">👍 点赞</button>' +
             '<button id="bili-review-dl-all" style="width:100%;padding:8px 0;border:none;background:#00a1d6;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;margin-bottom:8px;">⬇️ 全部下载</button>' +
             '<button id="bili-review-close" style="width:100%;padding:8px 0;border:1px solid ' + (dark ? '#555' : '#ccc') + ';background:transparent;color:' + (dark ? '#e6e6e6' : '#222') + ';border-radius:6px;cursor:pointer;font-size:13px;">退出审查</button>' +
             '</div>' +
@@ -712,6 +722,27 @@
 
         panel.querySelector('#bili-review-dl-all').addEventListener('click', dlAll);
         panel.querySelector('#bili-review-close').addEventListener('click', close);
+        panel.querySelector('#bili-review-like').addEventListener('click', () => {
+            let clicked = false;
+            const likeSelectors = [
+                '.opus-like, [class*="opus-like"], [class*="opus-detail__like"], [class*="like-btn"]',
+                '.bili-dyn-action__like, [class*="dyn-action__like"]',
+                '.like, [class*="action-like"], [data-action="like"]'
+            ];
+            for(const sel of likeSelectors){
+                const el = document.querySelector(sel);
+                if(el){
+                    el.click();
+                    clicked = true;
+                    break;
+                }
+            }
+            if(clicked){
+                showToast('👍 已点赞');
+            } else {
+                showToast('未找到点赞按钮，请在页面右侧直接点赞');
+            }
+        });
         panel.addEventListener('click', (e) => {
             if(e.target === panel) close();
         });
