@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.12
+// @version      0.9.13
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -710,32 +710,42 @@
         const mutedC = dark ? '#9aa0ae' : '#6b7280';
         const subBg = dark ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.65)';
         const btnGhost = 'width:100%;padding:9px 0;border:1px solid ' + (dark ? '#4a4e5c' : '#d0d4dd') + ';background:transparent;color:' + (dark ? '#e6e6e6' : '#2a2f3a') + ';border-radius:9px;cursor:pointer;font-size:13px;margin-bottom:8px;transition:all .15s;';
-        const keyItemC = 'display:flex;flex-direction:column;align-items:stretch;gap:6px;padding:10px 12px;background:' + (dark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.75)') + ';border:1px solid ' + borderC + ';border-radius:9px;margin-bottom:8px;font-size:13px;';
-        const keycapC = 'display:block;width:100%;box-sizing:border-box;text-align:center;padding:6px 0;border-radius:6px;font-size:13px;font-weight:bold;';
+        const keyItemC = 'display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:10px 12px;background:' + (dark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.75)') + ';border:1px solid ' + borderC + ';border-radius:10px;font-size:13px;box-sizing:border-box;box-shadow:0 1px 4px rgba(0,0,0,0.04);margin-bottom:8px;';
+        const keycapC = 'display:inline-flex;align-items:center;justify-content:center;min-width:52px;box-sizing:border-box;padding:6px 10px;border-radius:6px;font-size:13px;font-weight:bold;';
         const keyRow = (label, k, which) => {
             if(!which){
                 return '<div style="' + keyItemC + '">' +
-                '<span style="text-align:center;color:' + (dark ? '#e6e6e6' : '#333') + ';">' + label + '</span>' +
+                '<span style="flex:1;text-align:left;color:' + (dark ? '#e6e6e6' : '#333') + ';">' + label + '</span>' +
                 '<kbd style="' + keycapC + 'background:' + (dark ? 'rgba(255,255,255,0.06)' : '#fff') + ';border:1px solid ' + borderC + ';color:' + mutedC + ';">' + k + '</kbd>' +
                 '</div>';
             }
             return '<div class="bili-review-key" data-key="' + which + '" style="' + keyItemC + 'cursor:pointer;transition:background .15s;" title="点击后按任意键自定义">' +
-            '<span style="text-align:center;color:' + (dark ? '#e6e6e6' : '#333') + ';">' + label + '</span>' +
+            '<span style="flex:1;text-align:left;color:' + (dark ? '#e6e6e6' : '#333') + ';">' + label + '</span>' +
             '<kbd class="bili-review-keycap" style="' + keycapC + 'background:' + (dark ? 'rgba(255,255,255,0.06)' : '#fff') + ';border:1px solid #00a1d6;color:#00a1d6;">' + k + '</kbd>' +
             '</div>';
         };
         panel.innerHTML =
-            '<div id="bili-review-left" style="width:256px;padding:18px 16px;border-right:1px solid ' + borderC + ';overflow:auto;display:flex;flexDirection:column;background:' + subBg + ';">' +
+            '<div id="bili-review-left" style="width:220px;padding:18px 16px;border-right:1px solid ' + borderC + ';overflow:auto;display:flex;flexDirection:column;background:' + subBg + ';">' +
             '<div style="display:flex;align-items:center;gap:6px;font-weight:bold;font-size:14px;margin-bottom:12px;color:#00a1d6;letter-spacing:.3px;">' +
             '<b>键位设置</b>' +
             '<span style="flex:1;"></span>' +
             '<button id="bili-review-key-reset" style="font-size:11px;font-weight:normal;color:' + mutedC + ';background:transparent;border:1px solid ' + borderC + ';border-radius:6px;padding:2px 9px;cursor:pointer;transition:all .15s;">恢复默认</button>' +
             '</div>' +
+            '<div style="font-size:11px;line-height:1.5;color:' + mutedC + ';margin:-2px 0 10px;padding:6px 8px;background:' + (dark ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.6)') + ';border:1px solid ' + borderC + ';border-radius:8px;">点击卡片后按任意键即可自定义</div>' +
+            '<div style="display:flex;flex-direction:column;gap:8px;">' +
             keyRow('下载当前图', keyName(keys.download), 'download') +
             keyRow('下一张', keyName(keys.next), 'next') +
             keyRow('上一张', keyName(keys.prev), 'prev') +
             keyRow('退出审查', keyName(keys.exit), 'exit') +
             keyRow('滚轮翻页', '↕') +
+            '</div>' +
+            '<div style="margin-top:12px;padding:12px 12px 10px;border-top:1px solid ' + borderC + ';font-size:12px;color:' + mutedC + ';line-height:1.9;">' +
+            '<div style="font-weight:bold;color:' + (dark ? '#e6e6e6' : '#333') + ';margin-bottom:4px;">📋 审查模式说明</div>' +
+            '<div>· 单张预览，满意后再下载</div>' +
+            '<div>· 按 <kbd id="bili-review-mode-dl-key" style="display:inline-block;min-width:26px;text-align:center;padding:1px 7px;border-radius:5px;background:' + (dark ? 'rgba(255,255,255,0.06)' : '#fff') + ';border:1px solid ' + borderC + ';color:#00a1d6;font-weight:bold;font-size:11px;">' + keyName(keys.download) + '</kbd> 保存当前这张</div>' +
+            '<div>· 已下载的图标记 ✅</div>' +
+            '<div>· 「全部下载」一键保存全部</div>' +
+            '</div>' +
             '<div style="margin-top:auto;padding:10px 12px;background:' + (dark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.8)') + ';border:1px solid ' + borderC + ';border-radius:9px;font-size:12px;color:' + mutedC + ';">' +
             '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span>下载进度</span><span><b id="bili-review-dl-count" style="color:#00a1d6;">0</b> / ' + urls.length + '</span></div>' +
             '<div style="height:6px;background:' + (dark ? '#2c3038' : '#e3e6ec') + ';border-radius:3px;overflow:hidden;"><div id="bili-review-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#00a1d6,#00b3e6);border-radius:3px;transition:width .3s;"></div></div>' +
@@ -878,6 +888,8 @@
                 const cap = row.querySelector('.bili-review-keycap');
                 if(cap) cap.textContent = keyName(keys[which]);
             });
+            const modeDlKey = panel.querySelector('#bili-review-mode-dl-key');
+            if(modeDlKey) modeDlKey.textContent = keyName(keys.download);
         };
 
         panel.querySelectorAll('.bili-review-key').forEach(row => {
