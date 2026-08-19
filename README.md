@@ -5,7 +5,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-0.9.11-00a1d6)
+![Version](https://img.shields.io/badge/version-0.9.12-00a1d6)
 ![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-orange)
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
