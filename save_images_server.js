@@ -146,6 +146,30 @@ async function saveBase64File(file, index){
     return outPath;
 }
 
+function imageExistsOnDisk(rawUrl){
+    try{
+        const url = normalizeImageUrl(rawUrl);
+        const variants = [url];
+        const jpgVariant = getWebpToJpgVariant(url);
+        if(jpgVariant && jpgVariant !== url) variants.unshift(jpgVariant);
+        for(const candidate of variants){
+            const ext = extensionFromUrl(candidate) || '.jpg';
+            let base = '';
+            try{
+                base = path.basename(new URL(candidate).pathname).split('@')[0];
+            }catch(e){}
+            base = sanitizeFilename(base);
+            if(!base || base === '.' || base === '..') continue;
+            if(!path.extname(base)) base += ext;
+            const outPath = path.join(OUT_DIR, base);
+            if(fs.existsSync(outPath) && fs.statSync(outPath).size > 0){
+                return true;
+            }
+        }
+    }catch(e){}
+    return false;
+}
+
 async function tryDownloadFile(rawUrl, index, opts){
     const url = normalizeImageUrl(rawUrl);
     const variants = [url];
@@ -298,6 +322,26 @@ const server = http.createServer((req, res) => {
     if(req.method === 'OPTIONS'){
         res.writeHead(204);
         res.end();
+        return;
+    }
+
+    if(req.method === 'POST' && req.url === '/check'){
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            let payload;
+            try{
+                payload = JSON.parse(body);
+            }catch(e){
+                res.writeHead(400, {'Content-Type': 'application/json'});
+                res.end(JSON.stringify({ ok:false, error:'invalid json' }));
+                return;
+            }
+            const rawUrls = Array.isArray(payload.urls) ? payload.urls : [];
+            const results = rawUrls.map(u => ({ url: u, exists: imageExistsOnDisk(u) }));
+            res.writeHead(200, {'Content-Type':'application/json'});
+            res.end(JSON.stringify({ ok:true, results }));
+        });
         return;
     }
 
