@@ -2,7 +2,7 @@
 // @name         哔哩哔哩 收藏夹/动态/作品 原图自动下载（B站二次元图片批量保存）
 // @name:en      Bilibili Auto-Download Original Images
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.4
+// @version      0.9.5
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -42,7 +42,8 @@
         intervalMs: 0,
         timeoutMs: 30000,
         maxDownload: 0,
-        dedupe: true
+        dedupe: true,
+        downloadMode: 'auto'
     };
 
     function loadSettings(){
@@ -587,6 +588,137 @@
         });
     }
 
+    function extractUpInfo(){
+        let upName = '';
+        let upText = '';
+        const st = window.__INITIAL_STATE__;
+        if(st){
+            if(st.user && st.user.name) upName = st.user.name;
+            if(st.videoData && st.videoData.owner && st.videoData.owner.name) upName = st.videoData.owner.name;
+        }
+        if(!upName){
+            const el = document.querySelector('.up-name, .username, [class*="up-name"], [class*="username"], [class*="author__name"], [class*="author-name"], [class*="dyn-name"], a[href*="space.bilibili.com"] [class*="name"]');
+            if(el) upName = (el.textContent || '').trim();
+        }
+        const txtEl = document.querySelector('.bili-dyn-content, .dyn-content, [class*="dyn-content"], .opus-detail__content, [class*="post-content"], .desc-info, .video-desc, .opus-module-title__content, [class*="module-title__content"], [class*="module-title__text"]');
+        if(txtEl) upText = (txtEl.textContent || '').trim().slice(0, 500);
+        return { upName: upName || '未知UP主', upText };
+    }
+
+    function openReviewPanel(urls, onDone){
+        const existing = document.getElementById('bili-review-panel');
+        if(existing) existing.remove();
+        const dark = (loadTheme() === 'dark');
+        const panel = document.createElement('div');
+        panel.id = 'bili-review-panel';
+        Object.assign(panel.style, {
+            position:'fixed', inset:'0', zIndex:9999998,
+            background: dark ? 'rgba(30,30,30,0.96)' : 'rgba(250,250,250,0.96)',
+            display:'flex', alignItems:'stretch',
+            color: dark ? '#e6e6e6' : '#222', fontSize:'14px'
+        });
+        const upInfo = extractUpInfo();
+        panel.innerHTML =
+            '<div id="bili-review-left" style="width:220px;padding:20px;border-right:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';overflow:auto;">' +
+            '<div style="font-weight:bold;font-size:15px;margin-bottom:12px;">📖 使用教程</div>' +
+            '<div style="line-height:2;font-size:13px;">' +
+            '<div>⏬ <b>方向下键 ↓</b>：下载当前图</div>' +
+            '<div>⬅️➡️ <b>方向左右键</b>：翻页切换图片</div>' +
+            '<div>🖱️ 鼠标滚轮：翻页</div>' +
+            '<div>🚪 <b>Esc</b>：退出审查</div>' +
+            '<div style="margin-top:10px;color:' + (dark ? '#999' : '#888') + ';">当前已下载 <b id="bili-review-dl-count" style="color:#00a1d6;">0</b> 张</div>' +
+            '</div>' +
+            '</div>' +
+            '<div id="bili-review-center" style="flex:1;display:flex;flexDirection:column;alignItems:center;justifyContent:center;padding:16px;">' +
+            '<div id="bili-review-progress" style="margin-bottom:10px;color:' + (dark ? '#999' : '#888') + ';font-size:13px;"></div>' +
+            '<div style="max-width:min(70vw,900px);max-height:70vh;display:flex;alignItems:center;justifyContent:center;overflow:hidden;background:' + (dark ? '#000' : '#fff') + ';border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,0.25);">' +
+            '<img id="bili-review-img" src="" alt="预览" style="max-width:100%;max-height:70vh;object-fit:contain;display:block;">' +
+            '</div>' +
+            '<div style="margin-top:12px;font-size:13px;color:' + (dark ? '#ccc' : '#555') + ';">↓ 下载当前 · ← → 翻页 · Esc 退出</div>' +
+            '</div>' +
+            '<div id="bili-review-right" style="width:260px;padding:20px;border-left:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';overflow:auto;">' +
+            '<div style="font-weight:bold;font-size:15px;margin-bottom:10px;">👤 ' + upInfo.upName.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])) + '</div>' +
+            '<div style="line-height:1.8;font-size:13px;color:' + (dark ? '#ccc' : '#555') + ';white-space:pre-wrap;word-break:break-word;">' + (upInfo.upText ? upInfo.upText.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])) : '（未获取到动态文案）') + '</div>' +
+            '<div style="margin-top:14px;padding-top:12px;border-top:1px solid ' + (dark ? '#3a3a3a' : '#e0e0e0') + ';font-size:12px;color:' + (dark ? '#999' : '#888') + ';line-height:1.7;">' +
+            '<button id="bili-review-dl-all" style="width:100%;padding:8px 0;border:none;background:#00a1d6;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;margin-bottom:8px;">⬇️ 全部下载</button>' +
+            '<button id="bili-review-close" style="width:100%;padding:8px 0;border:1px solid ' + (dark ? '#555' : '#ccc') + ';background:transparent;color:' + (dark ? '#e6e6e6' : '#222') + ';border-radius:6px;cursor:pointer;font-size:13px;">退出审查</button>' +
+            '</div>' +
+            '</div>';
+        document.body.appendChild(panel);
+
+        let index = 0;
+        let downloaded = new Set();
+        const imgEl = panel.querySelector('#bili-review-img');
+        const progressEl = panel.querySelector('#bili-review-progress');
+        const countEl = panel.querySelector('#bili-review-dl-count');
+
+        const render = () => {
+            imgEl.src = urls[index];
+            progressEl.textContent = (index + 1) + ' / ' + urls.length + (downloaded.has(index) ? '  ✅已下载' : '');
+            countEl.textContent = downloaded.size;
+        };
+
+        const close = () => {
+            panel.remove();
+            document.removeEventListener('keydown', onKey);
+            if(onDone) onDone(downloaded.size);
+        };
+
+        const dlCurrent = async () => {
+            if(downloaded.has(index)){ showToast('这张已经下载过了'); return; }
+            showToast('⬇️ 正在下载第 ' + (index + 1) + ' 张...');
+            const json = await sendUrlsToServer([urls[index]]);
+            if(json && json.results){
+                const c = countResults(json);
+                if(c.saved || c.exists){
+                    downloaded.add(index);
+                    countEl.textContent = downloaded.size;
+                    progressEl.textContent = (index + 1) + ' / ' + urls.length + '  ✅已下载';
+                    showToast('✅ 下载完成（新增 ' + c.saved + '，已存在 ' + c.exists + '）');
+                } else {
+                    showToast('❌ 下载失败，请检查本地服务');
+                }
+            }
+        };
+
+        const dlAll = async () => {
+            const remaining = urls.filter((u, i) => !downloaded.has(i));
+            if(!remaining.length){ showToast('全部已下载'); return; }
+            showProgress(`正在下载 ${remaining.length} 张...`, () => { stopFlag.stop = true; });
+            const json = await sendUrlsToServer(remaining);
+            if(json && json.results){
+                urls.forEach((u, i) => { if(!downloaded.has(i)) downloaded.add(i); });
+                countEl.textContent = downloaded.size;
+                const c = countResults(json);
+                showToast(`✅ 全部下载完成：新增 ${c.saved} 张，已存在 ${c.exists} 张，失败 ${c.failed} 张`);
+                showDonatePanel(c);
+                close();
+            }
+        };
+
+        function onKey(e){
+            if(e.key === 'ArrowDown'){ e.preventDefault(); dlCurrent(); }
+            else if(e.key === 'ArrowRight'){ e.preventDefault(); index = Math.min(urls.length - 1, index + 1); render(); }
+            else if(e.key === 'ArrowLeft'){ e.preventDefault(); index = Math.max(0, index - 1); render(); }
+            else if(e.key === 'Escape'){ e.preventDefault(); close(); }
+        }
+        document.addEventListener('keydown', onKey);
+
+        panel.addEventListener('wheel', (e) => {
+            if(e.deltaY > 0) index = Math.min(urls.length - 1, index + 1);
+            else index = Math.max(0, index - 1);
+            render();
+        }, { passive: true });
+
+        panel.querySelector('#bili-review-dl-all').addEventListener('click', dlAll);
+        panel.querySelector('#bili-review-close').addEventListener('click', close);
+        panel.addEventListener('click', (e) => {
+            if(e.target === panel) close();
+        });
+
+        render();
+    }
+
     async function collectAndSave(){
         stopFlag.stop = false;
         const pageUrls = new Set(extractUrlsFromDoc(document));
@@ -594,7 +726,6 @@
         textUrls.forEach(u => pageUrls.add(u));
         const jsonUrls = extractUrlsFromJsonText(document.documentElement.innerHTML);
         jsonUrls.forEach(u => pageUrls.add(u));
-
                                         
                                               
         const info = detectPageType();
@@ -653,6 +784,18 @@
 
         showProgress(`正在下载 ${urls.length} 张原图到本地...`, () => { stopFlag.stop = true; });
         window.__biliRetryCount = 0;
+        if(settings.downloadMode === 'review'){
+            const statusEl = document.getElementById('bili-save-status');
+            if(statusEl) statusEl.style.display = 'none';
+            openReviewPanel(urls, (downloadedCount) => {
+                if(downloadedCount > 0){
+                    showToast('审查结束，共下载 ' + downloadedCount + ' 张');
+                } else {
+                    showToast('已退出审查（未下载）');
+                }
+            });
+            return;
+        }
         const json = await sendUrlsToServer(urls, settings);
         if(json && json.results){
             const c = countResults(json);
@@ -737,6 +880,15 @@
             '<div style="display:flex;align-items:center;gap:8px;margin:6px 0;">' +
             '<label style="font-size:12px;color:var(--bili-save-fg);cursor:pointer;"><input type="checkbox" id="bili-dedupe-input"' + (s.dedupe ? ' checked' : '') + '> 查重 / Deduplicate</label>' +
             '</div>' +
+            '<div style="' + labelStyle + '">图片下载模式 / Download mode</div>' +
+            '<div style="display:flex;gap:14px;margin-bottom:8px;">' +
+            '<label style="font-size:12px;color:var(--bili-save-fg);cursor:pointer;"><input type="radio" name="bili-mode" value="auto"' + (s.downloadMode !== 'review' ? ' checked' : '') + '> 自动下载 / Auto</label>' +
+            '<label style="font-size:12px;color:var(--bili-save-fg);cursor:pointer;"><input type="radio" name="bili-mode" value="review"' + (s.downloadMode === 'review' ? ' checked' : '') + '> 审查模式 / Review</label>' +
+            '</div>' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
+            '<button id="bili-donate-btn" style="padding:6px 14px;border:1px solid #ffd700;background:#fff8e1;color:#8a6d00;border-radius:6px;cursor:pointer;font-size:13px;">☕ 赞助作者 / Donate</button>' +
+            '<span style="flex:1;"></span>' +
+            '</div>' +
             '<div style="text-align:right;">' +
             '<button id="bili-dir-cancel" style="margin-right:8px;padding:6px 14px;border:1px solid var(--bili-save-border);background:var(--bili-save-bg);color:var(--bili-save-fg);border-radius:6px;cursor:pointer;font-size:13px;">取消 / Cancel</button>' +
             '<button id="bili-dir-ok" style="padding:6px 16px;border:none;background:#00a1d6;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;">保存 / Save</button>' +
@@ -744,6 +896,7 @@
         document.body.appendChild(panel);
         const input = panel.querySelector('#bili-dir-input');
         const curEl = panel.querySelector('#bili-dir-current');
+        panel.querySelector('#bili-donate-btn').addEventListener('click', () => { showDonatePanel(null); });
         getSaveDir().then(info => {
             curEl.textContent = '当前 / Current: ' + ((info && info.dir) || '未连接本地服务 / server not running');
         });
@@ -758,7 +911,9 @@
             const timeoutMs = Math.max(5000, parseInt(panel.querySelector('#bili-timeout-input').value, 10) || 30000);
             const maxDownload = Math.max(0, parseInt(panel.querySelector('#bili-max-input').value, 10) || 0);
             const dedupe = panel.querySelector('#bili-dedupe-input').checked;
-            const ns = { saveDir: dir, intervalMs, timeoutMs, maxDownload, dedupe };
+            const modeRadio = panel.querySelector('input[name="bili-mode"]:checked');
+            const downloadMode = modeRadio ? modeRadio.value : 'auto';
+            const ns = { saveDir: dir, intervalMs, timeoutMs, maxDownload, dedupe, downloadMode };
             saveSettings(ns);
             if(dir){
                 const info = await setSaveDir(dir);
@@ -1037,6 +1192,7 @@
                         + (merged ? '（含合并 mp4 ' + merged + ' 个）' : '')
                         + (separate ? '，音画分开保存 ' + separate + ' 个' : '')
                         + '，失败 ' + failed + ' 个\n保存目录：videos/');
+                    if(saved > 0) showDonatePanel({ saved: saved, exists: 0, failed: failed });
                 }
             }catch(err){
                 showToast('❌ 视频下载失败：\n' + err.message + '\n请先双击「一键启动.bat」启动本地服务');
