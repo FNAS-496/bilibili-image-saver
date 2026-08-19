@@ -2,7 +2,7 @@
 // @name         哔哩哔哩 收藏夹/动态/作品 原图自动下载（B站二次元图片批量保存）
 // @name:en      Bilibili Auto-Download Original Images
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.3
+// @version      0.9.4
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -809,19 +809,9 @@
     function collectVideoItems(){
         const items = [];
         if(/\/video\/(BV[0-9A-Za-z]+|av\d+)/i.test(location.pathname)){
-            const st = window.__INITIAL_STATE__;
-            if(st && st.videoData){
-                const vd = st.videoData;
-                const bvid = vd.bvid || getVideoBvidFromUrl();
-                const pages = (vd.pages && vd.pages.length) ? vd.pages : [{ cid: vd.cid, page: 1, part: vd.title, duration: vd.duration }];
-                pages.forEach(p => {
-                    items.push({
-                        bvid,
-                        cid: p.cid,
-                        title: pages.length > 1 ? ('P' + p.page + ' ' + (p.part || '')) : (p.part || vd.title || ''),
-                        duration: p.duration || vd.duration || null
-                    });
-                });
+            const bvid = getVideoBvidFromUrl();
+            if(bvid){
+                items.push({ bvid, cid: null, title: '视频 ' + bvid, duration: null, useApiTitle: true });
             }
             return items;
         }
@@ -851,7 +841,10 @@
             const j = JSON.parse(text);
             if(j && j.code === 0 && j.data){
                 const d = j.data;
-                return { cid: d.cid, duration: d.duration, title: d.title };
+                const pages = Array.isArray(d.pages) && d.pages.length
+                    ? d.pages.map(p => ({ cid: p.cid, page: p.page, part: p.part, duration: p.duration }))
+                    : [{ cid: d.cid, page: 1, part: d.title, duration: d.duration }];
+                return { cid: d.cid, duration: d.duration, title: d.title, pages };
             }
         }catch(e){}
         return null;
@@ -981,7 +974,26 @@
                     const i = done++;
                     const it = need[i];
                     const v = await fetchViewCid(it.bvid);
-                    if(v){ it.cid = v.cid; if(!it.duration) it.duration = v.duration; if(it.useApiTitle || !it.title) it.title = v.title; }
+                    if(v){
+                        if(v.pages && v.pages.length > 1){
+                            const expanded = v.pages.map(p => ({
+                                bvid: it.bvid,
+                                cid: p.cid,
+                                title: 'P' + p.page + ' ' + (p.part || ''),
+                                duration: p.duration || null,
+                                useApiTitle: true
+                            }));
+                            state.items.splice(state.items.indexOf(it), 1, ...expanded);
+                        } else {
+                            it.cid = v.cid;
+                            if(!it.duration) it.duration = v.duration;
+                            it.title = v.title || it.title;
+                        }
+                    } else {
+                        it.error = true;
+                    }
+                    const span = hintEl; if(span) span.textContent = '获取视频信息 ' + Math.min(done, need.length) + '/' + need.length + ' ...';
+                    render();
                 }
             }
             await Promise.all(Array.from({ length: Math.min(CHILD_CONCURRENCY, need.length) }, () => worker()));
