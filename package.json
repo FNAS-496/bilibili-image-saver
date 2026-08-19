@@ -1,6 +1,6 @@
 {
   "name": "bilibili-plus",
-  "version": "0.9.14",
+  "version": "0.9.15",
   "engines": {
     "node": ">=18"
   },
