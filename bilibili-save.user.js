@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.15
+// @version      0.9.16
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -737,7 +737,7 @@
             keyRow('下一张', keyName(keys.next), 'next') +
             keyRow('上一张', keyName(keys.prev), 'prev') +
             keyRow('退出审查', keyName(keys.exit), 'exit') +
-            '</div>' + +
+            '</div>' +
             '<div style="margin-top:12px;padding:12px 12px 10px;border-top:1px solid ' + borderC + ';font-size:12px;color:' + mutedC + ';line-height:1.9;">' +
             '<div style="font-weight:bold;color:' + (dark ? '#e6e6e6' : '#333') + ';margin-bottom:4px;">📋 审查模式说明</div>' +
             '<div>· 单张预览，满意后再下载</div>' +
