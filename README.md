@@ -5,7 +5,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-0.9.2-00a1d6)
+![Version](https://img.shields.io/badge/version-0.9.3-00a1d6)
 ![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-orange)
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -48,7 +48,7 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 |---|---|
 | `bilibili-save.user.js` | 浏览器用户脚本（Tampermonkey 等），负责提取原图链接 |
 | `save_images_server.js` | 本地 Node.js 服务，负责把图片下载到硬盘 |
-| `一键保存.bat` | 一键启动本地服务并打开浏览器（Windows） |
+| `一键启动.bat` | 一键启动本地服务并打开浏览器（Windows） |
 
 > 为什么需要本地服务？因为浏览器出于安全限制，无法直接把文件写入你电脑的任意文件夹。所以由浏览器提取链接 → 本地服务下载写盘。
 
@@ -67,6 +67,7 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 - ✅ **智能去重**：同一张图只下载一次，不会重复占用空间
 - ✅ **进度提示**：页面右下角浮窗实时显示进度，可随时「停止」
 - ✅ **多页类型**：支持收藏夹、动态列表、动态详情、作品 (opus) 页
+- ✅ **视频批量下载**：右下角「📹 视频下载」按钮，支持收藏夹视频、播放页分 P 列表的**多选批量下载**，并**列出每个视频的大小**
 - ✅ **自定义目录**：页面内「⚙️ 保存位置」窗口自由指定保存位置
 - ✅ **打赏面板**：下载成功后自动弹出提示，显示作者、GitHub、邮箱与微信收款码
 - ✅ **多浏览器**：Chrome / Edge / Firefox / Safari / Opera 等均可使用
@@ -96,10 +97,8 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 .
 ├── bilibili-save.user.js      # 浏览器用户脚本（Tampermonkey 等）—— 提取原图链接
 ├── save_images_server.js      # 本地 Node.js 保存服务 —— 下载图片并写盘
-├── 一键部署.bat                # ★ 自包含部署包：双击自动释放组件+启动服务+打开脚本安装
-├── 一键保存.bat                # Windows 一键启动（中文界面）
+├── 一键启动.bat                # Windows 一键启动（中文界面）
 ├── start_server.bat           # Windows 一键启动（English UI）
-├── build_deploy.js            # 打包工具：重新生成 一键部署.bat（node build_deploy.js）
 ├── watermark/                 # 收款码源图（wechat_qr.jpg，已内嵌进 user.js）
 ├── README.md                  # 本说明文档（中英双语）
 ├── LICENSE                    # CC BY-NC-SA 4.0 许可协议
@@ -112,14 +111,12 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 
 ## 🚀 快速上手 / Quick Start
 
-只需**一个文件**，之后每次使用也只要一步：
+只需**两个文件**，之后每次使用也只要一步：
 
-1. **双击 `一键部署.bat`** —— 它会自动完成：检查 Node.js → 释放内置的用户脚本与服务文件 → 启动本地服务 → 打开浏览器脚本安装页
-2. 在浏览器弹出的页面里点「安装」，然后打开 B 站收藏夹 / 动态 / 作品页即可
+1. **双击 `一键启动.bat`** —— 它会自动完成：检查 Node.js → 启动本地服务 → 打开浏览器
+2. 在浏览器打开 B 站收藏夹 / 动态 / 作品页，页面右下角会自动开始保存原图
 
-> 💡 `一键部署.bat` 是**自包含**的（已内置全部组件），复制到任何电脑、任何目录双击都能部署，无需额外文件。
-
-> 详细步骤见下文「详细安装指南」。
+> 💡 详细步骤见下文「详细安装指南」。
 
 ---
 
@@ -133,13 +130,12 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 ### 第 2 步：安装浏览器脚本（仅第一次）
 
 1. 安装 Tampermonkey 插件（见上表链接），浏览器右上角会出现它的图标。
-2. 双击 `一键部署.bat` 会自动打开脚本安装页；确认 Tampermonkey 弹出「安装」后点安装即可。
-   > 若未自动弹出安装页：打开 Tampermonkey 管理面板 → 设置 → 勾选「**允许访问文件网址**」，然后重新运行 `一键部署.bat`。
-   > 也可以手动导入：Tampermonkey 管理面板 → 「添加新脚本」→ 全选删除后粘贴 `bilibili-save.user.js` 的全部内容，`Ctrl+S` 保存。
+2. 手动导入脚本：Tampermonkey 管理面板 → 「添加新脚本」→ 全选删除后粘贴 `bilibili-save.user.js` 的全部内容，`Ctrl+S` 保存。
+   > 也可以直接双击 `bilibili-save.user.js` 文件，Tampermonkey 会弹出「安装」确认（需先开启「允许访问文件网址」：Tampermonkey 管理面板 → 设置 → 勾选）。
 
 ### 第 3 步：启动本地保存服务（每次使用前）
 
-- **Windows**：双击 `一键部署.bat`（推荐，自动完成检查、释放文件、启动服务、打开安装页）或 `一键保存.bat`；它们会自动检测并启动服务、打开浏览器。
+- **Windows**：双击 `一键启动.bat`（自动检测并启动服务、打开浏览器）。
 - **macOS / Linux**：打开终端，进入项目目录后运行：
   ```bash
   node save_images_server.js
@@ -178,6 +174,14 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 - 空间首页、视频页、番剧页等 → 不自动运行（不影响正常浏览），仍可随时点击右下角按钮手动保存
 - 动态列表会提示该空间是「你的空间」还是「他人空间」（他人空间仅能保存公开内容）
 
+**视频批量下载**：点击页面右下角「📹 视频下载」按钮，弹出视频列表面板：
+- 自动识别**收藏夹页**与**视频播放页**（含分 P 列表）中的视频
+- 面板会**自动获取每个视频的大小与画质**（无需手动操作）
+- 勾选要下载的视频 → 点「下载选中」即可批量下载到本地 `videos/` 目录
+- 检测到 ffmpeg 时自动把视频流+音频流**合并为带声音的 mp4**；未安装 ffmpeg 则音画分开保存（`.video.mp4` + `.audio.m4a`）
+
+> 需要合并成带声音的 mp4？请安装 [FFmpeg](https://ffmpeg.org) 并加入系统 PATH，或把 `ffmpeg.exe` 放到项目目录的 `ffmpeg\` 子目录（无需环境直接安装版已内置 `ffmpeg\ffmpeg.exe`）。
+
 ---
 
 ## 💳 收款码 / Donate QR
@@ -207,8 +211,8 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 2. 在弹出的窗口中输入保存目录（例如 `D:\bilibili_pics`），点「保存」。
 3. 首次使用本脚本时，该设置窗口会自动弹出一次。
 
-### 方式 B：修改 `一键保存.bat`（Windows）
-用记事本打开 `一键保存.bat`，找到文件顶部的这一行：
+### 方式 B：修改 `一键启动.bat`（Windows）
+用记事本打开 `一键启动.bat`，找到文件顶部的这一行：
 
 ```bat
 set "SAVE_DIR="
@@ -232,20 +236,20 @@ node save_images_server.js "/Users/me/Pictures/bili"
 BILI_SAVE_DIR="/Users/me/Pictures/bili" node save_images_server.js
 ```
 
-> 说明：页面内设置（方式 A）即时生效并**自动记忆**（重启服务后仍然有效）；`一键保存.bat` 与命令行在服务**启动时**设定目录。优先级：环境变量 / 命令行参数 > 页面内设置（持久化）> 默认 `bilibili_images`。
+> 说明：页面内设置（方式 A）即时生效并**自动记忆**（重启服务后仍然有效）；`一键启动.bat` 与命令行在服务**启动时**设定目录。优先级：环境变量 / 命令行参数 > 页面内设置（持久化）> 默认 `bilibili_images`。
 
 ---
 
 ## ❓ 常见问题 / FAQ
 
 **Q: 提示「未连接本地保存服务」怎么办？**
-A: 说明本地服务没启动。Windows 双击 `一键部署.bat`（或 `一键保存.bat`）；macOS/Linux 运行 `node save_images_server.js`，然后**刷新** B 站页面。
+A: 说明本地服务没启动。Windows 双击 `一键启动.bat`；macOS/Linux 运行 `node save_images_server.js`，然后**刷新** B 站页面。
 
 **Q: 如何更新脚本到新版本？**
-A: 重新运行一次 `一键部署.bat` 即可（它会用内置的最新版覆盖旧文件），或手动重新导入 `bilibili-save.user.js`。
+A: 手动重新导入 `bilibili-save.user.js`（覆盖安装即可），然后**刷新** B 站页面。
 
 **Q: 图片保存在哪里？**
-A: 默认在项目目录的 `bilibili_images/`；可在 `一键保存.bat` 顶部或命令行指定其他目录（见上节）。
+A: 默认在项目目录的 `bilibili_images/`；可在 `一键启动.bat` 顶部或命令行指定其他目录（见上节）。
 
 **Q: 有些图片下载失败（显示失败 N 张）？**
 A: 多为需要登录 Cookie 才能访问的图片（如私密收藏夹、部分作者的图）。这是 B 站权限限制，本地服务无法绕过。
@@ -266,6 +270,7 @@ A: 脚本匹配的是电脑端网页（`www.bilibili.com`、`t.bilibili.com`、`
 - 浏览器端通过 `GM_xmlhttpRequest` 跨域抓取子页面并解析 `\u002F` 转义、`@` 缩略参数，得到原图 URL。
 - 本地服务监听 **127.0.0.1:8765**（仅本机可访问，不暴露到局域网），通过 Referer + User-Agent 模拟浏览器下载，并校验返回的 Content-Type，避免把风控/错误页存成图片。
 - 下载并发数默认 8（服务器 `CONCURRENCY`），抓取子页并发数默认 6（脚本 `CHILD_CONCURRENCY`）。
+- 视频下载：脚本调用 B 站 `playurl` API 获取 DASH 视频/音频流与大小，发送给本地服务 `/video/save` 下载；检测到 ffmpeg 时自动合并为 mp4（优先查找项目目录 `ffmpeg\ffmpeg.exe`，其次系统 PATH），否则音画分开保存。视频并发默认 2。
 
 ---
 

@@ -6,6 +6,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
 
                                                                  
 const QR_DIR = path.join(__dirname, 'watermark');
@@ -40,6 +41,11 @@ let OUT_DIR = (process.env.BILI_SAVE_DIR && process.env.BILI_SAVE_DIR.trim())
         return path.join(__dirname, 'bilibili_images');
     })());
 if(!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
+
+const VIDEO_DIR = path.join(OUT_DIR, 'videos');
+if(!fs.existsSync(VIDEO_DIR)) fs.mkdirSync(VIDEO_DIR, { recursive: true });
+
+let VIDEO_OUT_DIR = VIDEO_DIR;
 
 function extensionFromUrl(u){
     try{
@@ -101,9 +107,9 @@ function normalizeImageUrl(url){
     }
 }
 
-async function downloadToFile(fileUrl, destPath){
+async function downloadToFile(fileUrl, destPath, timeoutMs){
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs || 30000);
     try {
         const res = await fetch(fileUrl, {
             headers: getRequestHeaders(),
@@ -140,11 +146,13 @@ async function saveBase64File(file, index){
     return outPath;
 }
 
-async function tryDownloadFile(rawUrl, index){
+async function tryDownloadFile(rawUrl, index, opts){
     const url = normalizeImageUrl(rawUrl);
     const variants = [url];
     const jpgVariant = getWebpToJpgVariant(url);
     if(jpgVariant && jpgVariant !== url) variants.unshift(jpgVariant);
+    const timeoutMs = (opts && opts.timeout) || 30000;
+    const dedupe = (opts && opts.dedupe != null) ? opts.dedupe : true;
 
     let lastError;
     for(let attempt = 0; attempt < 2; attempt++){
@@ -159,10 +167,10 @@ async function tryDownloadFile(rawUrl, index){
                 if(!base || base === '.' || base === '..') base = `image_${index}`;
                 if(!path.extname(base)) base += ext;
                 const outPath = path.join(OUT_DIR, base);
-                if(fs.existsSync(outPath) && fs.statSync(outPath).size > 0){
+                if(dedupe && fs.existsSync(outPath) && fs.statSync(outPath).size > 0){
                     return { url: candidate, saved: outPath, exists: true };
                 }
-                const result = await downloadToFile(candidate, outPath);
+                const result = await downloadToFile(candidate, outPath, timeoutMs);
                 return { url: candidate, saved: outPath, contentType: result.contentType };
             }catch(err){
                 lastError = err;
@@ -171,6 +179,106 @@ async function tryDownloadFile(rawUrl, index){
         }
     }
     throw lastError || new Error('Download failed');
+}
+
+async function downloadVideoToFile(fileUrl, destPath, timeoutMs){
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs || 600000);
+    try {
+        const res = await fetch(fileUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.bilibili.com/'
+            },
+            redirect: 'follow',
+            signal: controller.signal,
+        });
+        if(!res.ok){
+            throw new Error('Status ' + res.status + ' ' + res.statusText);
+        }
+        const contentType = res.headers.get('content-type') || '';
+        if(contentType.includes('text/html')){
+            throw new Error('Server returned text/html instead of video (blocked / risk page)');
+        }
+        const buffer = Buffer.from(await res.arrayBuffer());
+        await fs.promises.writeFile(destPath, buffer);
+        return buffer.length;
+    } catch(err){
+        if(err.name === 'AbortError'){
+            throw new Error('timeout');
+        }
+        throw err;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+function resolveFfmpeg(){
+    const candidates = [
+        path.join(__dirname, 'ffmpeg', 'ffmpeg.exe'),
+        path.join(__dirname, 'ffmpeg', 'bin', 'ffmpeg.exe'),
+    ];
+    for(const c of candidates){
+        if(fs.existsSync(c)) return c;
+    }
+    return 'ffmpeg';
+}
+
+function ffmpegAvailable(){
+    return new Promise(resolve => {
+        execFile(resolveFfmpeg(), ['-version'], { timeout: 5000 }, (err) => resolve(!err));
+    });
+}
+
+function mergeWithFfmpeg(videoPath, audioPath, outPath){
+    return new Promise((resolve, reject) => {
+        execFile(resolveFfmpeg(), ['-y', '-i', videoPath, '-i', audioPath, '-c', 'copy', outPath],
+            { timeout: 600000 }, (err) => err ? reject(err) : resolve());
+    });
+}
+
+async function saveVideo(item, index){
+    const title = sanitizeFilename(String(item.title || '').trim()) || `video_${index}`;
+    const base = title.length > 80 ? title.slice(0, 80) : title;
+    const outMp4 = path.join(VIDEO_OUT_DIR, base + '.mp4');
+    if(fs.existsSync(outMp4) && fs.statSync(outMp4).size > 0){
+        return { title: item.title, saved: outMp4, exists: true };
+    }
+
+    const videoUrl = String(item.videoUrl || item.url || '').trim();
+    if(!videoUrl){
+        throw new Error('no video url');
+    }
+    const audioUrl = item.audioUrl ? String(item.audioUrl).trim() : '';
+    const ext = (item.ext || 'mp4').replace(/^\./, '');
+
+    const tmpVideo = path.join(VIDEO_OUT_DIR, `.tmp_${Date.now()}_${index}_v.${ext}`);
+    const tmpAudio = path.join(VIDEO_OUT_DIR, `.tmp_${Date.now()}_${index}_a.m4a`);
+    try{
+        await downloadVideoToFile(videoUrl, tmpVideo);
+        if(audioUrl){
+            await downloadVideoToFile(audioUrl, tmpAudio);
+            if(await ffmpegAvailable()){
+                await mergeWithFfmpeg(tmpVideo, tmpAudio, outMp4);
+                try{ fs.unlinkSync(tmpVideo); }catch(e){}
+                try{ fs.unlinkSync(tmpAudio); }catch(e){}
+                return { title: item.title, saved: outMp4, merged: true };
+            } else {
+                const vOnly = path.join(VIDEO_OUT_DIR, base + '.video.' + ext);
+                const aOnly = path.join(VIDEO_OUT_DIR, base + '.audio.m4a');
+                fs.renameSync(tmpVideo, vOnly);
+                fs.renameSync(tmpAudio, aOnly);
+                return { title: item.title, saved: vOnly, exists: false, separate: true, audio: aOnly, note: 'ffmpeg 未找到，音画已分开保存' };
+            }
+        } else {
+            fs.renameSync(tmpVideo, outMp4);
+            return { title: item.title, saved: outMp4 };
+        }
+    } catch(err){
+        try{ if(fs.existsSync(tmpVideo)) fs.unlinkSync(tmpVideo); }catch(e){}
+        try{ if(fs.existsSync(tmpAudio)) fs.unlinkSync(tmpAudio); }catch(e){}
+        throw err;
+    }
 }
 
 const server = http.createServer((req, res) => {
@@ -234,6 +342,10 @@ const server = http.createServer((req, res) => {
                 res.end(JSON.stringify({ ok:false, error:'no urls or files provided' }));
                 return;
             }
+            const dlTimeout = Math.max(5000, parseInt(payload.timeout, 10) || 30000);
+            const dlDedupe = (payload.dedupe != null) ? !!payload.dedupe : true;
+            const dlInterval = Math.max(0, parseInt(payload.interval, 10) || 0);
+            const dlOpts = { timeout: dlTimeout, dedupe: dlDedupe };
 
                                                 
             const seen = new Set();
@@ -259,7 +371,7 @@ const server = http.createServer((req, res) => {
                     const i = idx++;
                     const u = urls[i];
                     try{
-                        const result = await tryDownloadFile(u, i + 1);
+                        const result = await tryDownloadFile(u, i + 1, dlOpts);
                         results.push(result);
                         if(result.exists) console.log('Exists (skip)', result.saved);
                         else console.log('Saved', result.url, '->', result.saved);
@@ -267,6 +379,7 @@ const server = http.createServer((req, res) => {
                         console.error('Failed', u, err.message);
                         results.push({ url: u, error: err.message });
                     }
+                    if(dlInterval > 0) await new Promise(r => setTimeout(r, dlInterval));
                 }
             }
             await Promise.all(Array.from({ length: concurrency }, () => worker()));
@@ -281,6 +394,52 @@ const server = http.createServer((req, res) => {
     }
 
                              
+    if(req.method === 'POST' && req.url === '/video/save'){
+        let body = '';
+        req.on('data', chunk => { body += chunk; if(body.length > 50 * 1024 * 1024){ req.destroy(); } });
+        req.on('end', async () => {
+            let payload;
+            try{ payload = JSON.parse(body); }catch(e){
+                res.writeHead(400, {'Content-Type':'application/json'});
+                res.end(JSON.stringify({ ok:false, error:'invalid json' }));
+                return;
+            }
+            const videos = Array.isArray(payload.videos) ? payload.videos : [];
+            if(!videos.length){
+                res.writeHead(400, {'Content-Type':'application/json'});
+                res.end(JSON.stringify({ ok:false, error:'no videos provided' }));
+                return;
+            }
+            const results = [];
+            let idx = 0;
+            const concurrency = Math.min(2, videos.length);
+            async function worker(){
+                while(idx < videos.length){
+                    const i = idx++;
+                    const v = videos[i];
+                    try{
+                        const result = await saveVideo(v, i + 1);
+                        results.push(result);
+                        if(result.exists) console.log('Video exists (skip)', result.saved);
+                        else if(result.separate) console.log('Video saved (separate streams)', result.saved, '+', result.audio);
+                        else console.log('Video saved', result.saved);
+                    }catch(err){
+                        console.error('Video failed', v && v.title, err.message);
+                        results.push({ title: v && v.title, error: err.message });
+                    }
+                }
+            }
+            await Promise.all(Array.from({ length: concurrency }, () => worker()));
+            const saved = results.filter(r => r.saved && !r.error && !r.exists && !r.separate).length;
+            const separate = results.filter(r => r.separate).length;
+            const exists = results.filter(r => r.exists).length;
+            const failed = results.filter(r => r.error).length;
+            res.writeHead(200, {'Content-Type':'application/json'});
+            res.end(JSON.stringify({ ok:true, total: videos.length, saved, separate, exists, failed, results }));
+        });
+        return;
+    }
+
     if(req.method === 'POST' && req.url === '/setdir'){
         let body = '';
         req.on('data', c => body += c);
@@ -291,6 +450,8 @@ const server = http.createServer((req, res) => {
                 if(dir){
                     OUT_DIR = path.resolve(dir);
                     fs.mkdirSync(OUT_DIR, { recursive: true });
+                    VIDEO_OUT_DIR = path.join(OUT_DIR, 'videos');
+                    fs.mkdirSync(VIDEO_OUT_DIR, { recursive: true });
                     try{ fs.writeFileSync(DIR_FILE, OUT_DIR, 'utf8'); }catch(e){}
                     console.log('保存目录已更新为', OUT_DIR);
                     res.writeHead(200, {'Content-Type':'application/json'});
@@ -350,6 +511,17 @@ const server = http.createServer((req, res) => {
         const type = ext === '.png' ? 'image/png' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : ext === '.bmp' ? 'image/bmp' : 'image/jpeg';
         res.writeHead(200, {'Content-Type':type});
         res.end(fs.readFileSync(filePath));
+        return;
+    }
+
+    if(req.method === 'GET' && req.url === '/video/list'){
+        let videos = [];
+        try{
+            videos = fs.readdirSync(VIDEO_OUT_DIR).filter(n => /\.(mp4|m4s|flv)$/i.test(n) && fs.statSync(path.join(VIDEO_OUT_DIR, n)).isFile())
+                .map(n => ({ name: n, size: fs.statSync(path.join(VIDEO_OUT_DIR, n)).size }));
+        }catch(e){}
+        res.writeHead(200, {'Content-Type':'application/json'});
+        res.end(JSON.stringify({ ok:true, dir: VIDEO_OUT_DIR, videos }));
         return;
     }
 

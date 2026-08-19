@@ -13,6 +13,10 @@ watermark/
 # ---- Node.js ----
 node_modules/
 
+# ---- 无需环境直接安装版（含内置 node/ffmpeg 二进制，体积大不提交）----
+无需环境直接安装版/
+无需环境直接安装版.zip
+
 # ---- 临时 / 测试脚本 ----
 tmp_*.js
 _temp*
