@@ -1,11 +1,11 @@
-# 🎨 哔哩哔哩原图自动下载 / Bilibili Auto-Download Original Images
+# 🎨 Bilibili-Plus 哔哩哔哩增强 / Bilibili Enhancement Suite
 
-> 自动下载 B 站**收藏夹**、**动态**、**作品 (opus)** 中的**原图**到本地，打开页面即自动运行，无需任何操作。
-> Automatically download **original images** from Bilibili **favorites**, **dynamics** and **opus posts** to your computer — just open the page and it runs by itself.
+> B 站**原图 / 视频批量下载**增强工具：收藏夹、动态、作品 (opus) 原图一键保存，视频多 P 批量下载，审查模式 + 只看大图 + 自定义键位，日夜主题。
+> A Bilibili enhancement userscript + local server: batch-download **original images & videos**, review mode with fullscreen preview and custom hotkeys, light/dark themes.
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-0.9.7-00a1d6)
+![Version](https://img.shields.io/badge/version-0.9.8-00a1d6)
 ![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-orange)
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -46,8 +46,8 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 
 | 组件 / Component | 作用 / Role |
 |---|---|
-| `bilibili-save.user.js` | 浏览器用户脚本（Tampermonkey 等），负责提取原图链接 |
-| `save_images_server.js` | 本地 Node.js 服务，负责把图片下载到硬盘 |
+| `bilibili-save.user.js` | 浏览器用户脚本（Tampermonkey 等），负责提取原图/视频链接、审查模式 UI |
+| `save_images_server.js` | 本地 Node.js 服务，负责把图片/视频下载到硬盘（含 ffmpeg 合并） |
 | `一键启动.bat` | 一键启动本地服务并打开浏览器（Windows） |
 
 > 为什么需要本地服务？因为浏览器出于安全限制，无法直接把文件写入你电脑的任意文件夹。所以由浏览器提取链接 → 本地服务下载写盘。
@@ -68,6 +68,11 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 - ✅ **进度提示**：页面右下角浮窗实时显示进度，可随时「停止」
 - ✅ **多页类型**：支持收藏夹、动态列表、动态详情、作品 (opus) 页
 - ✅ **视频批量下载**：右下角「📹 视频下载」按钮，支持收藏夹视频、播放页分 P 列表的**多选批量下载**，并**列出每个视频的大小**
+- ✅ **审查模式**：逐张预览确认后再下载，支持点赞、全部下载、已下载标记
+- ✅ **只看大图**：一键隐藏左右侧栏，中央图片**占满整个屏幕**沉浸式看图
+- ✅ **自定义键位**：审查模式下的下一页 / 上一页 / 下载 / 退出快捷键**全部可在设置中自定义**
+- ✅ **日夜主题**：右下角一键切换**日间 / 夜间**主题
+- ✅ **Bilibili-Plus 根按钮**：所有小功能收纳在右下角「Bilibili-Plus」根按钮内，界面整洁
 - ✅ **自定义目录**：页面内「⚙️ 保存位置」窗口自由指定保存位置
 - ✅ **打赏面板**：下载成功后自动弹出提示，显示作者、GitHub、邮箱与微信收款码
 - ✅ **多浏览器**：Chrome / Edge / Firefox / Safari / Opera 等均可使用
