@@ -663,11 +663,11 @@
             '<div style="line-height:1.8;font-size:13px;color:' + (dark ? '#c6cad4' : '#4b5563') + ';white-space:pre-wrap;word-break:break-word;">' + (upInfo.upText ? esc(upInfo.upText) : '（未获取到动态文案）') + '</div>' +
             '<div style="margin-top:16px;padding-top:12px;border-top:1px solid ' + (dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)') + ';font-size:12px;line-height:1.9;">' +
             '<button id="bili-review-like" style="width:100%;padding:9px 0;border:1px solid #fb7299;background:transparent;color:#fb7299;border-radius:8px;cursor:pointer;font-size:13px;margin-bottom:8px;transition:background .15s;">👍 点赞</button>' +
-            '<button id="bili-review-full" style="width:100%;padding:9px 0;border:1px solid ' + (dark ? '#555' : '#ccc') + ';background:transparent;color:' + (dark ? '#e6e6e6' : '#222') + ';border-radius:8px;cursor:pointer;font-size:13px;margin-bottom:8px;">🔍 只看大图</button>' +
             '<button id="bili-review-dl-all" style="width:100%;padding:9px 0;border:none;background:#00a1d6;color:#fff;border-radius:8px;cursor:pointer;font-size:13px;margin-bottom:8px;">⬇️ 全部下载</button>' +
             '<button id="bili-review-close" style="width:100%;padding:9px 0;border:1px solid ' + (dark ? '#555' : '#ccc') + ';background:transparent;color:' + (dark ? '#e6e6e6' : '#222') + ';border-radius:8px;cursor:pointer;font-size:13px;">退出审查</button>' +
             '</div>' +
-            '</div>';
+            '</div>' +
+            '<button id="bili-review-full" style="position:absolute;top:12px;right:12px;z-index:3;padding:7px 14px;border:1px solid ' + (dark ? '#555' : '#ccc') + ';background:' + (dark ? 'rgba(40,42,50,0.92)' : 'rgba(255,255,255,0.92)') + ';color:' + (dark ? '#e6e6e6' : '#222') + ';border-radius:20px;cursor:pointer;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,0.18);">🔍 只看大图</button>';
         document.body.appendChild(panel);
 
         let index = 0;
