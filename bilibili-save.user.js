@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.9
+// @version      0.9.10
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -710,24 +710,36 @@
         const mutedC = dark ? '#9aa0ae' : '#6b7280';
         const subBg = dark ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.65)';
         const btnGhost = 'width:100%;padding:9px 0;border:1px solid ' + (dark ? '#4a4e5c' : '#d0d4dd') + ';background:transparent;color:' + (dark ? '#e6e6e6' : '#2a2f3a') + ';border-radius:9px;cursor:pointer;font-size:13px;margin-bottom:8px;transition:all .15s;';
+        const keycapC = 'display:inline-block;min-width:32px;text-align:center;padding:3px 9px;background:' + (dark ? '#3a3f4d' : '#eef0f4') + ';border:1px solid ' + (dark ? '#565b6b' : '#c9ced9') + ';border-bottom:3px solid ' + (dark ? '#565b6b' : '#b6bcc9') + ';border-radius:6px;font-size:12px;font-weight:bold;color:' + (dark ? '#e6e6e6' : '#333') + ';box-shadow:0 1px 0 rgba(0,0,0,0.12);';
+        const keyRowC = 'display:flex;align-items:center;gap:8px;padding:6px 10px;background:' + (dark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.7)') + ';border:1px solid ' + borderC + ';border-radius:9px;margin-bottom:7px;font-size:13px;color:' + (dark ? '#e6e6e6' : '#333') + ';';
+        const keyRow = (icon, label, k) =>
+            '<div style="' + keyRowC + '">' +
+            '<span style="flex:1;">' + icon + ' ' + label + '</span>' +
+            '<kbd style="' + keycapC + '">' + k + '</kbd>' +
+            '</div>';
         panel.innerHTML =
-            '<div id="bili-review-left" style="width:252px;padding:20px;border-right:1px solid ' + borderC + ';overflow:auto;display:flex;flexDirection:column;background:' + subBg + ';">' +
-            '<div style="font-weight:bold;font-size:14px;margin-bottom:10px;color:#00a1d6;letter-spacing:.3px;">⌨️ 键位设置 / Keys</div>' +
-            '<div style="line-height:2.2;font-size:13px;">' +
-            '<div>⏬ <b>' + keyName(keys.download) + '</b>：下载当前图</div>' +
-            '<div>➡️ <b>' + keyName(keys.next) + '</b>：下一张</div>' +
-            '<div>⬅️ <b>' + keyName(keys.prev) + '</b>：上一张</div>' +
-            '<div>🚪 <b>' + keyName(keys.exit) + '</b>：退出审查</div>' +
-            '<div>🖱️ 滚轮：翻页</div>' +
+            '<div id="bili-review-left" style="width:256px;padding:18px 16px;border-right:1px solid ' + borderC + ';overflow:auto;display:flex;flexDirection:column;background:' + subBg + ';">' +
+            '<div style="display:flex;align-items:center;gap:6px;font-weight:bold;font-size:14px;margin-bottom:12px;color:#00a1d6;letter-spacing:.3px;">' +
+            '<span>⌨️</span> 键位设置' +
+            '<span style="flex:1;"></span>' +
+            '<span style="font-size:10px;color:' + mutedC + ';font-weight:normal;">可在 ⚙️ 设置中自定义</span>' +
             '</div>' +
-            '<div style="margin-top:16px;padding-top:12px;border-top:1px solid ' + borderC + ';font-size:12px;color:' + mutedC + ';line-height:1.9;">' +
-            '<div style="font-weight:bold;margin-bottom:4px;color:' + (dark ? '#c6cad4' : '#4b5563') + ';">📋 审查模式说明</div>' +
-            '<div>· 全部图片都会显示，已下载的带 ✅ 标记</div>' +
-            '<div>· 按 ' + keyName(keys.download) + ' 保存当前这张</div>' +
-            '<div>· 「全部下载」一键保存剩余所有</div>' +
-            '<div>· 「只看大图」隐藏侧栏全屏看图</div>' +
+            keyRow('⏬', '下载当前图', keyName(keys.download)) +
+            keyRow('➡️', '下一张', keyName(keys.next)) +
+            keyRow('⬅️', '上一张', keyName(keys.prev)) +
+            keyRow('🚪', '退出审查', keyName(keys.exit)) +
+            keyRow('🖱️', '滚轮翻页', '↕') +
+            '<div style="margin-top:14px;padding:10px 12px;background:' + (dark ? 'rgba(0,161,214,0.08)' : 'rgba(0,161,214,0.06)') + ';border:1px solid ' + (dark ? 'rgba(0,161,214,0.25)' : 'rgba(0,161,214,0.2)') + ';border-radius:9px;font-size:12px;color:' + (dark ? '#c6cad4' : '#4b5563') + ';line-height:1.9;">' +
+            '<div style="font-weight:bold;margin-bottom:4px;color:#00a1d6;">📋 使用说明</div>' +
+            '<div>· 全部图片都会显示，已下载带 ✅</div>' +
+            '<div>· 按 ' + keyName(keys.download) + ' 保存当前张</div>' +
+            '<div>· 「全部下载」保存剩余</div>' +
+            '<div>· 「只看大图」全屏看图</div>' +
             '</div>' +
-            '<div style="margin-top:auto;padding-top:12px;border-top:1px solid ' + borderC + ';font-size:13px;color:' + mutedC + ';">共 <b style="color:#00a1d6;">' + urls.length + '</b> 张 · 已下载 <b id="bili-review-dl-count" style="color:#00a1d6;">0</b> 张</div>' +
+            '<div style="margin-top:auto;padding:10px 12px;background:' + (dark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.8)') + ';border:1px solid ' + borderC + ';border-radius:9px;font-size:12px;color:' + mutedC + ';">' +
+            '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span>下载进度</span><span><b id="bili-review-dl-count" style="color:#00a1d6;">0</b> / ' + urls.length + '</span></div>' +
+            '<div style="height:6px;background:' + (dark ? '#2c3038' : '#e3e6ec') + ';border-radius:3px;overflow:hidden;"><div id="bili-review-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#00a1d6,#00b3e6);border-radius:3px;transition:width .3s;"></div></div>' +
+            '</div>' +
             '</div>' +
             '<div id="bili-review-center" style="flex:1;display:flex;flexDirection:column;min-width:0;position:relative;overflow:hidden;">' +
             '<div id="bili-review-progress" style="position:absolute;top:14px;left:50%;transform:translateX(-50%);color:' + mutedC + ';font-size:13px;background:' + (dark ? 'rgba(24,26,32,0.75)' : 'rgba(255,255,255,0.8)') + ';padding:5px 16px;border-radius:20px;z-index:3;box-shadow:0 1px 6px rgba(0,0,0,0.12);white-space:nowrap;"></div>' +
@@ -763,6 +775,7 @@
         const imgEl = panel.querySelector('#bili-review-img');
         const progressEl = panel.querySelector('#bili-review-progress');
         const countEl = panel.querySelector('#bili-review-dl-count');
+        const barEl = panel.querySelector('#bili-review-bar');
         const leftEl = panel.querySelector('#bili-review-left');
         const rightEl = panel.querySelector('#bili-review-right');
         const fullBtn = panel.querySelector('#bili-review-full');
@@ -775,6 +788,7 @@
             imgEl.src = urls[index];
             progressEl.textContent = (index + 1) + ' / ' + urls.length + (downloaded.has(index) ? '  ✅ 已下载' : '');
             countEl.textContent = downloaded.size;
+            if(barEl) barEl.style.width = urls.length ? Math.round(downloaded.size / urls.length * 100) + '%' : '0%';
         };
 
         const close = () => {
