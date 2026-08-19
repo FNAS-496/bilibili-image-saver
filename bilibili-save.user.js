@@ -712,8 +712,8 @@
         const btnGhost = 'width:100%;padding:9px 0;border:1px solid ' + (dark ? '#4a4e5c' : '#d0d4dd') + ';background:transparent;color:' + (dark ? '#e6e6e6' : '#2a2f3a') + ';border-radius:9px;cursor:pointer;font-size:13px;margin-bottom:8px;transition:all .15s;';
         const keycapC = 'display:inline-block;min-width:32px;text-align:center;padding:3px 9px;background:' + (dark ? '#3a3f4d' : '#eef0f4') + ';border:1px solid ' + (dark ? '#565b6b' : '#c9ced9') + ';border-bottom:3px solid ' + (dark ? '#565b6b' : '#b6bcc9') + ';border-radius:6px;font-size:12px;font-weight:bold;color:' + (dark ? '#e6e6e6' : '#333') + ';box-shadow:0 1px 0 rgba(0,0,0,0.12);';
         const keyRowC = 'display:flex;align-items:center;gap:8px;padding:6px 10px;background:' + (dark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.7)') + ';border:1px solid ' + borderC + ';border-radius:9px;margin-bottom:7px;font-size:13px;color:' + (dark ? '#e6e6e6' : '#333') + ';';
-        const keyRow = (icon, label, k) =>
-            '<div style="' + keyRowC + '">' +
+        const keyRow = (icon, label, k, which) =>
+            '<div' + (which ? ' class="bili-review-key" data-key="' + which + '"' : '') + ' style="' + keyRowC + (which ? 'cursor:pointer;' : '') + '"' + (which ? ' title="点击后按任意键自定义"' : '') + '>' +
             '<span style="flex:1;">' + icon + ' ' + label + '</span>' +
             '<kbd style="' + keycapC + '">' + k + '</kbd>' +
             '</div>';
@@ -722,20 +722,13 @@
             '<div style="display:flex;align-items:center;gap:6px;font-weight:bold;font-size:14px;margin-bottom:12px;color:#00a1d6;letter-spacing:.3px;">' +
             '<span>⌨️</span> 键位设置' +
             '<span style="flex:1;"></span>' +
-            '<span style="font-size:10px;color:' + mutedC + ';font-weight:normal;">可在 ⚙️ 设置中自定义</span>' +
+            '<span style="font-size:10px;color:' + mutedC + ';font-weight:normal;">点击键帽改键</span>' +
             '</div>' +
-            keyRow('⏬', '下载当前图', keyName(keys.download)) +
-            keyRow('➡️', '下一张', keyName(keys.next)) +
-            keyRow('⬅️', '上一张', keyName(keys.prev)) +
-            keyRow('🚪', '退出审查', keyName(keys.exit)) +
+            keyRow('⏬', '下载当前图', keyName(keys.download), 'download') +
+            keyRow('➡️', '下一张', keyName(keys.next), 'next') +
+            keyRow('⬅️', '上一张', keyName(keys.prev), 'prev') +
+            keyRow('🚪', '退出审查', keyName(keys.exit), 'exit') +
             keyRow('🖱️', '滚轮翻页', '↕') +
-            '<div style="margin-top:14px;padding:10px 12px;background:' + (dark ? 'rgba(0,161,214,0.08)' : 'rgba(0,161,214,0.06)') + ';border:1px solid ' + (dark ? 'rgba(0,161,214,0.25)' : 'rgba(0,161,214,0.2)') + ';border-radius:9px;font-size:12px;color:' + (dark ? '#c6cad4' : '#4b5563') + ';line-height:1.9;">' +
-            '<div style="font-weight:bold;margin-bottom:4px;color:#00a1d6;">📋 使用说明</div>' +
-            '<div>· 全部图片都会显示，已下载带 ✅</div>' +
-            '<div>· 按 ' + keyName(keys.download) + ' 保存当前张</div>' +
-            '<div>· 「全部下载」保存剩余</div>' +
-            '<div>· 「只看大图」全屏看图</div>' +
-            '</div>' +
             '<div style="margin-top:auto;padding:10px 12px;background:' + (dark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.8)') + ';border:1px solid ' + borderC + ';border-radius:9px;font-size:12px;color:' + mutedC + ';">' +
             '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span>下载进度</span><span><b id="bili-review-dl-count" style="color:#00a1d6;">0</b> / ' + urls.length + '</span></div>' +
             '<div style="height:6px;background:' + (dark ? '#2c3038' : '#e3e6ec') + ';border-radius:3px;overflow:hidden;"><div id="bili-review-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#00a1d6,#00b3e6);border-radius:3px;transition:width .3s;"></div></div>' +
@@ -762,7 +755,7 @@
             '<button id="bili-review-fav" style="flex:1;' + btnGhost + 'border-color:#ffa940;color:#ffa940;">☆ 收藏</button>' +
             '<button id="bili-review-follow" style="flex:1;' + btnGhost + 'border-color:#00a1d6;color:#00a1d6;">＋ 关注</button>' +
             '</div>' +
-            '<button id="bili-review-dl-all" style="width:100%;padding:10px 0;border:none;background:linear-gradient(135deg,#00a1d6,#00b3e6);color:#fff;border-radius:9px;cursor:pointer;font-size:13px;margin-bottom:8px;box-shadow:0 2px 8px rgba(0,161,214,0.3);">⬇️ 全部下载</button>' +
+            '<button id="bili-review-dl-all" style="width:100%;padding:10px 0;border:none;background:linear-gradient(135deg,#00a1d6,#00b3e6);color:#fff;border-radius:9px;cursor:pointer;font-size:13px;margin-bottom:8px;box-shadow:0 2px 8px rgba(0,161,214,0.3);">全部下载</button>' +
             '<button id="bili-review-close" style="' + btnGhost + 'margin-bottom:0;">退出审查</button>' +
             '</div>' +
             '</div>' +
@@ -783,6 +776,7 @@
         const favBtn = panel.querySelector('#bili-review-fav');
         const followBtn = panel.querySelector('#bili-review-follow');
         let fullMode = false;
+        let capturing = false;
 
         const render = () => {
             imgEl.src = urls[index];
@@ -851,7 +845,7 @@
         };
 
         function onKey(e){
-            if(busy){ return; }
+            if(busy || capturing){ return; }
             const k = e.key;
             if(k === keys.download){ e.preventDefault(); dlCurrent(); }
             else if(k === keys.next){ e.preventDefault(); index = Math.min(urls.length - 1, index + 1); render(); }
@@ -870,6 +864,32 @@
         panel.querySelector('#bili-review-dl-all').addEventListener('click', dlAll);
         panel.querySelector('#bili-review-close').addEventListener('click', close);
         panel.querySelector('#bili-review-full').addEventListener('click', toggleFull);
+
+        panel.querySelectorAll('.bili-review-key').forEach(row => {
+            row.addEventListener('click', () => {
+                if(capturing) return;
+                const which = row.getAttribute('data-key');
+                const cap = row.querySelector('kbd');
+                if(!cap) return;
+                capturing = true;
+                cap.textContent = '…';
+                const listener = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    document.removeEventListener('keydown', listener);
+                    capturing = false;
+                    let k = e.key;
+                    if(k === ' ') k = 'Space';
+                    if(k.length === 1) k = k.toUpperCase();
+                    cap.textContent = keyName(k);
+                    keys[which] = k;
+                    const settings = loadSettings();
+                    settings.keys = Object.assign({}, settings.keys || {}, { [which]: k });
+                    saveSettings(settings);
+                };
+                document.addEventListener('keydown', listener);
+            });
+        });
 
         const LIKE_GROUPS = [
             { name:'点赞', selectors:['.opus-like', '[class*="opus-like"]', '[class*="opus-detail__like"]', '[class*="like-btn"]'] },
