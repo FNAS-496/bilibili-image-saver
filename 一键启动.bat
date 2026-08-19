@@ -6,10 +6,17 @@ cd /d "%~dp0"
 REM 可选自定义保存目录，留空=本目录 bilibili_images
 set "SAVE_DIR="
 
-if not exist save_images_server.js (
-  echo [错误] 缺少文件：save_images_server.js 不存在，请确认文件完整。
+REM ===== 文件完整性校验（一键启动时执行，替代页面弹窗） =====
+set "MISSING="
+if not exist save_images_server.js set "MISSING=%MISSING% save_images_server.js"
+if not exist bilibili-save.user.js set "MISSING=%MISSING% bilibili-save.user.js"
+if not exist "watermark\wechat_qr.jpg" if not exist "watermark\wechat_qr.png" if not exist "watermark\wechat_qr.jpeg" if not exist "watermark\wechat_qr.webp" set "MISSING=%MISSING% watermark\收款码图片"
+
+if defined MISSING (
+  echo [校验] 以下文件缺失：%MISSING%
+  echo [校验] 完整版请从 GitHub 下载：https://github.com/FNAS-496/bilibili-image-saver
+  echo [校验] 若仅缺收款码，脚本仍可正常下载图片，仅打赏面板不显示收款码。
   pause
-  exit /b 1
 )
 
 where node >nul 2>nul

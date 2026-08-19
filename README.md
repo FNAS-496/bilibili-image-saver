@@ -5,7 +5,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-0.9.18-00a1d6)
+![Version](https://img.shields.io/badge/version-0.9.19-00a1d6)
 ![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-orange)
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -107,7 +107,7 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 ├── save_images_server.js      # 本地 Node.js 保存服务 —— 下载图片并写盘
 ├── 一键启动.bat                # Windows 一键启动（中文界面）
 ├── start_server.bat           # Windows 一键启动（English UI）
-├── watermark/                 # 收款码源图（wechat_qr.jpg，已内嵌进 user.js）
+├── watermark/                 # 收款码源图（wechat_qr.jpg，由本地服务 /qr 提供）
 ├── README.md                  # 本说明文档（中英双语）
 ├── LICENSE                    # CC BY-NC-SA 4.0 许可协议
 └── .gitignore                 # Git 忽略规则（含 bilibili_images/ 与 watermark/ 源图）
@@ -196,19 +196,15 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 
 下载成功后，页面右下角会弹出「下载成功」面板，展示作者、GitHub、邮箱与收款码打赏入口。
 
-收款码已**直接内嵌在 `bilibili-save.user.js` 中**（data URI 形式，随脚本一起分发），无需本地服务器提供，安装脚本即可显示；脚本启动校验会自动检查收款码是否内置（控制台输出 `[check] 收款码: ready / missing`）。
+收款码存放在 `watermark/wechat_qr.jpg`（**独立文件，不再内嵌进脚本**），由本地服务器 `/qr` 接口提供，打赏面板图片从 `http://127.0.0.1:8765/qr` 加载。启动「一键启动.bat」时会校验收款码文件是否存在（控制台输出校验结果）。
 
 **更换成你自己的收款码**：
 1. 微信 → 我 → 收付款 → 二维码收款 → 保存收款码图片
-2. 用新图片**同名覆盖** `watermark/wechat_qr.jpg`
-3. 生成 base64 并替换脚本中 `DONATE_QR` 常量的数据段：
-   ```bash
-   node -e "process.stdout.write('data:image/jpeg;base64,'+require('fs').readFileSync('watermark/wechat_qr.jpg').toString('base64'))"
-   ```
-4. 将生成的 data URI 粘贴到 `bilibili-save.user.js` 的 `const DONATE_QR = '...'` 中，重新在 Tampermonkey 导入脚本
+2. 用新图片**同名覆盖** `watermark/wechat_qr.jpg`（支持 png / jpg / jpeg / webp，服务器会自动识别 `watermark/` 目录里的图片）
+3. 重启本地服务（关闭服务窗口后重新双击「一键启动.bat」），打赏面板即显示新收款码
 
-> 没有内置收款码时，面板仍会显示作者/GitHub/邮箱文字，脚本会提示「文件不全，请下载完整版」。
-> 收款码随 `bilibili-save.user.js` 一起发布到仓库；若不想公开，可用上面的方法替换成自己的收款码后私有使用。
+> 没有收款码时，面板仍会显示作者/GitHub/邮箱文字，图片下载功能不受影响；「一键启动.bat」启动时会提示收款码缺失（可忽略或自行补充）。
+> 收款码文件在 `watermark/` 目录中，已被 `.gitignore` 忽略，**不会随仓库公开**，可放心私有使用。
 
 ---
 
