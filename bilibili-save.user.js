@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.16
+// @version      0.9.17
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -756,22 +756,20 @@
             '<img id="bili-review-img" src="" alt="预览" style="max-width:100%;max-height:100%;object-fit:contain;display:block;margin:auto;box-shadow:0 2px 12px rgba(0,0,0,0.2);border-radius:4px;">' +
             '</div>' +
             '</div>' +
-            '<div id="bili-review-right" style="width:300px;padding:20px;border-left:1px solid ' + borderC + ';overflow:auto;background:' + subBg + ';">' +
-            '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">' +
-            (upInfo.upAvatar ? '<img src="' + esc(upInfo.upAvatar) + '" style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:1px solid ' + borderC + ';flex-shrink:0;" referrerpolicy="no-referrer">' : '<div style="width:44px;height:44px;border-radius:50%;background:' + (dark ? '#3a3f4d' : '#e2e6ee') + ';display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">👤</div>') +
+            '<div id="bili-review-right" style="width:220px;padding:16px 14px;border-left:1px solid ' + borderC + ';overflow:auto;background:' + subBg + ';">' +
+            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">' +
+            (upInfo.upAvatar ? '<img src="' + esc(upInfo.upAvatar) + '" style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:1px solid ' + borderC + ';flex-shrink:0;" referrerpolicy="no-referrer">' : '<div style="width:36px;height:36px;border-radius:50%;background:' + (dark ? '#3a3f4d' : '#e2e6ee') + ';display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;">👤</div>') +
             '<div style="min-width:0;">' +
-            '<div style="font-weight:bold;font-size:15px;color:' + (dark ? '#e6e6e6' : '#1f2330') + ';word-break:break-all;">' + esc(upInfo.upName) + '</div>' +
-            '<div style="font-size:11px;color:' + mutedC + ';margin-top:2px;">UP主 · ' + (upInfo.upText ? '动态文案见下方' : '') + '</div>' +
+            '<div style="font-weight:bold;font-size:14px;color:' + (dark ? '#e6e6e6' : '#1f2330') + ';word-break:break-all;">' + esc(upInfo.upName) + '</div>' +
+            '<div style="font-size:10px;color:' + mutedC + ';margin-top:2px;">UP主 · ' + (upInfo.upText ? '动态文案见下方' : '') + '</div>' +
             '</div>' +
             '</div>' +
-            (upInfo.upText ? '<div style="line-height:1.8;font-size:13px;color:' + (dark ? '#c6cad4' : '#4b5563') + ';white-space:pre-wrap;word-break:break-word;margin-bottom:14px;padding:10px 12px;background:' + (dark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)') + ';border-radius:8px;">' + esc(upInfo.upText) + '</div>' : '<div style="font-size:12px;color:' + mutedC + ';margin-bottom:14px;">（未获取到动态文案）</div>') +
-            '<div style="margin-top:6px;padding-top:12px;border-top:1px solid ' + borderC + ';">' +
-            '<div style="display:flex;gap:8px;margin-bottom:8px;">' +
-            '<button id="bili-review-like" style="flex:1;' + btnGhost + 'border-color:#fb7299;color:#fb7299;">👍 点赞</button>' +
-            '<button id="bili-review-fav" style="flex:1;' + btnGhost + 'border-color:#ffa940;color:#ffa940;">☆ 收藏</button>' +
-            '<button id="bili-review-follow" style="flex:1;' + btnGhost + 'border-color:#00a1d6;color:#00a1d6;">＋ 关注</button>' +
-            '</div>' +
-            '<button id="bili-review-dl-all" style="width:100%;padding:10px 0;border:none;background:linear-gradient(135deg,#00a1d6,#00b3e6);color:#fff;border-radius:9px;cursor:pointer;font-size:13px;margin-bottom:8px;box-shadow:0 2px 8px rgba(0,161,214,0.3);">全部下载</button>' +
+            (upInfo.upText ? '<div style="line-height:1.7;font-size:12px;color:' + (dark ? '#c6cad4' : '#4b5563') + ';white-space:pre-wrap;word-break:break-word;margin-bottom:12px;padding:8px 10px;background:' + (dark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)') + ';border-radius:8px;">' + esc(upInfo.upText) + '</div>' : '<div style="font-size:11px;color:' + mutedC + ';margin-bottom:12px;">（未获取到动态文案）</div>') +
+            '<div style="margin-top:4px;padding-top:10px;border-top:1px solid ' + borderC + ';">' +
+            '<button id="bili-review-like" style="' + btnGhost + 'border-color:#fb7299;color:#fb7299;">👍 点赞</button>' +
+            '<button id="bili-review-fav" style="' + btnGhost + 'border-color:#ffa940;color:#ffa940;">☆ 收藏</button>' +
+            '<button id="bili-review-follow" style="' + btnGhost + 'border-color:#00a1d6;color:#00a1d6;">＋ 关注</button>' +
+            '<button id="bili-review-dl-all" style="width:100%;padding:9px 0;border:none;background:linear-gradient(135deg,#00a1d6,#00b3e6);color:#fff;border-radius:9px;cursor:pointer;font-size:13px;margin-bottom:8px;box-shadow:0 2px 8px rgba(0,161,214,0.3);">全部下载</button>' +
             '<button id="bili-review-close" style="' + btnGhost + 'margin-bottom:0;">退出审查</button>' +
             '</div>' +
             '</div>' +
