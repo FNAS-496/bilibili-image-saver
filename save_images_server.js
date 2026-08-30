@@ -47,6 +47,9 @@ if(!fs.existsSync(VIDEO_DIR)) fs.mkdirSync(VIDEO_DIR, { recursive: true });
 
 let VIDEO_OUT_DIR = VIDEO_DIR;
 
+const videoJobs = new Map();
+let videoJobSeq = 0;
+
 function extensionFromUrl(u){
     try{
         const parsed = new URL(u);
@@ -205,7 +208,7 @@ async function tryDownloadFile(rawUrl, index, opts){
     throw lastError || new Error('Download failed');
 }
 
-async function downloadVideoToFile(fileUrl, destPath, timeoutMs){
+async function downloadVideoToFile(fileUrl, destPath, timeoutMs, onProgress){
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs || 600000);
     try {
@@ -224,7 +227,27 @@ async function downloadVideoToFile(fileUrl, destPath, timeoutMs){
         if(contentType.includes('text/html')){
             throw new Error('Server returned text/html instead of video (blocked / risk page)');
         }
-        const buffer = Buffer.from(await res.arrayBuffer());
+        const total = parseInt(res.headers.get('content-length') || '0', 10) || 0;
+        const chunks = [];
+        let received = 0;
+        if(res.body && typeof res.body.getReader === 'function'){
+            const reader = res.body.getReader();
+            for(;;){
+                const { done, value } = await reader.read();
+                if(done) break;
+                if(value){
+                    chunks.push(value);
+                    received += value.length;
+                    if(onProgress) onProgress(received, total);
+                }
+            }
+        } else {
+            const buf = Buffer.from(await res.arrayBuffer());
+            received = buf.length;
+            chunks.push(buf);
+            if(onProgress) onProgress(received, total);
+        }
+        const buffer = Buffer.concat(chunks);
         await fs.promises.writeFile(destPath, buffer);
         return buffer.length;
     } catch(err){
@@ -261,7 +284,7 @@ function mergeWithFfmpeg(videoPath, audioPath, outPath){
     });
 }
 
-async function saveVideo(item, index){
+async function saveVideo(item, index, job){
     const title = sanitizeFilename(String(item.title || '').trim()) || `video_${index}`;
     const base = title.length > 80 ? title.slice(0, 80) : title;
     const outMp4 = path.join(VIDEO_OUT_DIR, base + '.mp4');
@@ -278,11 +301,17 @@ async function saveVideo(item, index){
 
     const tmpVideo = path.join(VIDEO_OUT_DIR, `.tmp_${Date.now()}_${index}_v.${ext}`);
     const tmpAudio = path.join(VIDEO_OUT_DIR, `.tmp_${Date.now()}_${index}_a.m4a`);
+    const setJob = (phase, message, bytes, bytesTotal) => {
+        if(job){ job.phase = phase; job.message = message; job.bytes = bytes || 0; job.bytesTotal = bytesTotal || 0; }
+    };
     try{
-        await downloadVideoToFile(videoUrl, tmpVideo);
+        setJob('downloading-video', '下载视频流');
+        await downloadVideoToFile(videoUrl, tmpVideo, null, (received, total) => setJob('downloading-video', '下载视频流', received, total));
         if(audioUrl){
-            await downloadVideoToFile(audioUrl, tmpAudio);
+            setJob('downloading-audio', '下载音频流');
+            await downloadVideoToFile(audioUrl, tmpAudio, null, (received, total) => setJob('downloading-audio', '下载音频流', received, total));
             if(await ffmpegAvailable()){
+                setJob('merging', 'ffmpeg 合并音画');
                 await mergeWithFfmpeg(tmpVideo, tmpAudio, outMp4);
                 try{ fs.unlinkSync(tmpVideo); }catch(e){}
                 try{ fs.unlinkSync(tmpAudio); }catch(e){}
@@ -441,7 +470,7 @@ const server = http.createServer((req, res) => {
     if(req.method === 'POST' && req.url === '/video/save'){
         let body = '';
         req.on('data', chunk => { body += chunk; if(body.length > 50 * 1024 * 1024){ req.destroy(); } });
-        req.on('end', async () => {
+        req.on('end', () => {
             let payload;
             try{ payload = JSON.parse(body); }catch(e){
                 res.writeHead(400, {'Content-Type':'application/json'});
@@ -454,33 +483,81 @@ const server = http.createServer((req, res) => {
                 res.end(JSON.stringify({ ok:false, error:'no videos provided' }));
                 return;
             }
-            const results = [];
-            let idx = 0;
-            const concurrency = Math.min(2, videos.length);
-            async function worker(){
-                while(idx < videos.length){
-                    const i = idx++;
-                    const v = videos[i];
-                    try{
-                        const result = await saveVideo(v, i + 1);
-                        results.push(result);
-                        if(result.exists) console.log('Video exists (skip)', result.saved);
-                        else if(result.separate) console.log('Video saved (separate streams)', result.saved, '+', result.audio);
-                        else console.log('Video saved', result.saved);
-                    }catch(err){
-                        console.error('Video failed', v && v.title, err.message);
-                        results.push({ title: v && v.title, error: err.message });
+            const jobId = (payload.jobId && String(payload.jobId).trim()) || ('job_' + (++videoJobSeq));
+            if(videoJobs.size > 20){ videoJobs.delete(videoJobs.keys().next().value); }
+            const job = {
+                jobId, total: videos.length, done: 0,
+                currentIndex: -1, currentTitle: '',
+                phase: 'pending', message: '', bytes: 0, bytesTotal: 0,
+                finished: false, summary: null
+            };
+            videoJobs.set(jobId, job);
+            res.writeHead(200, {'Content-Type':'application/json'});
+            res.end(JSON.stringify({ ok:true, jobId }));
+            (async () => {
+                const results = [];
+                let idx = 0;
+                const concurrency = Math.min(2, videos.length);
+                async function worker(){
+                    while(idx < videos.length){
+                        const i = idx++;
+                        const v = videos[i];
+                        job.currentIndex = i;
+                        job.currentTitle = (v && v.title) || '';
+                        job.phase = 'downloading';
+                        job.bytes = 0; job.bytesTotal = 0;
+                        try{
+                            const result = await saveVideo(v, i + 1, job);
+                            results.push(result);
+                            job.done++;
+                            if(result.exists) console.log('Video exists (skip)', result.saved);
+                            else if(result.separate) console.log('Video saved (separate streams)', result.saved, '+', result.audio);
+                            else console.log('Video saved', result.saved);
+                        }catch(err){
+                            console.error('Video failed', v && v.title, err.message);
+                            results.push({ title: v && v.title, error: err.message });
+                            job.done++;
+                        }
                     }
                 }
-            }
-            await Promise.all(Array.from({ length: concurrency }, () => worker()));
-            const saved = results.filter(r => r.saved && !r.error && !r.exists && !r.separate).length;
-            const separate = results.filter(r => r.separate).length;
-            const exists = results.filter(r => r.exists).length;
-            const failed = results.filter(r => r.error).length;
-            res.writeHead(200, {'Content-Type':'application/json'});
-            res.end(JSON.stringify({ ok:true, total: videos.length, saved, separate, exists, failed, results }));
+                await Promise.all(Array.from({ length: concurrency }, () => worker()));
+                const saved = results.filter(r => r.saved && !r.error && !r.exists && !r.separate).length;
+                const separate = results.filter(r => r.separate).length;
+                const exists = results.filter(r => r.exists).length;
+                const failed = results.filter(r => r.error).length;
+                job.phase = 'done';
+                job.message = '全部完成';
+                job.finished = true;
+                job.summary = { ok:true, total: videos.length, saved, separate, exists, failed, results };
+            })().catch(err => {
+                job.phase = 'error';
+                job.message = err.message;
+                job.finished = true;
+                job.summary = { ok:false, error: err.message };
+            });
         });
+        return;
+    }
+
+    if(req.method === 'GET' && req.url.indexOf('/video/progress') === 0){
+        let q = '';
+        try{
+            const u = new URL(req.url, 'http://localhost');
+            q = u.searchParams.get('job') || '';
+        }catch(e){}
+        const p = videoJobs.get(q);
+        if(!p){
+            res.writeHead(200, {'Content-Type':'application/json'});
+            res.end(JSON.stringify({ ok:false, error:'job not found' }));
+            return;
+        }
+        res.writeHead(200, {'Content-Type':'application/json'});
+        res.end(JSON.stringify({
+            ok:true, jobId: p.jobId, total: p.total, done: p.done,
+            currentIndex: p.currentIndex, currentTitle: p.currentTitle,
+            phase: p.phase, message: p.message, bytes: p.bytes, bytesTotal: p.bytesTotal,
+            finished: p.finished, summary: p.summary
+        }));
         return;
     }
 

@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.19
+// @version      0.9.23
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -550,7 +550,7 @@
             '</div>' +
             '</div>' +
             '<div style="margin-top:10px;background:#fff8e1;border:1px solid #ffd700;color:#8a6d00;border-radius:8px;padding:8px 10px;text-align:center;">' +
-            '觉得好用的话就打赏一杯奶茶钱吧 ☕<span style="color:#b00;">（点击收款码可放大）</span>' +
+            '觉得好用的话就打赏一杯咖啡钱吧 ☕<span style="color:#b00;">（点击收款码可放大）</span>' +
             '</div>' +
             '<div style="margin-top:12px;text-align:right;">' +
             '<a id="bili-donate-view" href="http://127.0.0.1:8765/" target="_blank" rel="noopener" style="margin-right:8px;padding:6px 16px;border:1px solid #00a1d6;color:#00a1d6;border-radius:6px;text-decoration:none;font-size:13px;display:inline-block;">查看图片</a>' +
@@ -721,7 +721,7 @@
             '</div>';
         };
         panel.innerHTML =
-            '<div id="bili-review-left" style="width:220px;padding:18px 16px;border-right:1px solid ' + borderC + ';overflow:auto;display:flex;flexDirection:column;background:' + subBg + ';">' +
+            '<div id="bili-review-left" style="width:220px;padding:18px 16px;border-right:1px solid ' + borderC + ';overflow:auto;display:flex;flex-direction:column;background:' + subBg + ';">' +
             '<div style="display:flex;align-items:center;gap:6px;font-weight:bold;font-size:14px;margin-bottom:12px;color:#00a1d6;letter-spacing:.3px;">' +
             '<b>键位设置</b>' +
             '<span style="flex:1;"></span>' +
@@ -746,9 +746,9 @@
             '<div style="height:6px;background:' + (dark ? '#2c3038' : '#e3e6ec') + ';border-radius:3px;overflow:hidden;"><div id="bili-review-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#00a1d6,#00b3e6);border-radius:3px;transition:width .3s;"></div></div>' +
             '</div>' +
             '</div>' +
-            '<div id="bili-review-center" style="flex:1;display:flex;flexDirection:column;min-width:0;position:relative;overflow:hidden;">' +
+            '<div id="bili-review-center" style="flex:1;display:flex;flex-direction:column;min-width:0;position:relative;overflow:hidden;">' +
             '<div id="bili-review-progress" style="position:absolute;top:14px;left:50%;transform:translateX(-50%);color:' + mutedC + ';font-size:13px;background:' + (dark ? 'rgba(24,26,32,0.75)' : 'rgba(255,255,255,0.8)') + ';padding:5px 16px;border-radius:20px;z-index:3;box-shadow:0 1px 6px rgba(0,0,0,0.12);white-space:nowrap;"></div>' +
-            '<div style="flex:1;display:flex;alignItems:center;justifyContent:center;min-height:0;margin:48px 14px 14px;background:' + (dark ? '#0d0e12' : '#eef0f5') + ';border-radius:12px;box-shadow:0 4px 30px rgba(0,0,0,0.18);overflow:hidden;position:relative;" id="bili-review-frame">' +
+            '<div style="flex:1;display:flex;align-items:center;justify-content:center;min-height:0;margin:48px 14px 14px;background:' + (dark ? '#0d0e12' : '#eef0f5') + ';border-radius:12px;box-shadow:0 4px 30px rgba(0,0,0,0.18);overflow:hidden;position:relative;" id="bili-review-frame">' +
             '<img id="bili-review-img" src="" alt="预览" style="max-width:100%;max-height:100%;object-fit:contain;display:block;margin:auto;box-shadow:0 2px 12px rgba(0,0,0,0.2);border-radius:4px;">' +
             '</div>' +
             '</div>' +
@@ -769,7 +769,7 @@
             '<button id="bili-review-close" style="' + btnGhost + 'margin-bottom:0;">退出审查</button>' +
             '</div>' +
             '</div>' +
-            '<button id="bili-review-full" style="position:absolute;top:12px;right:12px;z-index:3;padding:7px 14px;border:1px solid ' + (dark ? '#4a4e5c' : '#d0d4dd') + ';background:' + (dark ? 'rgba(40,42,50,0.92)' : 'rgba(255,255,255,0.92)') + ';color:' + (dark ? '#e6e6e6' : '#2a2f3a') + ';border-radius:20px;cursor:pointer;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,0.18);">🔍 只看大图</button>';
+            '<button id="bili-review-full" style="position:absolute;top:8px;right:12px;z-index:3;padding:5px 11px;border:1px solid ' + (dark ? '#4a4e5c' : '#d0d4dd') + ';background:' + (dark ? 'rgba(40,42,50,0.92)' : 'rgba(255,255,255,0.92)') + ';color:' + (dark ? '#e6e6e6' : '#2a2f3a') + ';border-radius:20px;cursor:pointer;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,0.18);">🔍 只看大图</button>';
         document.body.appendChild(panel);
 
         let index = 0;
@@ -1302,6 +1302,19 @@
         const m = Math.floor(sec / 60), s = sec % 60;
         return (m < 10 ? '0' + m : m) + ':' + (s < 10 ? '0' + s : s);
     }
+    function formatSpeed(bps){
+        if(!bps || bps <= 0) return '';
+        if(bps >= 1024 * 1024) return (bps / 1024 / 1024).toFixed(2) + ' MB/s';
+        if(bps >= 1024) return Math.round(bps / 1024) + ' KB/s';
+        return Math.round(bps) + ' B/s';
+    }
+    function formatRemaining(sec){
+        sec = Math.max(0, Math.round(sec || 0));
+        if(!sec) return '';
+        if(sec >= 3600) return Math.floor(sec / 3600) + ' 小时 ' + Math.floor(sec % 3600 / 60) + ' 分';
+        if(sec >= 60) return Math.floor(sec / 60) + ' 分 ' + (sec % 60) + ' 秒';
+        return sec + ' 秒';
+    }
     function qualityLabel(q){
         const map = { 127:'8K', 126:'杜比', 125:'HDR', 120:'4K', 116:'1080P60', 112:'1080P+', 80:'1080P', 74:'720P60', 64:'720P', 32:'480P', 16:'360P', 6:'240P' };
         return map[q] || (q ? (q + 'P') : '');
@@ -1437,6 +1450,14 @@
             '<span style="margin-left:auto;font-size:12px;color:#888;" id="bili-video-hint"></span>' +
             '</div>' +
             '<div id="bili-video-list" style="overflow:auto;flex:1;border:1px solid #eee;border-radius:8px;padding:6px;"></div>' +
+            '<div id="bili-video-progress" style="display:none;margin-top:10px;padding:8px 10px;border:1px solid #eee;border-radius:8px;background:#fafafa;font-size:12px;color:#555;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">' +
+            '<span id="bili-video-prog-text" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">准备中…</span>' +
+            '<b id="bili-video-prog-pct" style="color:#00a1d6;flex-shrink:0;margin-left:8px;">0%</b>' +
+            '</div>' +
+            '<div style="height:6px;background:#e3e6ec;border-radius:3px;overflow:hidden;"><div id="bili-video-prog-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#00a1d6,#00b3e6);border-radius:3px;transition:width .3s;"></div></div>' +
+            '<div id="bili-video-prog-sub" style="margin-top:5px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>' +
+            '</div>' +
             '<div style="display:flex;align-items:center;gap:10px;margin-top:10px;">' +
             '<label style="font-size:12px;color:#555;cursor:pointer;"><input type="checkbox" id="bili-video-all" style="vertical-align:middle;"> 全选</label>' +
             '<span style="flex:1;"></span>' +
@@ -1529,25 +1550,91 @@
             const checks = listEl.querySelectorAll('.bili-video-check:checked');
             const chosen = Array.from(checks).map(c => state.items[Number(c.getAttribute('data-i'))]).filter(it => it.videoUrl);
             if(!chosen.length){ showToast('请先勾选视频（列表已自动获取下载地址，无需额外操作）'); return; }
-            panel.querySelector('#bili-video-dl').disabled = true;
+            const dlBtn = panel.querySelector('#bili-video-dl');
+            dlBtn.disabled = true;
+            dlBtn.textContent = '下载中…';
             const videos = chosen.map(it => ({ title: it.title, videoUrl: it.videoUrl, audioUrl: it.audioUrl, ext: it.ext }));
+            const jobId = 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            const progEl = panel.querySelector('#bili-video-progress');
+            const progBar = panel.querySelector('#bili-video-prog-bar');
+            const progPct = panel.querySelector('#bili-video-prog-pct');
+            const progText = panel.querySelector('#bili-video-prog-text');
+            const progSub = panel.querySelector('#bili-video-prog-sub');
+            if(progEl) progEl.style.display = 'block';
             try{
-                const json = await postJsonToPath('/video/save', { videos });
-                if(json && json.results){
+                const startJson = await postJsonToPath('/video/save', { videos, jobId });
+                if(!(startJson && startJson.ok)) throw new Error((startJson && startJson.error) || '启动下载失败');
+                const activeJobId = startJson.jobId || jobId;
+                let summary = null;
+                let lastBytes = 0, lastTime = 0, speedBps = 0;
+                for(;;){
+                    const p = await serverApi('/video/progress?job=' + encodeURIComponent(activeJobId));
+                    if(p && p.ok){
+                        const total = p.total || 1;
+                        const doneN = p.done || 0;
+                        const overall = Math.min(99, Math.round(doneN / total * 100));
+                        if(progBar) progBar.style.width = overall + '%';
+                        if(progPct) progPct.textContent = overall + '%';
+                        if(p.finished){ summary = p.summary; break; }
+                        const cur = (p.currentIndex != null ? p.currentIndex + 1 : doneN + 1) + '/' + total;
+                        const title = p.currentTitle || '';
+                        if(p.phase === 'downloading-video' || p.phase === 'downloading-audio'){
+                            const label = p.phase === 'downloading-video' ? '⬇️ 下载视频流' : '🎵 下载音频流';
+                            const filePct = p.bytesTotal ? Math.round(p.bytes / p.bytesTotal * 100) + '%' : '';
+                            const size = p.bytesTotal
+                                ? (formatSize(p.bytes) + ' / ' + formatSize(p.bytesTotal) + (filePct ? ' (' + filePct + ')' : ''))
+                                : formatSize(p.bytes);
+                            if(p.bytes < lastBytes){ lastBytes = 0; lastTime = 0; speedBps = 0; }
+                            const nowT = Date.now();
+                            if(lastTime && nowT - lastTime >= 400){
+                                const inst = (p.bytes - lastBytes) / ((nowT - lastTime) / 1000);
+                                if(inst > 0) speedBps = speedBps ? (speedBps * 0.6 + inst * 0.4) : inst;
+                            }
+                            lastBytes = p.bytes;
+                            lastTime = nowT;
+                            let extra = '';
+                            if(speedBps > 0){
+                                extra = ' · ' + formatSpeed(speedBps);
+                                if(p.bytesTotal > p.bytes) extra += ' · 约 ' + formatRemaining((p.bytesTotal - p.bytes) / speedBps);
+                            }
+                            if(progText) progText.textContent = '第 ' + cur + ' 个 · ' + label;
+                            if(progSub) progSub.textContent = title + '  ' + size + extra;
+                        } else if(p.phase === 'merging'){
+                            if(progText) progText.textContent = '第 ' + cur + ' 个 · ⚙️ ffmpeg 合并音画';
+                            if(progSub) progSub.textContent = title + '  正在合并，请稍候…';
+                        } else {
+                            if(progText) progText.textContent = '第 ' + cur + ' 个 · 处理中…';
+                            if(progSub) progSub.textContent = title + '  ' + (p.message || '');
+                        }
+                    }
+                    await sleep(800);
+                }
+                if(progBar) progBar.style.width = '100%';
+                if(progPct) progPct.textContent = '100%';
+                const json = summary;
+                if(json && json.ok && json.results){
                     const saved = json.results.filter(r => r.saved && !r.error).length;
                     const failed = json.results.filter(r => r.error).length;
                     const separate = json.results.filter(r => r.separate).length;
                     const merged = json.results.filter(r => r.merged).length;
+                    if(progText) progText.textContent = '✅ 下载完成';
+                    if(progSub) progSub.textContent = '成功 ' + saved + ' 个，失败 ' + failed + ' 个';
                     showToast('视频下载完成：成功 ' + saved + ' 个'
                         + (merged ? '（含合并 mp4 ' + merged + ' 个）' : '')
                         + (separate ? '，音画分开保存 ' + separate + ' 个' : '')
                         + '，失败 ' + failed + ' 个\n保存目录：videos/');
                     if(saved > 0) showDonatePanel({ saved: saved, exists: 0, failed: failed });
+                } else {
+                    if(progText) progText.textContent = '❌ 下载失败';
+                    if(progSub) progSub.textContent = (json && json.error) || '下载未成功完成';
                 }
             }catch(err){
-                showToast('❌ 视频下载失败：\n' + err.message + '\n请先双击「一键启动.bat」启动本地服务');
+                if(progText) progText.textContent = '❌ 下载失败';
+                if(progSub) progSub.textContent = (err && err.message) || '未知错误';
+                showToast('❌ 视频下载失败：\n' + (err && err.message) + '\n请先双击「一键启动.bat」启动本地服务');
             } finally {
-                panel.querySelector('#bili-video-dl').disabled = false;
+                dlBtn.disabled = false;
+                dlBtn.textContent = '下载选中';
             }
         });
 
