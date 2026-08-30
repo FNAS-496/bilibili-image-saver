@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.23
+// @version      0.9.24
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -31,7 +31,8 @@
                       
     const AUTO_RUN = true;                                                             
     const MAX_CHILD_PAGES = 200;                                   
-    const CHILD_CONCURRENCY = 6;                        
+    const CHILD_CONCURRENCY = 6;
+    const MAX_COLLECTION_VIDEOS = 500;                        
     const TOAST_MS = 4000;
     const DIR_ASKED_KEY = 'bili_save_dir_asked_v1';
     const SETTINGS_KEY = 'bili_save_settings_v1';
@@ -1353,6 +1354,50 @@
         return items;
     }
 
+    function getCollectionMeta(){
+        const st = window.__INITIAL_STATE__;
+        const vd = st && st.videoData;
+        if(vd && vd.ugc_season && vd.ugc_season.id){
+            return { sid: vd.ugc_season.id, title: vd.ugc_season.title || '合集', mid: (vd.owner && vd.owner.mid) || null };
+        }
+        const a = document.querySelector('a[href*="collectiondetail"], a[href*="channel/collectiondetail"]');
+        if(a){
+            const href = a.getAttribute('href') || '';
+            const sm = href.match(/sid=(\d+)/);
+            const mm = href.match(/space\.bilibili\.com\/(\d+)/);
+            if(sm) return { sid: sm[1], title: (a.getAttribute('title') || a.textContent || '').trim() || '合集', mid: mm ? mm[1] : null };
+        }
+        return null;
+    }
+
+    async function collectCollectionItems(){
+        try{
+            const meta = getCollectionMeta();
+            if(!meta || !meta.sid || !meta.mid) return null;
+            const items = [];
+            const pageSize = 30;
+            let pageNum = 1;
+            for(;;){
+                const url = 'https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?mid=' + meta.mid + '&season_id=' + meta.sid + '&page_num=' + pageNum + '&page_size=' + pageSize + '&sort_reverse=false';
+                const text = await fetchText(url);
+                const j = JSON.parse(text);
+                if(!(j && j.code === 0 && j.data)) break;
+                const archives = j.data.archives || [];
+                archives.forEach(a => {
+                    if(items.length >= MAX_COLLECTION_VIDEOS) return;
+                    items.push({ bvid: a.bvid, cid: null, title: (a.title || ('视频 ' + a.bvid)).trim(), duration: a.duration || null, fromCollection: true });
+                });
+                const total = (j.data.page && j.data.page.total) || archives.length;
+                if(!archives.length || items.length >= total || items.length >= MAX_COLLECTION_VIDEOS || pageNum >= 200) break;
+                pageNum++;
+            }
+            if(!items.length) return null;
+            return { title: meta.title, total: items.length, items };
+        }catch(e){
+            return null;
+        }
+    }
+
     async function fetchViewCid(bvid){
         try{
             const text = await fetchText('https://api.bilibili.com/x/web-interface/view?bvid=' + bvid);
@@ -1478,6 +1523,7 @@
                 return;
             }
             listEl.innerHTML = state.items.map((it, i) => {
+                const tag = it.fromCollection ? ' · <span style="color:#fb7299;">[合集]</span>' : '';
                 const dur = it.duration ? (' · ' + formatDuration(it.duration)) : '';
                 const size = it.size ? (' · ' + formatSize(it.size)) : '';
                 const q = it.quality ? (' · ' + qualityLabel(it.quality)) : '';
@@ -1485,13 +1531,13 @@
                 return '<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid #f2f2f2;cursor:pointer;">' +
                     '<input type="checkbox" class="bili-video-check" data-i="' + i + '" style="flex-shrink:0;">' +
                     '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + it.title.replace(/"/g,'&quot;') + '">' + it.title + '</span>' +
-                    '<span style="color:#999;font-size:12px;flex-shrink:0;">' + dur + size + q + err + '</span>' +
+                    '<span style="color:#999;font-size:12px;flex-shrink:0;">' + tag + dur + size + q + err + '</span>' +
                     '</label>';
             }).join('');
         };
 
         const fillCids = async () => {
-            const need = state.items.filter(it => it.cid == null);
+            const need = state.items.filter(it => it.cid == null && !it.fromCollection);
             if(!need.length) return;
             hintEl.textContent = '获取视频信息中...';
             let done = 0;
@@ -1534,7 +1580,7 @@
                 while(done < total){
                     const i = done++;
                     const it = state.items[i];
-                    if(it.cid == null || it.error){ continue; }
+                    if(it.cid == null || it.error || it.fromCollection){ continue; }
                     const s = await fetchVideoStreams(it.bvid, it.cid);
                     if(s && s.videoUrl){ it.videoUrl = s.videoUrl; it.audioUrl = s.audioUrl; it.size = s.size; it.quality = s.quality; it.ext = s.ext; }
                     else { it.error = true; }
@@ -1548,19 +1594,56 @@
 
         panel.querySelector('#bili-video-dl').addEventListener('click', async () => {
             const checks = listEl.querySelectorAll('.bili-video-check:checked');
-            const chosen = Array.from(checks).map(c => state.items[Number(c.getAttribute('data-i'))]).filter(it => it.videoUrl);
-            if(!chosen.length){ showToast('请先勾选视频（列表已自动获取下载地址，无需额外操作）'); return; }
+            const picked = Array.from(checks).map(c => state.items[Number(c.getAttribute('data-i'))]);
+            if(!picked.length){ showToast('请先勾选视频'); return; }
             const dlBtn = panel.querySelector('#bili-video-dl');
+            const progEl = panel.querySelector('#bili-video-progress');
+            const progText = panel.querySelector('#bili-video-prog-text');
+            const progSub = panel.querySelector('#bili-video-prog-sub');
             dlBtn.disabled = true;
+            dlBtn.textContent = '准备中…';
+            const need = picked.filter(it => !it.videoUrl);
+            if(need.length){
+                if(progEl) progEl.style.display = 'block';
+                if(progText) progText.textContent = '正在获取下载地址 ' + need.length + ' 个…';
+                let done = 0;
+                async function prepWorker(){
+                    while(done < need.length){
+                        const i = done++;
+                        const it = need[i];
+                        try{
+                            if(it.cid == null){
+                                const v = await fetchViewCid(it.bvid);
+                                if(v){
+                                    it.cid = v.cid;
+                                    if(!it.duration) it.duration = v.duration;
+                                    if(!it.title || it.title.indexOf('视频 ') === 0) it.title = v.title || it.title;
+                                } else { it.error = true; }
+                            }
+                            if(it.cid != null && !it.error){
+                                const s = await fetchVideoStreams(it.bvid, it.cid);
+                                if(s && s.videoUrl){ it.videoUrl = s.videoUrl; it.audioUrl = s.audioUrl; it.size = s.size; it.quality = s.quality; it.ext = s.ext; }
+                                else { it.error = true; }
+                            }
+                        }catch(e){ it.error = true; }
+                        if(progSub) progSub.textContent = '第 ' + Math.min(done, need.length) + '/' + need.length + ' 个 · ' + (it.title || it.bvid);
+                    }
+                }
+                await Promise.all(Array.from({ length: Math.min(CHILD_CONCURRENCY, need.length) }, () => prepWorker()));
+            }
+            const chosen = picked.filter(it => it.videoUrl && !it.error);
+            if(!chosen.length){
+                showToast('未能获取所选视频的下载地址，请重试（可能是网络或接口限流）');
+                dlBtn.disabled = false;
+                dlBtn.textContent = '下载选中';
+                return;
+            }
+            if(progEl) progEl.style.display = 'block';
             dlBtn.textContent = '下载中…';
             const videos = chosen.map(it => ({ title: it.title, videoUrl: it.videoUrl, audioUrl: it.audioUrl, ext: it.ext }));
             const jobId = 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-            const progEl = panel.querySelector('#bili-video-progress');
             const progBar = panel.querySelector('#bili-video-prog-bar');
             const progPct = panel.querySelector('#bili-video-prog-pct');
-            const progText = panel.querySelector('#bili-video-prog-text');
-            const progSub = panel.querySelector('#bili-video-prog-sub');
-            if(progEl) progEl.style.display = 'block';
             try{
                 const startJson = await postJsonToPath('/video/save', { videos, jobId });
                 if(!(startJson && startJson.ok)) throw new Error((startJson && startJson.error) || '启动下载失败');
@@ -1649,8 +1732,23 @@
         render();
         if(!items.length){ hintEl.textContent = ''; return; }
         (async () => {
+            let col = null;
+            try{ col = await collectCollectionItems(); }catch(e){}
+            if(col && col.items.length){
+                const seenBvids = new Set(state.items.map(i => i.bvid));
+                const added = col.items.filter(i => !seenBvids.has(i.bvid));
+                if(added.length){
+                    state.items = state.items.concat(added);
+                    render();
+                }
+            }
             await fillCids();
             await fetchSizes();
+            const videoCount = state.items.filter(i => !i.fromCollection).length;
+            const colCount = state.items.length - videoCount;
+            hintEl.textContent = colCount > 0
+                ? '视频 ' + videoCount + ' 个 · 合集《' + (col ? col.title : '') + '》' + colCount + ' 个（合集项下载时获取大小）'
+                : '共 ' + state.items.length + ' 个';
         })();
     }
 
