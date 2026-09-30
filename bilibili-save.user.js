@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.29
+// @version      0.9.30
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -1632,7 +1632,8 @@
             '<span style="flex:1;"></span>' +
             '<button id="bili-video-dl" style="' + STYLE.btnPrimary + '">下载选中</button>' +
             '<button id="bili-video-close" style="padding:6px 12px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px;">关闭</button>' +
-            '</div>';
+            '</div>' +
+            '<div id="bili-video-dir" style="margin-top:8px;font-size:11px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title=""></div>';
         document.body.appendChild(panel);
 
         const listEl = panel.querySelector('#bili-video-list');
@@ -1831,10 +1832,14 @@
                     const merged = json.results.filter(r => r.merged).length;
                     if(progText) progText.textContent = '✅ 下载完成';
                     if(progSub) progSub.textContent = '成功 ' + saved + ' 个，失败 ' + failed + ' 个';
+                    // 从服务端返回的实际文件路径中取出保存目录，避免用户不知道文件存到了哪里
+                    const firstSaved = json.results.find(r => r.saved && !r.error);
+                    const savedDir = firstSaved ? String(firstSaved.saved).replace(/[\\/][^\\/]+$/, '') : '';
                     showToast('视频下载完成：成功 ' + saved + ' 个'
                         + (merged ? '（含合并 mp4 ' + merged + ' 个）' : '')
                         + (separate ? '，音画分开保存 ' + separate + ' 个' : '')
-                        + '，失败 ' + failed + ' 个\n保存目录：videos/');
+                        + '，失败 ' + failed + ' 个'
+                        + (savedDir ? '\n保存位置：' + savedDir : ''));
                     if(saved > 0) showDonatePanel({ saved: saved, exists: 0, failed: failed });
                 } else {
                     if(progText) progText.textContent = '❌ 下载失败';
@@ -1858,6 +1863,20 @@
         });
 
         // ── 初始化：先渲染当前视频，再异步拉取合集视频 ──
+        // 显示实际保存位置：避免用户下载完不知道文件存到哪（便携版会把目录放在自己的文件夹内）
+        getSaveDir().then(info => {
+            const dirEl = panel.querySelector('#bili-video-dir');
+            if(!dirEl) return;
+            if(info && info.dir){
+                const sep = info.dir.indexOf('\\') >= 0 ? '\\' : '/';
+                const full = info.dir + sep + 'videos';
+                dirEl.textContent = '保存位置：' + full;
+                dirEl.title = full;
+            } else {
+                dirEl.textContent = '保存位置：未连接本地服务（请双击「一键启动.bat」）';
+            }
+        });
+
         const items = collectVideoItems();
         state.items = items;
         render();
