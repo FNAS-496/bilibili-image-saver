@@ -1,374 +1,89 @@
-# 🎨 Bilibili-Plus 哔哩哔哩增强 / Bilibili Enhancement Suite
+# Bilibili-Plus
 
-> B 站**原图 / 视频批量下载**增强工具：收藏夹、动态、作品 (opus) 原图一键保存，视频多 P 批量下载，审查模式 + 只看大图 + 自定义键位，日夜主题。
-> A Bilibili enhancement userscript + local server: batch-download **original images & videos**, review mode with fullscreen preview and custom hotkeys, light/dark themes.
+B 站原图和视频的批量下载工具，由一个 Tampermonkey 脚本和一个跑在本机的 Node 服务组成。
 
-<div align="center">
+浏览器没法直接往硬盘写文件，所以下载这件事交给本地服务：脚本负责在页面上找资源、拿到原始地址，服务负责下载和写盘。
 
-![Version](https://img.shields.io/badge/version-0.9.32-00a1d6)
-![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-orange)
-![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
-![Browsers](https://img.shields.io/badge/browsers-Chrome%20%7C%20Edge%20%7C%20Firefox%20%7C%20Safari-4285F4)
-![GitHub stars](https://img.shields.io/github/stars/FNAS-496/bilibili-image-saver)
-![GitHub forks](https://img.shields.io/github/forks/FNAS-496/bilibili-image-saver)
-![GitHub issues](https://img.shields.io/github/issues/FNAS-496/bilibili-image-saver)
+## 安装
 
-</div>
+需要 Node.js 18 或更高版本（只用内置模块，不用 `npm install`）。
 
----
+1. 浏览器装 [Tampermonkey](https://www.tampermonkey.net/)
+2. 把 `bilibili-save.user.js` 拖进浏览器，安装脚本
+3. 双击 `一键启动.bat` 启动本地服务
 
-## 📑 目录 / Table of Contents
+如果电脑上没有 Node，用 `无需环境直接安装版` 那个文件夹 —— 里面内置了 Node 和 ffmpeg，双击里面的 `一键启动.bat` 即可。
 
-- [项目简介 / About](#项目简介--about)
-- [功能特性 / Features](#功能特性--features)
-- [支持环境 / Supported Environments](#支持环境--supported-environments)
-- [项目结构 / Project Structure](#项目结构--project-structure)
-- [快速上手 / Quick Start](#快速上手--quick-start)
-- [详细安装指南 / Detailed Installation](#详细安装指南--detailed-installation)
-- [使用方法 / How to Use](#使用方法--how-to-use)
-- [收款码 / Donate QR](#收款码--donate-qr)
-- [自定义保存位置 / Custom Save Location](#自定义保存位置--custom-save-location)
-- [常见问题 / FAQ](#常见问题--faq)
-- [技术说明 / Technical Notes](#技术说明--technical-notes)
-- [说明 / Disclaimer](#说明--disclaimer)
-- [贡献指南 / Contributing](#贡献指南--contributing)
-- [作者 / Author](#作者--author)
-- [许可证 / License](#许可证--license)
+## 用法
 
----
+**图片**：打开收藏夹、个人动态或作品页，脚本会自动提取原图并保存。不想让它自动跑，就在页面地址后面加 `?bili_auto_save=0`；也可以随时点右下角的「提取并保存」手动触发。
 
-## 📖 项目简介 / About
+**视频**：点右下角「视频下载」，面板会列出当前视频、分 P 列表，以及页面右侧的订阅合集。勾选之后点「下载选中」。
 
-B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之类的参数）。本工具会在浏览器端自动提取页面数据中的**原图地址**，发送给本机的一个小服务，由它下载并保存到你的硬盘。
+**审查模式**：在设置里切到「审查模式」后，图片会先逐张预览，按 ↓ 保存当前这张，← → 翻页，Esc 退出。键位可以在面板左侧改。
 
-本方案由两部分组成：
+## 文件存哪
 
-| 组件 / Component | 作用 / Role |
-|---|---|
-| `bilibili-save.user.js` | 浏览器用户脚本（Tampermonkey 等），负责提取原图/视频链接、审查模式 UI |
-| `save_images_server.js` | 本地 Node.js 服务，负责把图片/视频下载到硬盘（含 ffmpeg 合并） |
-| `一键启动.bat` | 一键启动本地服务并打开浏览器（Windows） |
-
-> 为什么需要本地服务？因为浏览器出于安全限制，无法直接把文件写入你电脑的任意文件夹。所以由浏览器提取链接 → 本地服务下载写盘。
-
-**🔗 项目地址 / Repository**：https://github.com/FNAS-496/bilibili-image-saver
-
----
-
-## ✨ 功能特性 / Features
-
-- ✅ **自动运行**：打开收藏夹 / 动态 / 作品页即自动下载，**无需点击任何按钮**
-- ✅ **全站支持**：脚本运行在**整个 B 站**，自动识别页面类型（收藏夹 / 动态 / 作品 / 空间 / 视频等），只在含图片的页面自动保存，其余页面零干扰
-- ✅ **智能识别**：自动检测当前空间是**你自己的**还是**他人的**（仅影响提示，公开内容均可保存）
-- ✅ **原图下载**：自动去除 `@` 缩略参数、还原 `webp/avif` 为原始格式
-- ✅ **批量抓取**：收藏夹页自动抓取前 200 个作品的原图
-- ✅ **动态自动增量**：动态列表页**滚动加载新动态时会自动继续保存**，无需手动操作
-- ✅ **智能去重**：同一张图只下载一次，不会重复占用空间
-- ✅ **进度提示**：页面右下角浮窗实时显示进度，可随时「停止」
-- ✅ **多页类型**：支持收藏夹、动态列表、动态详情、作品 (opus) 页
-- ✅ **视频批量下载**：右下角「📹 视频下载」按钮，支持收藏夹视频、播放页分 P 列表、**视频页「订阅合集」**的**多选批量下载**，并**列出每个视频的大小**
-- ✅ **审查模式**：逐张预览确认后再下载，支持点赞、全部下载、已下载标记
-- ✅ **已下载标记**：打开审查面板自动检测本地已下载的图片，全部图片都会显示，已下载的带 ✅ 标签
-- ✅ **点赞/关注/收藏**：自动检测页面当前点赞、关注、收藏状态（已点赞 ❤️ / 未点赞 👍，已收藏 ★ / 未收藏 ☆，已关注 ✔ / 未关注 ＋），一键切换
-- ✅ **只看大图**：一键隐藏左右侧栏，中央图片**占满整个屏幕**沉浸式看图
-- ✅ **自定义键位**：审查模式下的下一页 / 上一页 / 下载 / 退出快捷键**全部可在设置中自定义**
-- ✅ **日夜主题**：右下角一键切换**日间 / 夜间**主题
-- ✅ **Bilibili-Plus 根按钮**：所有小功能收纳在右下角「Bilibili-Plus」根按钮内，界面整洁
-- ✅ **手动下载优先**：默认**不自动下载**（可在设置中开启「打开页面自动提取」），点击「⬇️ 提取并保存」才下载，避免误操作
-- ✅ **自定义目录**：页面内「⚙️ 保存位置」窗口自由指定保存位置
-- ✅ **打赏面板**：下载成功后自动弹出提示，显示作者、GitHub、邮箱与微信收款码
-- ✅ **多浏览器**：Chrome / Edge / Firefox / Safari / Opera 等均可使用
-
----
-
-## 🖥️ 支持环境 / Supported Environments
-
-| 项目 / Item | 要求 / Requirement |
-|---|---|
-| 操作系统 OS | Windows / macOS / Linux |
-| Node.js | **18 或更高版本**（用于运行本地保存服务）👉 https://nodejs.org |
-| 浏览器 Browser | Chrome / Edge / Firefox / Safari / Opera / Brave / Vivaldi 等现代浏览器 |
-| 脚本管理器 | **Tampermonkey**（推荐）/ Violentmonkey / Userscripts / Greasemonkey |
-| 网络 Network | 需能访问 B 站（`www.bilibili.com`、`t.bilibili.com`、`*.hdslb.com`） |
-
-> 💡 脚本管理器下载地址：
-> - Tampermonkey：https://www.tampermonkey.net
-> - Violentmonkey：https://violentmonkey.github.io
-> - Safari 用 Userscripts：https://apps.apple.com/app/userscripts/id1463298887
-
----
-
-## 📁 项目结构 / Project Structure
+默认保存到桌面的 `B站下载` 文件夹：
 
 ```
-.
-├── bilibili-save.user.js      # 浏览器用户脚本（Tampermonkey 等）—— 提取原图链接
-├── save_images_server.js      # 本地 Node.js 保存服务 —— 下载图片并写盘
-├── 一键启动.bat                # 一键启动本地服务（中英双语界面，内嵌收款码）
-├── watermark/                 # 收款码源图（wechat_qr.jpg；已 base64 内嵌进 user.js，/qr 接口兼容保留）
-├── README.md                  # 本说明文档（中英双语）
-├── LICENSE                    # CC BY-NC-SA 4.0 许可协议
-└── .gitignore                 # Git 忽略规则（含 bilibili_images/ 与 watermark/ 源图）
+B站下载/
+├── xxx.png          # 图片（文件名是原图 hash）
+└── videos/          # 视频
 ```
 
-> 下载内容**默认保存到桌面的 `B站下载` 文件夹**（无需配置，也不会藏在程序目录里找不到）。该目录由本地服务自动创建。
+想换地方就在脚本的设置面板里填目录，清空则恢复成默认的桌面文件夹。视频的实际保存位置会显示在下载面板底部，不用自己猜。
 
-### 🧭 代码结构 / Code Map（便于二次开发）
+macOS / Linux 没有 bat，直接跑服务即可，目录可以从命令行或环境变量传入：
 
-`bilibili-save.user.js` 按功能划分为 15 个区块，每节都有醒目标题（形如 `// ===== 三、图片地址处理 =====`），可直接搜索关键字跳转：
+```bash
+node save_images_server.js ~/Pictures/bili                # 命令行参数
+BILI_SAVE_DIR=~/Pictures/bili node save_images_server.js  # 或环境变量
+```
 
-| 区块 | 主要内容 |
-| --- | --- |
-| 一、配置与持久化 | 设置读写、默认值 |
-| 二、通用工具 | 延时、主题 CSS 变量 |
-| 三、图片地址处理 | URL 补全、缩略图还原原图、噪声过滤 |
-| 四、图片地址提取 | DOM / 文本 / JSON / 子页面 |
-| 五、网络抓取 | `fetchText`（优先 GM_xmlhttpRequest） |
-| 六、状态提示 UI | 浮窗 / toast / 进度条 |
-| 七、本地服务通信 | `/save`、`/setdir` 等接口调用 |
-| 八、页面类型识别 | 收藏夹 / 动态 / 作品 / 空间 |
-| 九、打赏面板 | 下载成功后的面板 |
-| 十、审查模式 | 左键位 · 中预览 · 右 UP 信息 |
-| 十一、主流程 | 提取图片并按设置下载 |
-| 十二、设置面板 | 目录 / 下载参数 / 下载模式 / 键位 |
-| 十三、视频下载 | 当前视频 / 分 P / 订阅合集 |
-| 十四、悬浮按钮与启动 | 按钮组、自动运行判断 |
-| 十五、初始化入口 | `init()` |
+## 一些实现细节
 
-`save_images_server.js` 同样分为 4 个区块：工具函数 → 图片下载 → 视频下载 → 视频保存。
+- 图片会自动去掉 `@316w_560h` 这类缩略图后缀取原图，webp / avif 尽量转成 jpg
+- 视频走 B 站的 playurl 接口拿 DASH 流。装了 ffmpeg 就合并成带声音的 mp4，没装则音视频分开存（`.video.mp4` + `.audio.m4a`）
+- ffmpeg 可以放在项目目录的 `ffmpeg\ffmpeg.exe`，也可以用系统 PATH 里的
+- 已经下载过的视频会标记「✅ 已下载」，「全选未下载」和下载时都会自动跳过，不会重复占带宽
+- 服务端有查重，同一个文件不会重复下载
+- 支持收藏夹、动态、作品（opus）以及整个订阅合集的批量下载
 
-> 💡 常见二次开发位置：**改配色/主题** → `applyTheme()` 与 `STYLE` 常量；**改审查面板布局** → `openReviewPanel()`（内含「左栏/中栏/右栏」分区注释）；**改下载参数** → 设置面板。跨面板复用的样式集中在 `STYLE` 常量，改一处即可全局生效。
+## 常见问题
 
+**提示「未连接本地保存服务」**
 
----
+本地服务没启动。双击 `一键启动.bat`，然后刷新 B 站页面。
 
-## 🚀 快速上手 / Quick Start
+**有些图片下载失败**
 
-只需**两个文件**，之后每次使用也只要一步：
+通常是需要登录才能看的图（私密收藏夹、部分作者的图），属于 B 站的权限限制，本地服务绕不过去。
 
-1. **双击 `一键启动.bat`** —— 它会自动完成：检查 Node.js → 启动本地服务 → 打开浏览器
-2. 在浏览器打开 B 站收藏夹 / 动态 / 作品页，页面右下角会自动开始保存原图
+**视频列表是空的，或者拿不到下载地址**
 
-> 💡 详细步骤见下文「详细安装指南」。
+先确认本地服务在运行。如果只是个别视频失败，可能该视频有会员或地区限制。
 
----
+**下载的视频没有声音**
 
-## 📦 详细安装指南 / Detailed Installation
+没装 ffmpeg。装好后重新下载，或者直接用配套的 `.audio.m4a`。
 
-### 第 1 步：安装 Node.js（仅第一次）
+**怎么更新脚本**
 
-1. 打开 https://nodejs.org ，下载 **LTS 版本**并安装（一路默认即可）。
-2. 验证是否成功：打开终端（CMD 或 PowerShell）输入 `node -v`，能显示版本号（如 `v20.x.x`）即成功。
+Tampermonkey 会按脚本里的 `@updateURL` 自动检查更新，也可以手动删掉旧脚本重新导入一次。
 
-### 第 2 步：安装浏览器脚本（仅第一次）
+## 许可
 
-1. 安装 Tampermonkey 插件（见上表链接），浏览器右上角会出现它的图标。
-2. 手动导入脚本：Tampermonkey 管理面板 → 「添加新脚本」→ 全选删除后粘贴 `bilibili-save.user.js` 的全部内容，`Ctrl+S` 保存。
-   > 也可以直接双击 `bilibili-save.user.js` 文件，Tampermonkey 会弹出「安装」确认（需先开启「允许访问文件网址」：Tampermonkey 管理面板 → 设置 → 勾选）。
+[CC BY-NC-SA 4.0](LICENSE) —— 可以随意使用和修改，但要保留署名、不能商用、改完也要用同样的协议开源。
 
-### 第 3 步：启动本地保存服务（每次使用前）
+作者：FNAS-496（sijiudeliu@outlook.com）
 
-- **Windows**：双击 `一键启动.bat`（自动检测并启动服务、打开浏览器）。
-- **macOS / Linux**：打开终端，进入项目目录后运行：
-  ```bash
-  node save_images_server.js
-  ```
-  看到 `save_images_server listening on http://127.0.0.1:8765` 即成功。
+觉得好用的话，欢迎请我喝杯咖啡 ☕ 脚本的打赏面板里有收款码。
 
-> ⚠️ 服务窗口请不要关闭；下载完成后关闭它即可停止服务。
-
----
-
-## 🧭 使用方法 / How to Use
-
-1. 确认本地服务已启动（终端 / 服务窗口在运行）。
-2. 打开以下任意页面，**右下角浮窗会自动开始提取并保存原图**：
-
-| 页面类型 | 示例 URL |
-|---|---|
-| 收藏夹 Favorites | `https://space.bilibili.com/{你的UID}/favlist?fid=opus&ftype=opus` |
-| 动态列表 Dynamic list | `https://space.bilibili.com/{你的UID}/dynamic` |
-| 动态详情 Dynamic detail | `https://t.bilibili.com/752328990923952129` |
-| 作品详情 Opus detail | `https://www.bilibili.com/opus/1229320370032476179` |
-
-> 收藏夹与动态的 `{你的UID}` 替换成你自己的空间 UID（打开 `space.bilibili.com` 后地址栏里的数字）；`t.bilibili.com` 与 `opus` 为任意动态/作品示例。
-
-3. 下载完成后，右下角浮窗会显示：`保存完成：新增 X 张，已存在 Y 张，失败 Z 张`。
-4. 图片**默认保存到桌面的 `B站下载` 文件夹**（文件名即原图 hash，如 `ea017859....png`）。
-
-**手动重试**：若中途失败或想重新抓取，点击页面右下角的「重新提取并保存」按钮即可。
-
-**暂停自动运行**：在页面 URL 末尾加上 `?bili_auto_save=0` 后访问，脚本将不自动运行。
-
-**动态列表页**：页面只渲染当前看到的动态，**向下滚动时新动态会自动被继续提取保存**；滚动到想看的位置稍等片刻即可。
-
-**智能页面识别**：脚本运行在整个 B 站，会自动判断当前页面类型：
-- 收藏夹 / 动态列表 / 动态详情 / 作品页 → 自动提取保存原图
-- 空间首页、视频页、番剧页等 → 不自动运行（不影响正常浏览），仍可随时点击右下角按钮手动保存
-- 动态列表会提示该空间是「你的空间」还是「他人空间」（他人空间仅能保存公开内容）
-
-**视频批量下载**：点击页面右下角「📹 视频下载」按钮，弹出视频列表面板：
-- 自动识别**收藏夹页**与**视频播放页**（含分 P 列表）中的视频
-- 视频播放页同时会列出页面右侧**「订阅合集」**中的全部视频（通过 B 站合集接口拉取，与当前视频一起展示，自动去重）
-- 面板会**自动获取每个视频的大小与画质**（无需手动操作；合集视频较多，勾选下载时才会获取其大小）
-- 面板底部**显示文件实际保存位置**（便携版会把目录放在自己的文件夹内，避免"下了却找不到文件"）
-- **已下载的视频自动标记 `✅ 已下载`**：勾选时用「全选未下载」可一键跳过它们，下载时也会自动略过，不会重复消耗流量
-- 「下载选中 (N)」会显示已选数量，旁边「清空」一键取消全部勾选
-- 下载完成后提示**新增 / 已存在 / 失败**数量；失败时会点名具体是哪些视频，并给出**完整保存路径**
-- 检测到 ffmpeg 时自动把视频流+音频流**合并为带声音的 mp4**；未安装 ffmpeg 则音画分开保存（`.video.mp4` + `.audio.m4a`）
-
-> 需要合并成带声音的 mp4？请安装 [FFmpeg](https://ffmpeg.org) 并加入系统 PATH，或把 `ffmpeg.exe` 放到项目目录的 `ffmpeg\` 子目录（无需环境直接安装版已内置 `ffmpeg\ffmpeg.exe`）。
-
----
-
-## 💳 收款码 / Donate QR
-
-下载成功后，页面右下角会弹出「下载成功」面板，展示作者、GitHub、邮箱与收款码打赏入口。
-
-收款码以 base64 **直接内嵌在 `bilibili-save.user.js`**（`DONATE_QR` 常量）中，因此：
-
-- **不依赖本地服务**：即使没有启动「一键启动.bat」，打赏面板也能正常显示收款码；
-- 不受 HTTPS 页面**混合内容（Mixed Content）**限制：不需要向 `http://127.0.0.1:8765/qr` 发起请求。
-
-> 本地服务的 `/qr` 接口仍然保留（从 `watermark/` 目录读取图片），供相册页等其它用途使用。
-
-**更换成你自己的收款码**：
-1. 微信 → 我 → 收付款 → 二维码收款 → 保存收款码图片
-2. 用新图片**同名覆盖** `watermark/wechat_qr.jpg`
-3. 重新生成内嵌数据并写回脚本（在项目目录执行，需 Node.js）：
+想换成自己的收款码，就用新图覆盖 `watermark/wechat_qr.jpg`，再重新生成脚本里内嵌的 base64：
 
 ```bash
 node -e "const fs=require('fs');const b=fs.readFileSync('watermark/wechat_qr.jpg');const s=fs.readFileSync('bilibili-save.user.js','utf8');fs.writeFileSync('bilibili-save.user.js',s.replace(/const DONATE_QR = '[^']*';/,'const DONATE_QR = \'data:image/jpeg;base64,'+b.toString('base64')+'\';'))"
 ```
 
-4. 在脚本管理器（Tampermonkey 等）中重新导入 / 更新脚本
-
-> `watermark/` 目录已被 `.gitignore` 忽略；但**内嵌进 user.js 的 base64 会随仓库公开**，如需保护隐私可替换为你自己的收款码或直接删除该常量（打赏面板会给出提示）。
-
-
----
-
-## 📂 自定义保存位置 / Custom Save Location
-
-### 方式 A：页面内设置窗口（推荐，适用于所有系统）
-1. 打开任意 B 站页面，点击右下角 **「⚙️ 保存位置」** 按钮。
-2. 在弹出的窗口中输入保存目录（例如 `D:\bilibili_pics`），点「保存」。
-3. 首次使用本脚本时，该设置窗口会自动弹出一次。
-
-### 方式 B：修改 `一键启动.bat`（Windows）
-用记事本打开 `一键启动.bat`，找到文件顶部的这一行：
-
-```bat
-set "SAVE_DIR="
-```
-
-把保存目录填进去，例如：
-
-```bat
-set "SAVE_DIR=D:\bilibili_pics"
-```
-
-保存后重新双击即可。留空则使用默认目录（桌面「B站下载」）。
-
-### 方式 C：命令行参数 / 环境变量（macOS / Linux / 通用）
-
-```bash
-# 方式 1：命令行参数
-node save_images_server.js "/Users/me/Pictures/bili"
-
-# 方式 2：环境变量
-BILI_SAVE_DIR="/Users/me/Pictures/bili" node save_images_server.js
-```
-
-> 说明：页面内设置（方式 A）即时生效并**自动记忆**（重启服务后仍然有效）；`一键启动.bat` 与命令行在服务**启动时**设定目录。优先级：环境变量 / 命令行参数 > 页面内设置（持久化）> 默认（**桌面「B站下载」**）。在设置面板中把目录**清空**即可恢复默认。
-
----
-
-## ❓ 常见问题 / FAQ
-
-**Q: 提示「未连接本地保存服务」怎么办？**
-A: 说明本地服务没启动。Windows 双击 `一键启动.bat`；macOS/Linux 运行 `node save_images_server.js`，然后**刷新** B 站页面。
-
-**Q: 如何更新脚本到新版本？**
-A: 手动重新导入 `bilibili-save.user.js`（覆盖安装即可），然后**刷新** B 站页面。
-
-**Q: 图片 / 视频保存在哪里？**
-A: 默认保存到桌面的 **`B站下载`** 文件夹（视频在其中的 `videos/` 子目录）。也可在设置面板、`一键启动.bat` 顶部或命令行指定其他目录（见上节）。视频面板底部会直接显示当前实际保存位置。
-
-**Q: 有些图片下载失败（显示失败 N 张）？**
-A: 多为需要登录 Cookie 才能访问的图片（如私密收藏夹、部分作者的图）。这是 B 站权限限制，本地服务无法绕过。
-
-**Q: 收藏夹 / 动态很多，一次能抓多少？**
-A: 收藏夹页默认抓取前 200 个作品；可在 `bilibili-save.user.js` 顶部的 `MAX_CHILD_PAGES` 调整。动态列表页会自动增量抓取（滚动即继续）。
-
-**Q: 不想自动运行，只想手动控制？**
-A: URL 加 `?bili_auto_save=0` 关闭自动；需要时点右下角「重新提取并保存」按钮。
-
-**Q: 支持 B 站 App 或移动网页吗？**
-A: 脚本匹配的是电脑端网页（`www.bilibili.com`、`t.bilibili.com`、`space.bilibili.com`）。建议使用电脑浏览器。
-
----
-
-## 🛠️ 技术说明 / Technical Notes
-
-- 浏览器端通过 `GM_xmlhttpRequest` 跨域抓取子页面并解析 `\u002F` 转义、`@` 缩略参数，得到原图 URL。
-- 本地服务监听 **127.0.0.1:8765**（仅本机可访问，不暴露到局域网），通过 Referer + User-Agent 模拟浏览器下载，并校验返回的 Content-Type，避免把风控/错误页存成图片。
-- 下载并发数默认 8（服务器 `CONCURRENCY`），抓取子页并发数默认 6（脚本 `CHILD_CONCURRENCY`）。
-- 视频下载：脚本调用 B 站 `playurl` API 获取 DASH 视频/音频流与大小，发送给本地服务 `/video/save` 下载；检测到 ffmpeg 时自动合并为 mp4（优先查找项目目录 `ffmpeg\ffmpeg.exe`，其次系统 PATH），否则音画分开保存。视频并发默认 2。
-
----
-
-## ⚖️ 说明 / Disclaimer
-
-本工具仅用于个人学习与备份自己有权访问的内容。请尊重作者版权，勿将下载内容用于商业用途或二次传播。下载速度与成功率受 B 站风控影响，请合理使用。
-
-*This tool is for personal study and backing up content you are authorized to access. Please respect the artists' copyright. Usage is subject to Bilibili's terms and anti-abuse policies.*
-
----
-
-## 🤝 贡献指南 / Contributing
-
-欢迎任何形式的贡献！如果你发现问题或有改进建议：
-
-1. **提交 Issue**：请说明问题现象、复现步骤、浏览器及脚本版本。
-2. **提交 Pull Request**：Fork 本项目 → 修改 → 提交 PR。
-   - 代码改动请附带简要说明。
-   - 涉及图片提取逻辑的改动，请在 PR 中说明对应的 B 站页面结构（B 站前端会不定期改版）。
-
-### 开发 / Development
-
-```bash
-# 启动本地保存服务（开发调试时）
-node save_images_server.js
-
-# 浏览器端脚本：将 bilibili-save.user.js 导入 Tampermonkey 即可
-```
-
-> 提示：B 站前端经常改版导致提取规则失效，欢迎在 Issue 中反馈，我们会及时跟进。
-
----
-
-## 👤 作者 / Author
-
-- **GitHub**：[FNAS-496](https://github.com/FNAS-496)
-- **邮箱 / Email**：sijiudeliu@outlook.com
-
-如果你觉得这个工具有帮助，欢迎 Star ⭐ 或到 [Issues](https://github.com/FNAS-496/bilibili-image-saver/issues) 反馈问题。
-
-*If you find this tool helpful, please give it a ⭐ or report issues on GitHub.*
-
----
-
-## 📜 许可证 / License
-
-本项目采用 **CC BY-NC-SA 4.0**（创作共享 · 署名-非商业性使用-相同方式共享）授权：
-
-- ✅ **允许**：分享、复制、修改与演绎
-- ✅ **必须署名**原作者（传播与修改时均须署名）
-- ✅ **修改必须开源**：衍生作品须基于相同协议发布
-- ❌ **禁止商业性使用**
-
-详见 [LICENSE](LICENSE) · [官方许可文本](https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode)
-
-*This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. See [LICENSE](LICENSE).*
+然后重新导入脚本即可。
