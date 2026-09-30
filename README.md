@@ -5,7 +5,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-0.9.27-00a1d6)
+![Version](https://img.shields.io/badge/version-0.9.28-00a1d6)
 ![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-orange)
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -106,7 +106,7 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 ├── bilibili-save.user.js      # 浏览器用户脚本（Tampermonkey 等）—— 提取原图链接
 ├── save_images_server.js      # 本地 Node.js 保存服务 —— 下载图片并写盘
 ├── 一键启动.bat                # 一键启动本地服务（中英双语界面，内嵌收款码）
-├── watermark/                 # 收款码源图（wechat_qr.jpg，由本地服务 /qr 提供）
+├── watermark/                 # 收款码源图（wechat_qr.jpg；已 base64 内嵌进 user.js，/qr 接口兼容保留）
 ├── README.md                  # 本说明文档（中英双语）
 ├── LICENSE                    # CC BY-NC-SA 4.0 许可协议
 └── .gitignore                 # Git 忽略规则（含 bilibili_images/ 与 watermark/ 源图）
@@ -223,15 +223,26 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 
 下载成功后，页面右下角会弹出「下载成功」面板，展示作者、GitHub、邮箱与收款码打赏入口。
 
-收款码以 base64 **内嵌在 `一键启动.bat` 中**：启动时会自动释放到 `watermark/wechat_qr.jpg`（缺失时），由本地服务器 `/qr` 接口提供给打赏面板（`http://127.0.0.1:8765/qr`）。
+收款码以 base64 **直接内嵌在 `bilibili-save.user.js`**（`DONATE_QR` 常量）中，因此：
+
+- **不依赖本地服务**：即使没有启动「一键启动.bat」，打赏面板也能正常显示收款码；
+- 不受 HTTPS 页面**混合内容（Mixed Content）**限制：不需要向 `http://127.0.0.1:8765/qr` 发起请求。
+
+> 本地服务的 `/qr` 接口仍然保留（从 `watermark/` 目录读取图片），供相册页等其它用途使用。
 
 **更换成你自己的收款码**：
 1. 微信 → 我 → 收付款 → 二维码收款 → 保存收款码图片
-2. 用新图片**同名覆盖** `watermark/wechat_qr.jpg`（支持 png / jpg / jpeg / webp，服务器会自动识别 `watermark/` 目录里的图片）
-3. 重启本地服务（关闭服务窗口后重新双击「一键启动.bat」），打赏面板即显示新收款码
+2. 用新图片**同名覆盖** `watermark/wechat_qr.jpg`
+3. 重新生成内嵌数据并写回脚本（在项目目录执行，需 Node.js）：
 
-> 若要重新打包进 bat（自包含分发），需重新生成 `一键启动.bat`（将新图 base64 内嵌）；日常使用直接覆盖 `watermark/` 即可。
-> 收款码文件在 `watermark/` 目录中，已被 `.gitignore` 忽略，**不会随仓库公开**，可放心私有使用。
+```bash
+node -e "const fs=require('fs');const b=fs.readFileSync('watermark/wechat_qr.jpg');const s=fs.readFileSync('bilibili-save.user.js','utf8');fs.writeFileSync('bilibili-save.user.js',s.replace(/const DONATE_QR = '[^']*';/,'const DONATE_QR = \'data:image/jpeg;base64,'+b.toString('base64')+'\';'))"
+```
+
+4. 在脚本管理器（Tampermonkey 等）中重新导入 / 更新脚本
+
+> `watermark/` 目录已被 `.gitignore` 忽略；但**内嵌进 user.js 的 base64 会随仓库公开**，如需保护隐私可替换为你自己的收款码或直接删除该常量（打赏面板会给出提示）。
+
 
 ---
 
