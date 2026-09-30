@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.24
+// @version      0.9.25
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -1300,8 +1300,9 @@
     }
     function formatDuration(sec){
         sec = Math.round(sec || 0);
-        const m = Math.floor(sec / 60), s = sec % 60;
-        return (m < 10 ? '0' + m : m) + ':' + (s < 10 ? '0' + s : s);
+        const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+        const mm = m < 10 ? '0' + m : m, ss = s < 10 ? '0' + s : s;
+        return h > 0 ? (h + ':' + mm + ':' + ss) : (mm + ':' + ss);
     }
     function formatSpeed(bps){
         if(!bps || bps <= 0) return '';
@@ -1374,25 +1375,44 @@
         try{
             const meta = getCollectionMeta();
             if(!meta || !meta.sid || !meta.mid) return null;
-            const items = [];
             const pageSize = 30;
-            let pageNum = 1;
-            for(;;){
-                const url = 'https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?mid=' + meta.mid + '&season_id=' + meta.sid + '&page_num=' + pageNum + '&page_size=' + pageSize + '&sort_reverse=false';
-                const text = await fetchText(url);
-                const j = JSON.parse(text);
-                if(!(j && j.code === 0 && j.data)) break;
-                const archives = j.data.archives || [];
-                archives.forEach(a => {
-                    if(items.length >= MAX_COLLECTION_VIDEOS) return;
+            const apiUrl = 'https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?mid=' + meta.mid + '&season_id=' + meta.sid + '&sort_reverse=false&page_size=' + pageSize + '&page_num=';
+            const fetchPage = async (p) => {
+                try{
+                    const text = await fetchText(apiUrl + p);
+                    const j = JSON.parse(text);
+                    if(j && j.code === 0 && j.data){
+                        return { archives: j.data.archives || [], total: (j.data.page && j.data.page.total) || 0 };
+                    }
+                }catch(e){}
+                return null;
+            };
+            const first = await fetchPage(1);
+            if(!first || !first.archives.length) return null;
+            const total = first.total || first.archives.length;
+            const pageCount = Math.max(1, Math.min(200, Math.ceil(Math.min(total, MAX_COLLECTION_VIDEOS) / pageSize)));
+            const pageMap = new Map();
+            pageMap.set(1, first.archives);
+            let next = 2;
+            async function worker(){
+                while(next <= pageCount){
+                    const p = next++;
+                    const r = await fetchPage(p);
+                    if(r) pageMap.set(p, r.archives);
+                }
+            }
+            await Promise.all(Array.from({ length: Math.min(CHILD_CONCURRENCY, Math.max(0, pageCount - 1)) }, () => worker()));
+            const items = [];
+            for(let p = 1; p <= pageCount && items.length < MAX_COLLECTION_VIDEOS; p++){
+                const arr = pageMap.get(p);
+                if(!arr) continue;
+                for(const a of arr){
+                    if(items.length >= MAX_COLLECTION_VIDEOS) break;
                     items.push({ bvid: a.bvid, cid: null, title: (a.title || ('视频 ' + a.bvid)).trim(), duration: a.duration || null, fromCollection: true });
-                });
-                const total = (j.data.page && j.data.page.total) || archives.length;
-                if(!archives.length || items.length >= total || items.length >= MAX_COLLECTION_VIDEOS || pageNum >= 200) break;
-                pageNum++;
+                }
             }
             if(!items.length) return null;
-            return { title: meta.title, total: items.length, items };
+            return { title: meta.title, total, truncated: total > items.length, items };
         }catch(e){
             return null;
         }
@@ -1640,7 +1660,7 @@
             }
             if(progEl) progEl.style.display = 'block';
             dlBtn.textContent = '下载中…';
-            const videos = chosen.map(it => ({ title: it.title, videoUrl: it.videoUrl, audioUrl: it.audioUrl, ext: it.ext }));
+            const videos = chosen.map(it => ({ title: it.title, videoUrl: it.videoUrl, audioUrl: it.audioUrl, ext: it.ext, bvid: it.bvid }));
             const jobId = 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
             const progBar = panel.querySelector('#bili-video-prog-bar');
             const progPct = panel.querySelector('#bili-video-prog-pct');
@@ -1746,9 +1766,15 @@
             await fetchSizes();
             const videoCount = state.items.filter(i => !i.fromCollection).length;
             const colCount = state.items.length - videoCount;
-            hintEl.textContent = colCount > 0
-                ? '视频 ' + videoCount + ' 个 · 合集《' + (col ? col.title : '') + '》' + colCount + ' 个（合集项下载时获取大小）'
-                : '共 ' + state.items.length + ' 个';
+            if(colCount > 0){
+                const colName = '合集《' + (col ? col.title : '') + '》' + colCount + ' 个';
+                const tip = (col && col.truncated)
+                    ? '（合集共 ' + col.total + ' 个，已达上限只取前 ' + colCount + ' 个）'
+                    : '（合集项下载时获取大小）';
+                hintEl.textContent = '视频 ' + videoCount + ' 个 · ' + colName + tip;
+            } else {
+                hintEl.textContent = '共 ' + state.items.length + ' 个';
+            }
         })();
     }
 

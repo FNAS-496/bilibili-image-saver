@@ -60,8 +60,13 @@ function extensionFromUrl(u){
 }
 
 function sanitizeFilename(name){
-    let s = String(name).replace(/[^a-z0-9._-]/gi, '_').replace(/\.{2,}/g, '_');
-    if(!s || s === '.' || s === '..') s = '_';
+    let s = String(name)
+        .replace(/[\u0000-\u001f\u007f]/g, '')
+        .replace(/[\\/:*?"<>|]/g, '_')
+        .replace(/\.{2,}/g, '_')
+        .replace(/[. ]+$/, '');
+    if(!s) s = '_';
+    if(s === '.' || s === '..') s = '_';
     return s;
 }
 
@@ -285,11 +290,15 @@ function mergeWithFfmpeg(videoPath, audioPath, outPath){
 }
 
 async function saveVideo(item, index, job){
-    const title = sanitizeFilename(String(item.title || '').trim()) || `video_${index}`;
-    const base = title.length > 80 ? title.slice(0, 80) : title;
+    const rawTitle = String(item.title || '').trim();
+    const safeTitle = sanitizeFilename(rawTitle) || `video_${index}`;
+    const bvid = sanitizeFilename(String(item.bvid || '').trim());
+    const suffix = bvid ? '_' + bvid : '';
+    const maxBase = Math.max(40, 80 - suffix.length);
+    const base = (safeTitle.length > maxBase ? safeTitle.slice(0, maxBase) : safeTitle) + suffix;
     const outMp4 = path.join(VIDEO_OUT_DIR, base + '.mp4');
     if(fs.existsSync(outMp4) && fs.statSync(outMp4).size > 0){
-        return { title: item.title, saved: outMp4, exists: true };
+        return { title: rawTitle, saved: outMp4, exists: true };
     }
 
     const videoUrl = String(item.videoUrl || item.url || '').trim();
