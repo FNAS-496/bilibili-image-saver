@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.28
+// @version      0.9.29
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -486,19 +486,6 @@
             return { ok:false, error: err.message };
         }
     }
-
-    // 收集当前页面中的所有原图地址
-    function collectPageImageUrls(){
-        const pageUrls = new Set(extractUrlsFromDoc(document));
-        const textUrls = extractUrlsFromText(document.documentElement.innerHTML);
-        textUrls.forEach(u => pageUrls.add(u));
-        const jsonUrls = extractUrlsFromJsonText(document.documentElement.innerHTML);
-        jsonUrls.forEach(u => pageUrls.add(u));
-        return Array.from(pageUrls).filter(isContentImageUrl);
-    }
-
-
-
 
     // ========================================================================
     // 八、页面类型识别
@@ -1255,7 +1242,6 @@
         });
         const s = loadSettings();
         const inputStyle = 'width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--bili-save-border);border-radius:8px;font-size:13px;margin-bottom:4px;background:var(--bili-save-input-bg);color:var(--bili-save-fg);outline:none;';
-        const inputStyleFocused = inputStyle + ';border-color:#00a1d6;';
         const labelStyle = 'font-size:12px;color:var(--bili-save-muted);margin-bottom:4px;';
         const cardStyle = 'padding:12px 16px;border-bottom:1px solid var(--bili-save-border);';
         const groupTitle = 'display:flex;align-items:center;gap:6px;font-weight:bold;font-size:13px;color:#00a1d6;margin-bottom:8px;';
@@ -1353,7 +1339,6 @@
         });
 
         window.__biliPendingKeys = window.__biliPendingKeys || {};
-        const keyLabel = { next:'#bili-key-next', prev:'#bili-key-prev', download:'#bili-key-download', exit:'#bili-key-exit' };
         const KEY_BTN_LABELS = { next:'下一页', prev:'上一页', download:'下载', exit:'退出' };
         panel.querySelectorAll('.bili-key-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -1926,13 +1911,15 @@
             return b;
         };
 
-        const themeBtn = mkSub((THEME === 'dark' ? '☀️ 日间' : '🌙 夜间'), '#ffb300', () => {
+        // 说明：mkSub() 的副作用就是创建按钮并登记到 subBtns；
+        // 只有需要动态改文案/禁用状态的按钮（如 saveBtn）才需要接收返回值。
+        mkSub((THEME === 'dark' ? '☀️ 日间' : '🌙 夜间'), '#ffb300', () => {
             const next = THEME === 'dark' ? 'light' : 'dark';
             saveTheme(next);
             location.reload();
         });
-        const settingsBtn = mkSub('⚙️ 设置', '#00a1d6', openSettingsPanel);
-        const videoBtn = mkSub('📹 视频下载', '#fb7299', openVideoPanel);
+        mkSub('⚙️ 设置', '#00a1d6', openSettingsPanel);
+        mkSub('📹 视频下载', '#fb7299', openVideoPanel);
         const saveBtn = mkSub('⬇️ 提取并保存', '#00a1d6', () => {
             saveBtn.disabled = true;
             saveBtn.textContent = '正在提取...';
