@@ -80,8 +80,6 @@ Tampermonkey 会按脚本里的 `@updateURL` 自动检查更新，也可以删�
 
 作者：FNAS-496（sijiudeliu@outlook.com）
 
-觉得好用的话欢迎请我喝杯咖啡 ☕ 打赏面板里有收款码~
-
 想换成自己的收款码，就拿新图覆盖 `watermark/wechat_qr.jpg`，再重新生成脚本里内嵌的那串 base64：
 
 ```bash
