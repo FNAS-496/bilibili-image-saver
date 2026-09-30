@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.25
+// @version      0.9.26
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -697,7 +697,7 @@
         Object.assign(panel.style, {
             position:'fixed', inset:'0', zIndex:9999998,
             background: dark ? 'rgba(24,26,32,0.97)' : 'rgba(248,249,252,0.97)',
-            display:'flex', alignItems:'stretch',
+            display:'flex', alignItems:'stretch', overflow:'auto',
             color: dark ? '#e6e6e6' : '#1f2330', fontSize:'14px'
         });
         const upInfo = extractUpInfo();
@@ -722,7 +722,7 @@
             '</div>';
         };
         panel.innerHTML =
-            '<div id="bili-review-left" style="width:220px;padding:18px 16px;border-right:1px solid ' + borderC + ';overflow:auto;display:flex;flex-direction:column;background:' + subBg + ';">' +
+            '<div id="bili-review-left" style="width:220px;flex-shrink:0;padding:18px 16px;border-right:1px solid ' + borderC + ';overflow:auto;display:flex;flex-direction:column;background:' + subBg + ';">' +
             '<div style="display:flex;align-items:center;gap:6px;font-weight:bold;font-size:14px;margin-bottom:12px;color:#00a1d6;letter-spacing:.3px;">' +
             '<b>键位设置</b>' +
             '<span style="flex:1;"></span>' +
@@ -747,13 +747,14 @@
             '<div style="height:6px;background:' + (dark ? '#2c3038' : '#e3e6ec') + ';border-radius:3px;overflow:hidden;"><div id="bili-review-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#00a1d6,#00b3e6);border-radius:3px;transition:width .3s;"></div></div>' +
             '</div>' +
             '</div>' +
-            '<div id="bili-review-center" style="flex:1;display:flex;flex-direction:column;min-width:0;position:relative;overflow:hidden;">' +
+            '<div id="bili-review-center" style="flex:1;display:flex;flex-direction:column;min-width:320px;position:relative;overflow:hidden;">' +
             '<div id="bili-review-progress" style="position:absolute;top:14px;left:50%;transform:translateX(-50%);color:' + mutedC + ';font-size:13px;background:' + (dark ? 'rgba(24,26,32,0.75)' : 'rgba(255,255,255,0.8)') + ';padding:5px 16px;border-radius:20px;z-index:3;box-shadow:0 1px 6px rgba(0,0,0,0.12);white-space:nowrap;"></div>' +
+            '<button id="bili-review-full" style="position:absolute;top:12px;right:14px;z-index:3;padding:5px 11px;border:1px solid ' + (dark ? '#4a4e5c' : '#d0d4dd') + ';background:' + (dark ? 'rgba(40,42,50,0.92)' : 'rgba(255,255,255,0.92)') + ';color:' + (dark ? '#e6e6e6' : '#2a2f3a') + ';border-radius:20px;cursor:pointer;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,0.18);">🔍 只看大图</button>' +
             '<div style="flex:1;display:flex;align-items:center;justify-content:center;min-height:0;margin:48px 14px 14px;background:' + (dark ? '#0d0e12' : '#eef0f5') + ';border-radius:12px;box-shadow:0 4px 30px rgba(0,0,0,0.18);overflow:hidden;position:relative;" id="bili-review-frame">' +
             '<img id="bili-review-img" src="" alt="预览" style="max-width:100%;max-height:100%;object-fit:contain;display:block;margin:auto;box-shadow:0 2px 12px rgba(0,0,0,0.2);border-radius:4px;">' +
             '</div>' +
             '</div>' +
-            '<div id="bili-review-right" style="width:220px;padding:16px 14px;border-left:1px solid ' + borderC + ';overflow:auto;background:' + subBg + ';">' +
+            '<div id="bili-review-right" style="width:220px;flex-shrink:0;padding:16px 14px;border-left:1px solid ' + borderC + ';overflow:auto;background:' + subBg + ';">' +
             '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">' +
             (upInfo.upAvatar ? '<img src="' + esc(upInfo.upAvatar) + '" style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:1px solid ' + borderC + ';flex-shrink:0;" referrerpolicy="no-referrer">' : '<div style="width:36px;height:36px;border-radius:50%;background:' + (dark ? '#3a3f4d' : '#e2e6ee') + ';display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;">👤</div>') +
             '<div style="min-width:0;">' +
@@ -769,8 +770,7 @@
             '<button id="bili-review-dl-all" style="width:100%;padding:9px 0;border:none;background:linear-gradient(135deg,#00a1d6,#00b3e6);color:#fff;border-radius:9px;cursor:pointer;font-size:13px;margin-bottom:8px;box-shadow:0 2px 8px rgba(0,161,214,0.3);">全部下载</button>' +
             '<button id="bili-review-close" style="' + btnGhost + 'margin-bottom:0;">退出审查</button>' +
             '</div>' +
-            '</div>' +
-            '<button id="bili-review-full" style="position:absolute;top:8px;right:12px;z-index:3;padding:5px 11px;border:1px solid ' + (dark ? '#4a4e5c' : '#d0d4dd') + ';background:' + (dark ? 'rgba(40,42,50,0.92)' : 'rgba(255,255,255,0.92)') + ';color:' + (dark ? '#e6e6e6' : '#2a2f3a') + ';border-radius:20px;cursor:pointer;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,0.18);">🔍 只看大图</button>';
+            '</div>';
         document.body.appendChild(panel);
 
         let index = 0;
@@ -782,6 +782,7 @@
         const barEl = panel.querySelector('#bili-review-bar');
         const leftEl = panel.querySelector('#bili-review-left');
         const rightEl = panel.querySelector('#bili-review-right');
+        const centerEl = panel.querySelector('#bili-review-center');
         const fullBtn = panel.querySelector('#bili-review-full');
         const likeBtn = panel.querySelector('#bili-review-like');
         const favBtn = panel.querySelector('#bili-review-fav');
@@ -870,7 +871,7 @@
         }
         document.addEventListener('keydown', onKey);
 
-        panel.addEventListener('wheel', (e) => {
+        centerEl.addEventListener('wheel', (e) => {
             if(busy) return;
             if(e.deltaY > 0) index = Math.min(urls.length - 1, index + 1);
             else index = Math.max(0, index - 1);
