@@ -80,10 +80,6 @@ Tampermonkey 会按脚本里的 `@updateURL` 自动检查更新，也可以删�
 
 作者：FNAS-496（sijiudeliu@outlook.com）
 
-想换成自己的收款码，就拿新图覆盖 `watermark/wechat_qr.jpg`，再重新生成脚本里内嵌的那串 base64：
+觉得好用的话欢迎请我喝杯咖啡 ☕ 打赏面板里有收款码~
 
-```bash
-node -e "const fs=require('fs');const b=fs.readFileSync('watermark/wechat_qr.jpg');const s=fs.readFileSync('bilibili-save.user.js','utf8');fs.writeFileSync('bilibili-save.user.js',s.replace(/const DONATE_QR = '[^']*';/,'const DONATE_QR = \'data:image/jpeg;base64,'+b.toString('base64')+'\';'))"
-```
-
-然后重新导入脚本就完事。
+顺手给个 star 也行：https://github.com/FNAS-496/bilibili-image-saver
