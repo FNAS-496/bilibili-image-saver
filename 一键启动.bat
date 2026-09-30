@@ -3,8 +3,8 @@ setlocal
 cd /d "%~dp0"
 title Bilibili-Plus 一键启动 / One-Click Start
 
-REM ============ 可选项：自定义保存目录（留空 = 本目录 bilibili_images） ============
-REM Optional: custom save directory (empty = bilibili_images in this folder)
+REM ============ 可选项：自定义保存目录（留空 = 桌面的 B站下载 文件夹） ============
+REM Optional: custom save directory (empty = B站下载 folder on Desktop)
 set "SAVE_DIR="
 
 REM ============ 文件完整性校验 / File integrity check ============
