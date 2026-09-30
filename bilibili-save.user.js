@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.26
+// @version      0.9.27
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -28,11 +28,16 @@
     const LOCAL_SERVER = 'http://127.0.0.1:8765/save';
     const AUTO_SAVE_PARAM = 'bili_auto_save';
 
-                      
+
     const AUTO_RUN = true;                                                             
     const MAX_CHILD_PAGES = 200;                                   
     const CHILD_CONCURRENCY = 6;
-    const MAX_COLLECTION_VIDEOS = 500;                        
+    const MAX_COLLECTION_VIDEOS = 500;
+    // 跨面板复用的样式片段（调整配色 / 进度条外观时只需改这里）
+    const STYLE = {
+        barFill: 'height:100%;width:0%;background:linear-gradient(90deg,#00a1d6,#00b3e6);border-radius:3px;transition:width .3s;',
+        btnPrimary: 'padding:6px 16px;border:none;background:#00a1d6;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;'
+    };                        
     const TOAST_MS = 4000;
     const DIR_ASKED_KEY = 'bili_save_dir_asked_v1';
     const SETTINGS_KEY = 'bili_save_settings_v1';
@@ -49,6 +54,10 @@
         keys: { next: 'ArrowRight', prev: 'ArrowLeft', download: 'ArrowDown', exit: 'Escape' }
     };
 
+    // ========================================================================
+    // 一、配置与持久化
+    // ========================================================================
+    // 读取设置并与默认值合并（localStorage 持久化）
     function loadSettings(){
         let s = Object.assign({}, DEFAULT_SETTINGS);
         try{
@@ -57,21 +66,29 @@
         }catch(e){}
         return s;
     }
+    // 保存设置到 localStorage
     function saveSettings(s){
         try{ localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); }catch(e){}
     }
+    // 读取主题（light / dark）
     function loadTheme(){
         try{ return localStorage.getItem(THEME_KEY) || 'light'; }catch(e){ return 'light'; }
     }
+    // 保存主题
     function saveTheme(t){
         try{ localStorage.setItem(THEME_KEY, t); }catch(e){}
     }
     const THEME = loadTheme();
 
+    // ========================================================================
+    // 二、通用工具
+    // ========================================================================
+    // 延时工具（Promise 版 setTimeout）
     function sleep(ms){
         return new Promise(r => setTimeout(r, ms));
     }
 
+    // 把主题写入 CSS 变量，供各面板复用
     function applyTheme(theme){
         const dark = theme === 'dark';
         const root = document.documentElement;
@@ -82,6 +99,10 @@
         root.style.setProperty('--bili-save-input-bg', dark ? '#2a2a2a' : '#ffffff');
     }
 
+    // ========================================================================
+    // 三、图片地址处理（规范化 / 原图还原 / 过滤）
+    // ========================================================================
+    // 把相对 / 协议相对地址补全为绝对地址
     function normalizeUrl(raw, base){
         if(!raw) return null;
         raw = raw.trim();
@@ -95,11 +116,12 @@
         }
     }
 
-                                
-                                                            
-                        
-                                                             
-                                                
+
+
+
+
+
+    // 缩略图地址还原为原图（反转义 \u002F、去 @ 参数、webp/avif→jpg）
     function toOriginalImageUrl(raw){
         if(!raw) return null;
         let u = String(raw).trim()
@@ -122,8 +144,9 @@
         }
     }
 
-                                    
-                                                             
+
+
+    // 判断是否为正文图片（排除头像 / 活动图等噪声）
     function isContentImageUrl(url){
         if(!url) return false;
         if(!/\.(jpe?g|png|gif|webp|bmp)(?:[?#]|$)/i.test(url)) return false;
@@ -133,6 +156,10 @@
         return /\/bfs\/(album|new_dyn|article|sns|opus)\//i.test(url);
     }
 
+    // ========================================================================
+    // 四、图片地址提取（DOM / 文本 / JSON / 子页面）
+    // ========================================================================
+    // 从 DOM 提取图片地址（img / source srcset / video poster）
     function extractUrlsFromDoc(doc, baseUrl = window.location.href){
         const urls = new Set();
 
@@ -156,7 +183,7 @@
             }
         });
 
-                                                                 
+
         doc.querySelectorAll('source').forEach(src => {
             const srcset = src.getAttribute('srcset') || src.getAttribute('data-srcset');
             if(srcset){
@@ -169,7 +196,7 @@
             if(srcAttr) add(srcAttr);
         });
 
-                          
+
         doc.querySelectorAll('video').forEach(v => {
             const p = v.getAttribute('poster') || v.getAttribute('data-poster');
             if(p) add(p);
@@ -201,6 +228,7 @@
         return Array.from(urls);
     }
 
+    // 从纯文本中提取图片地址
     function extractUrlsFromText(text, baseUrl = window.location.href){
         const urls = new Set();
         const regex = /https?:\/\/[^\s"'<>]+?\.(?:jpe?g|png|gif|webp|bmp|avif)(?:[@?#][^\s"'<>]*)?/gi;
@@ -212,6 +240,7 @@
         return Array.from(urls);
     }
 
+    // 从 JS 数据（已转义的 JSON）中提取图片地址
     function extractUrlsFromJsonText(text, baseUrl = window.location.href){
         const urls = new Set();
         const regex = /["'](?:img|image|pic|src|url)[^"']*["']\s*:\s*["']([^"']+\.(?:jpe?g|png|gif|webp|bmp|avif)(?:[@?][^"']*)?)["']/gi;
@@ -223,6 +252,7 @@
         return Array.from(urls);
     }
 
+    // 从 DOM 收集 opus 详情页链接
     function getOpusLinks(doc){
         const links = new Set();
         doc.querySelectorAll('a').forEach(a => {
@@ -230,7 +260,7 @@
             if(!href) return;
             const normalized = normalizeUrl(href, window.location.href);
             if(!normalized) return;
-                                                     
+
             if(/\/opus\/(\d+)/.test(normalized) || /t\.bilibili\.com\/(\d+)/.test(normalized)){
                 links.add(normalized.split('#')[0]);
             }
@@ -238,6 +268,7 @@
         return Array.from(links);
     }
 
+    // 从文本中收集 opus 链接
     function getOpusLinksFromText(text){
         const links = new Set();
         const addNormalized = (raw) => {
@@ -246,7 +277,7 @@
             links.add(u.split('#')[0]);
         };
 
-                                                  
+
         const regexOpus = /https?:\/\/(?:www\.)?bilibili\.com\/opus\/(\d+)(?:\S*)/gi;
         let match;
         while((match = regexOpus.exec(text))) addNormalized(match[0]);
@@ -257,7 +288,7 @@
             links.add(normalizeUrl(match[0], window.location.origin).split('#')[0]);
         }
 
-                                             
+
         const regexT = /https?:\/\/t\.bilibili\.com\/(\d+)(?:\S*)/gi;
         while((match = regexT.exec(text))) addNormalized(match[0]);
         const regexTRel = /(?:https?:)?\/\/t\.bilibili\.com\/(\d+)(?:\S*)/gi;
@@ -266,6 +297,10 @@
         return Array.from(links);
     }
 
+    // ========================================================================
+    // 五、网络抓取
+    // ========================================================================
+    // 抓取文本内容（优先 GM_xmlhttpRequest，带 cookie 与超时）
     async function fetchText(url){
         if(typeof GM_xmlhttpRequest === 'function'){
             return new Promise((resolve, reject) => {
@@ -303,8 +338,9 @@
         }
     }
 
+    // 解析一段 HTML 并提取其中的原图地址
     function parseUrlsFromHtml(html, baseUrl){
-                                                       
+
         html = html.replace(/\\u002F/g, '/').replace(/\\\//g, '/');
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
@@ -328,6 +364,7 @@
         return Array.from(urls).filter(isContentImageUrl);
     }
 
+    // 抓取 opus 子页面并提取原图地址
     async function fetchOpusPageImageUrls(url){
         try{
             const html = await fetchText(url);
@@ -339,8 +376,12 @@
         }
     }
 
-                                                 
+
     let statusEl = null;
+    // ========================================================================
+    // 六、状态提示 UI（浮窗 / 提示 / 进度）
+    // ========================================================================
+    // 创建（或获取）右下角状态浮窗
     function ensureStatusEl(){
         if(statusEl && statusEl.isConnected) return statusEl;
         statusEl = document.createElement('div');
@@ -355,6 +396,7 @@
         document.body.appendChild(statusEl);
         return statusEl;
     }
+    // 更新状态浮窗文本
     function setStatus(text, autoHide){
         const el = ensureStatusEl();
         el.textContent = text;
@@ -364,9 +406,11 @@
             el._t = setTimeout(() => { el.style.display = 'none'; }, TOAST_MS);
         }
     }
+    // 轻量提示（自动消失，不打断操作）
     function showToast(text){
         setStatus(text, true);
     }
+    // 进度浮窗（可选停止按钮）
     function showProgress(text, stopHandler){
         const el = ensureStatusEl();
         el.textContent = '';
@@ -388,7 +432,11 @@
         return el;
     }
 
-                                                              
+
+    // ========================================================================
+    // 七、本地服务通信
+    // ========================================================================
+    // 向本地服务 POST JSON（图片保存通道）
     function postJsonToServer(payload){
         if(typeof GM_xmlhttpRequest === 'function'){
             return new Promise((resolve, reject) => {
@@ -418,6 +466,7 @@
         }).then(r => r.json());
     }
 
+    // 批量提交图片地址给本地服务并统计结果
     async function sendUrlsToServer(urls, opts){
         if(!urls.length) return { ok:false, error:'no urls' };
         const settings = Object.assign({}, DEFAULT_SETTINGS, loadSettings());
@@ -435,6 +484,7 @@
         }
     }
 
+    // 收集当前页面中的所有原图地址
     function collectPageImageUrls(){
         const pageUrls = new Set(extractUrlsFromDoc(document));
         const textUrls = extractUrlsFromText(document.documentElement.innerHTML);
@@ -444,43 +494,48 @@
         return Array.from(pageUrls).filter(isContentImageUrl);
     }
 
-                                       
-                                          
-                                                                                  
+
+
+
+    // ========================================================================
+    // 八、页面类型识别
+    // ========================================================================
+    // 识别页面类型：收藏夹 / 动态列表 / 动态详情 / 作品 / 空间其它 / 普通页
     function detectPageType(){
         const host = location.hostname;
         const path = location.pathname;
         const isSpace = host === 'space.bilibili.com';
         const uid = (isSpace && /^\/(\d+)/.test(path)) ? path.match(/^\/(\d+)/)[1] : null;
 
-               
+
         if(isSpace && /\/favlist/.test(path)){
             return { type:'favlist', uid, imagePage:true, label:'收藏夹' };
         }
-                          
+
         if(isSpace && /\/dynamic/.test(path)){
             return { type:'dynamic-list', uid, imagePage:true, label:'动态列表' };
         }
-                                    
+
         if(host === 't.bilibili.com' && /^\d+$/.test(path.replace(/^\//,'').replace(/\/$/,''))){
             return { type:'dynamic-detail', uid, imagePage:true, label:'动态' };
         }
-                   
+
         if(/\/opus\//.test(path)){
             return { type:'opus', uid, imagePage:true, label:'作品' };
         }
-                                 
+
         if(isSpace){
             const seg = path.split('/')[2] || '';
             const tabName = seg || '首页';
             return { type:'space-other', uid, imagePage:false, label:'空间·' + tabName };
         }
-                                         
+
         return { type:'other', uid, imagePage:false, label:'页面' };
     }
 
-                                         
-                                                
+
+
+    // 判断空间页属于自己还是他人
     function detectOwnership(){
         const ownSelectors = [
             'a[href*="/account/accountinfo"]',
@@ -500,10 +555,11 @@
             '[class*="header-follow"]'
         ].join(',');
         if(document.querySelector(otherSelectors)) return 'other';
-                                  
+
         return null;
     }
 
+    // 生成空间页的描述文本
     function describeSpace(info, ownership){
         if(!info) return '';
         if(info.type === 'favlist' || info.type === 'dynamic-list'){
@@ -512,9 +568,10 @@
         }
         return info.label;
     }
- 
+
     const stopFlag = { stop: false };
 
+    // 统计本地服务返回的下载结果（新增 / 已存在 / 失败）
     function countResults(json){
         const list = (json && json.results) || [];
         return {
@@ -524,6 +581,10 @@
             total: list.length
         };
     }
+    // ========================================================================
+    // 九、打赏面板
+    // ========================================================================
+    // 成功打赏面板（统计 + 收款码 + 作者信息）
     function showDonatePanel(stats, title){
         const existing = document.getElementById('bili-donate-panel');
         if(existing) existing.remove();
@@ -555,7 +616,7 @@
             '</div>' +
             '<div style="margin-top:12px;text-align:right;">' +
             '<a id="bili-donate-view" href="http://127.0.0.1:8765/" target="_blank" rel="noopener" style="margin-right:8px;padding:6px 16px;border:1px solid #00a1d6;color:#00a1d6;border-radius:6px;text-decoration:none;font-size:13px;display:inline-block;">查看图片</a>' +
-            '<button id="bili-donate-close" style="padding:6px 16px;border:none;background:#00a1d6;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;">知道了</button>' +
+            '<button id="bili-donate-close" style="' + STYLE.btnPrimary + '">知道了</button>' +
             '</div>';
         document.body.appendChild(panel);
         panel.querySelector('#bili-donate-close').addEventListener('click', () => panel.remove());
@@ -587,6 +648,7 @@
         });
     }
 
+    // 提取 UP 主名称、头像与动态文案
     function extractUpInfo(){
         let upName = '';
         let upText = '';
@@ -665,6 +727,7 @@
         return { upName: upName || '未知UP主', upText, upAvatar };
     }
 
+    // 判断页面元素是否处于已激活状态（如已点赞）
     function elementIsActive(el){
         if(!el) return false;
         let cls = '';
@@ -676,6 +739,7 @@
         if(state === 'active' || state === 'on' || state === 'liked' || state === 'followed' || state === 'true') return true;
         return false;
     }
+    // 按选择器组查找页面上的操作按钮
     function findActionButton(groups){
         for(const group of groups){
             for(const sel of group.selectors){
@@ -686,6 +750,10 @@
         return null;
     }
 
+    // ========================================================================
+    // 十、审查模式
+    // ========================================================================
+    // 审查模式面板：左键位 / 中预览 / 右 UP 信息，三栏布局
     function openReviewPanel(urls, onDone){
         const existing = document.getElementById('bili-review-panel');
         if(existing) existing.remove();
@@ -693,6 +761,7 @@
         const s = Object.assign({}, DEFAULT_SETTINGS, loadSettings());
         const keys = Object.assign({}, DEFAULT_SETTINGS.keys, s.keys || {});
         const panel = document.createElement('div');
+        // ── 面板容器与主题样式 ──
         panel.id = 'bili-review-panel';
         Object.assign(panel.style, {
             position:'fixed', inset:'0', zIndex:9999998,
@@ -700,6 +769,7 @@
             display:'flex', alignItems:'stretch', overflow:'auto',
             color: dark ? '#e6e6e6' : '#1f2330', fontSize:'14px'
         });
+        // ── UP 信息与通用样式常量 ──
         const upInfo = extractUpInfo();
         const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         const keyName = k => ({ ArrowDown:'↓', ArrowUp:'↑', ArrowLeft:'←', ArrowRight:'→', Escape:'Esc', Space:'空格', Enter:'回车' }[k] || k);
@@ -709,19 +779,21 @@
         const btnGhost = 'width:100%;padding:9px 0;border:1px solid ' + (dark ? '#4a4e5c' : '#d0d4dd') + ';background:transparent;color:' + (dark ? '#e6e6e6' : '#2a2f3a') + ';border-radius:9px;cursor:pointer;font-size:13px;margin-bottom:8px;transition:all .15s;';
         const keyItemC = 'display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:8px 12px;background:' + (dark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.75)') + ';border:1px solid ' + borderC + ';border-radius:10px;font-size:13px;box-sizing:border-box;box-shadow:0 1px 4px rgba(0,0,0,0.04);margin-bottom:8px;';
         const keycapC = 'display:inline-flex;align-items:center;justify-content:center;min-width:52px;box-sizing:border-box;padding:6px 10px;border-radius:6px;font-size:13px;font-weight:bold;line-height:normal;';
+        const keyLabelC = 'display:block;flex:1;text-align:left;line-height:normal;white-space:nowrap;color:' + (dark ? '#e6e6e6' : '#333') + ';';
         const keyRow = (label, k, which) => {
             if(!which){
                 return '<div style="' + keyItemC + '">' +
-                '<span style="display:block;flex:1;text-align:left;line-height:normal;white-space:nowrap;color:' + (dark ? '#e6e6e6' : '#333') + ';">' + label + '</span>' +
+                '<span style="' + keyLabelC + '">' + label + '</span>' +
                 '<kbd style="' + keycapC + 'background:' + (dark ? 'rgba(255,255,255,0.06)' : '#fff') + ';border:1px solid ' + borderC + ';color:' + mutedC + ';">' + k + '</kbd>' +
                 '</div>';
             }
             return '<div class="bili-review-key" data-key="' + which + '" style="' + keyItemC + 'cursor:pointer;transition:background .15s;" title="点击后按任意键自定义">' +
-            '<span style="display:block;flex:1;text-align:left;line-height:normal;white-space:nowrap;color:' + (dark ? '#e6e6e6' : '#333') + ';">' + label + '</span>' +
+            '<span style="' + keyLabelC + '">' + label + '</span>' +
             '<kbd class="bili-review-keycap" style="' + keycapC + 'background:' + (dark ? 'rgba(255,255,255,0.06)' : '#fff') + ';border:1px solid #00a1d6;color:#00a1d6;">' + k + '</kbd>' +
             '</div>';
         };
         panel.innerHTML =
+            // ── 左栏：键位设置 + 审查说明 + 下载进度（置底）──
             '<div id="bili-review-left" style="width:220px;flex-shrink:0;padding:18px 16px;border-right:1px solid ' + borderC + ';overflow:auto;display:flex;flex-direction:column;background:' + subBg + ';">' +
             '<div style="display:flex;align-items:center;gap:6px;font-weight:bold;font-size:14px;margin-bottom:12px;color:#00a1d6;letter-spacing:.3px;">' +
             '<b>键位设置</b>' +
@@ -744,9 +816,10 @@
             '</div>' +
             '<div style="margin-top:auto;padding:10px 12px;background:' + (dark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.8)') + ';border:1px solid ' + borderC + ';border-radius:9px;font-size:12px;color:' + mutedC + ';">' +
             '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span>下载进度</span><span><b id="bili-review-dl-count" style="color:#00a1d6;">0</b> / ' + urls.length + '</span></div>' +
-            '<div style="height:6px;background:' + (dark ? '#2c3038' : '#e3e6ec') + ';border-radius:3px;overflow:hidden;"><div id="bili-review-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#00a1d6,#00b3e6);border-radius:3px;transition:width .3s;"></div></div>' +
+            '<div style="height:6px;background:' + (dark ? '#2c3038' : '#e3e6ec') + ';border-radius:3px;overflow:hidden;"><div id="bili-review-bar" style="' + STYLE.barFill + '"></div></div>' +
             '</div>' +
             '</div>' +
+            // ── 中栏：页码胶囊 + 只看大图 + 图片预览 ──
             '<div id="bili-review-center" style="flex:1;display:flex;flex-direction:column;min-width:320px;position:relative;overflow:hidden;">' +
             '<div id="bili-review-progress" style="position:absolute;top:14px;left:50%;transform:translateX(-50%);color:' + mutedC + ';font-size:13px;background:' + (dark ? 'rgba(24,26,32,0.75)' : 'rgba(255,255,255,0.8)') + ';padding:5px 16px;border-radius:20px;z-index:3;box-shadow:0 1px 6px rgba(0,0,0,0.12);white-space:nowrap;"></div>' +
             '<button id="bili-review-full" style="position:absolute;top:12px;right:14px;z-index:3;padding:5px 11px;border:1px solid ' + (dark ? '#4a4e5c' : '#d0d4dd') + ';background:' + (dark ? 'rgba(40,42,50,0.92)' : 'rgba(255,255,255,0.92)') + ';color:' + (dark ? '#e6e6e6' : '#2a2f3a') + ';border-radius:20px;cursor:pointer;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,0.18);">🔍 只看大图</button>' +
@@ -754,6 +827,7 @@
             '<img id="bili-review-img" src="" alt="预览" style="max-width:100%;max-height:100%;object-fit:contain;display:block;margin:auto;box-shadow:0 2px 12px rgba(0,0,0,0.2);border-radius:4px;">' +
             '</div>' +
             '</div>' +
+            // ── 右栏：UP 信息 + 点赞/收藏/关注/全部下载/退出 ──
             '<div id="bili-review-right" style="width:220px;flex-shrink:0;padding:16px 14px;border-left:1px solid ' + borderC + ';overflow:auto;background:' + subBg + ';">' +
             '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">' +
             (upInfo.upAvatar ? '<img src="' + esc(upInfo.upAvatar) + '" style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:1px solid ' + borderC + ';flex-shrink:0;" referrerpolicy="no-referrer">' : '<div style="width:36px;height:36px;border-radius:50%;background:' + (dark ? '#3a3f4d' : '#e2e6ee') + ';display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;">👤</div>') +
@@ -773,6 +847,7 @@
             '</div>';
         document.body.appendChild(panel);
 
+        // ── 运行时状态与元素引用 ──
         let index = 0;
         let downloaded = new Set();
         let busy = false;
@@ -790,6 +865,7 @@
         let fullMode = false;
         let capturing = false;
 
+        // ── 渲染当前图片与下载进度 ──
         const render = () => {
             imgEl.src = urls[index];
             progressEl.textContent = (index + 1) + ' / ' + urls.length + (downloaded.has(index) ? '  ✅ 已下载' : '');
@@ -797,6 +873,7 @@
             if(barEl) barEl.style.width = urls.length ? Math.round(downloaded.size / urls.length * 100) + '%' : '0%';
         };
 
+        // ── 关闭面板（回调已下载数量，必要时弹出打赏面板）──
         const close = () => {
             panel.remove();
             document.removeEventListener('keydown', onKey);
@@ -804,6 +881,7 @@
             if(downloaded.size) showDonatePanel({ saved: downloaded.size, exists: 0, failed: 0 }, '审查结束');
         };
 
+        // ── 只看大图：隐藏左右栏 ──
         const toggleFull = () => {
             fullMode = !fullMode;
             leftEl.style.display = fullMode ? 'none' : '';
@@ -813,6 +891,7 @@
             if(frame){ frame.style.margin = fullMode ? '14px' : '48px 14px 14px'; }
         };
 
+        // ── 下载当前这一张 ──
         const dlCurrent = async () => {
             if(busy) return;
             if(downloaded.has(index)){ showToast('这张已经下载过了'); return; }
@@ -836,6 +915,7 @@
             }
         };
 
+        // ── 全部下载（跳过已下载）──
         const dlAll = async () => {
             if(busy) return;
             const remaining = urls.filter((u, i) => !downloaded.has(i));
@@ -861,6 +941,7 @@
             }
         };
 
+        // ── 键盘快捷键（可在左栏自定义）──
         function onKey(e){
             if(busy || capturing){ return; }
             const k = e.key;
@@ -871,6 +952,7 @@
         }
         document.addEventListener('keydown', onKey);
 
+        // ── 滚轮翻页（仅图片区生效，侧栏滚动不触发）──
         centerEl.addEventListener('wheel', (e) => {
             if(busy) return;
             if(e.deltaY > 0) index = Math.min(urls.length - 1, index + 1);
@@ -1011,6 +1093,10 @@
         }).catch(() => {});
     }
 
+    // ========================================================================
+    // 十一、主流程
+    // ========================================================================
+    // 主流程：提取图片 → 按设置自动下载或进入审查模式
     async function collectAndSave(){
         stopFlag.stop = false;
         const pageUrls = new Set(extractUrlsFromDoc(document));
@@ -1018,8 +1104,8 @@
         textUrls.forEach(u => pageUrls.add(u));
         const jsonUrls = extractUrlsFromJsonText(document.documentElement.innerHTML);
         jsonUrls.forEach(u => pageUrls.add(u));
-                                        
-                                              
+
+
         const info = detectPageType();
         let failCount = 0;
 
@@ -1061,7 +1147,7 @@
             urls = urls.slice(0, settings.maxDownload);
         }
         if(urls.length === 0){
-                                               
+
             const retry = (window.__biliRetryCount || 0) + 1;
             if(retry <= 3){
                 window.__biliRetryCount = retry;
@@ -1097,7 +1183,8 @@
         }
     }
 
-                                           
+
+    // 动态列表页监听滚动，增量保存新加载的图片
     function setupDynamicListWatcher(){
         const info = detectPageType();
         if(!info || info.type !== 'dynamic-list') return;
@@ -1128,7 +1215,8 @@
         window.addEventListener('scroll', collect, { passive: true });
     }
 
-                                                        
+
+    // 调用本地服务接口（GET 或 POST JSON）
     function serverApi(path, body){
         const req = body ? { method:'POST', headers:{'Content-Type':'application/json'}, data: JSON.stringify(body) } : { method:'GET' };
         return new Promise(resolve => {
@@ -1147,6 +1235,10 @@
     const getSaveDir = () => serverApi('/getdir');
     const setSaveDir = (dir) => serverApi('/setdir', { dir });
 
+    // ========================================================================
+    // 十二、设置面板
+    // ========================================================================
+    // 设置面板：保存目录 / 下载参数 / 下载模式 / 键位 / 主题 / 打赏
     function openSettingsPanel(){
         const existing = document.getElementById('bili-save-settings');
         if(existing){ existing.style.display = 'block'; return; }
@@ -1163,6 +1255,9 @@
         const labelStyle = 'font-size:12px;color:var(--bili-save-muted);margin-bottom:4px;';
         const cardStyle = 'padding:12px 16px;border-bottom:1px solid var(--bili-save-border);';
         const groupTitle = 'display:flex;align-items:center;gap:6px;font-weight:bold;font-size:13px;color:#00a1d6;margin-bottom:8px;';
+        const checkLabel = 'font-size:12px;color:var(--bili-save-fg);cursor:pointer;display:flex;align-items:center;gap:5px;';
+        const radioLabel = 'flex:1;display:flex;align-items:center;gap:6px;cursor:pointer;border:1px solid var(--bili-save-border);border-radius:8px;padding:8px 10px;font-size:12px;background:var(--bili-save-input-bg);';
+        const keyBtnStyle = 'padding:7px 4px;border:1px solid var(--bili-save-border);background:var(--bili-save-input-bg);color:var(--bili-save-fg);border-radius:8px;cursor:pointer;font-size:12px;';
         panel.innerHTML =
             '<div style="display:flex;align-items:center;gap:8px;padding:14px 16px;background:linear-gradient(135deg,#00a1d6,#00b3e6);color:#fff;">' +
             '<span style="font-size:18px;">⚙️</span>' +
@@ -1186,22 +1281,22 @@
             '<input id="bili-max-input" type="number" min="0" step="10" value="' + s.maxDownload + '" style="' + inputStyle + '"></div>' +
             '</div>' +
             '<div style="display:flex;gap:16px;margin-top:8px;">' +
-            '<label style="font-size:12px;color:var(--bili-save-fg);cursor:pointer;display:flex;align-items:center;gap:5px;"><input type="checkbox" id="bili-dedupe-input"' + (s.dedupe ? ' checked' : '') + '> 查重</label>' +
-            '<label style="font-size:12px;color:var(--bili-save-fg);cursor:pointer;display:flex;align-items:center;gap:5px;"><input type="checkbox" id="bili-autorun-input"' + (s.autoRun ? ' checked' : '') + '> 打开页面自动提取</label>' +
+            '<label style="' + checkLabel + '"><input type="checkbox" id="bili-dedupe-input"' + (s.dedupe ? ' checked' : '') + '> 查重</label>' +
+            '<label style="' + checkLabel + '"><input type="checkbox" id="bili-autorun-input"' + (s.autoRun ? ' checked' : '') + '> 打开页面自动提取</label>' +
             '</div>' +
             '</div>' +
             '<div style="' + cardStyle + '">' +
             '<div style="' + groupTitle + '">🖼️ 下载模式</div>' +
             '<div style="display:flex;gap:10px;">' +
-            '<label style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer;border:1px solid var(--bili-save-border);border-radius:8px;padding:8px 10px;font-size:12px;background:var(--bili-save-input-bg);"><input type="radio" name="bili-mode" value="auto"' + (s.downloadMode !== 'review' ? ' checked' : '') + '> ⬇️ 自动下载</label>' +
-            '<label style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer;border:1px solid var(--bili-save-border);border-radius:8px;padding:8px 10px;font-size:12px;background:var(--bili-save-input-bg);"><input type="radio" name="bili-mode" value="review"' + (s.downloadMode === 'review' ? ' checked' : '') + '> 🔍 审查模式</label>' +
+            '<label style="' + radioLabel + '"><input type="radio" name="bili-mode" value="auto"' + (s.downloadMode !== 'review' ? ' checked' : '') + '> ⬇️ 自动下载</label>' +
+            '<label style="' + radioLabel + '"><input type="radio" name="bili-mode" value="review"' + (s.downloadMode === 'review' ? ' checked' : '') + '> 🔍 审查模式</label>' +
             '</div>' +
             '<div style="' + labelStyle + ';margin-top:10px;">审查键位（点击后按任意键）</div>' +
             '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px;">' +
-            '<button class="bili-key-btn" data-key="next" style="padding:7px 4px;border:1px solid var(--bili-save-border);background:var(--bili-save-input-bg);color:var(--bili-save-fg);border-radius:8px;cursor:pointer;font-size:12px;">下一页 <b id="bili-key-next">' + (s.keys && s.keys.next || '→') + '</b></button>' +
-            '<button class="bili-key-btn" data-key="prev" style="padding:7px 4px;border:1px solid var(--bili-save-border);background:var(--bili-save-input-bg);color:var(--bili-save-fg);border-radius:8px;cursor:pointer;font-size:12px;">上一页 <b id="bili-key-prev">' + (s.keys && s.keys.prev || '←') + '</b></button>' +
-            '<button class="bili-key-btn" data-key="download" style="padding:7px 4px;border:1px solid var(--bili-save-border);background:var(--bili-save-input-bg);color:var(--bili-save-fg);border-radius:8px;cursor:pointer;font-size:12px;">下载 <b id="bili-key-download">' + (s.keys && s.keys.download || '↓') + '</b></button>' +
-            '<button class="bili-key-btn" data-key="exit" style="padding:7px 4px;border:1px solid var(--bili-save-border);background:var(--bili-save-input-bg);color:var(--bili-save-fg);border-radius:8px;cursor:pointer;font-size:12px;">退出 <b id="bili-key-exit">' + (s.keys && s.keys.exit || 'Esc') + '</b></button>' +
+            '<button class="bili-key-btn" data-key="next" style="' + keyBtnStyle + '">下一页 <b id="bili-key-next">' + (s.keys && s.keys.next || '→') + '</b></button>' +
+            '<button class="bili-key-btn" data-key="prev" style="' + keyBtnStyle + '">上一页 <b id="bili-key-prev">' + (s.keys && s.keys.prev || '←') + '</b></button>' +
+            '<button class="bili-key-btn" data-key="download" style="' + keyBtnStyle + '">下载 <b id="bili-key-download">' + (s.keys && s.keys.download || '↓') + '</b></button>' +
+            '<button class="bili-key-btn" data-key="exit" style="' + keyBtnStyle + '">退出 <b id="bili-key-exit">' + (s.keys && s.keys.exit || 'Esc') + '</b></button>' +
             '</div>' +
             '</div>' +
             '<div style="padding:14px 16px;">' +
@@ -1282,7 +1377,8 @@
         });
     }
 
-                                        
+
+    // 首次进入图片页时询问一次保存目录
     function maybeAskDirOnce(){
         const pageInfo = detectPageType();
         if(!pageInfo || !pageInfo.imagePage) return;
@@ -1292,6 +1388,10 @@
         setTimeout(openSettingsPanel, 1200);
     }
 
+    // ========================================================================
+    // 十三、视频下载
+    // ========================================================================
+    // 字节数 → 可读大小
     function formatSize(bytes){
         if(!bytes || bytes <= 0) return '未知';
         if(bytes < 1024) return bytes + ' B';
@@ -1299,18 +1399,21 @@
         if(bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
         return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
     }
+    // 秒 → mm:ss（超过 1 小时显示 h:mm:ss）
     function formatDuration(sec){
         sec = Math.round(sec || 0);
         const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
         const mm = m < 10 ? '0' + m : m, ss = s < 10 ? '0' + s : s;
         return h > 0 ? (h + ':' + mm + ':' + ss) : (mm + ':' + ss);
     }
+    // 字节/秒 → 可读速率
     function formatSpeed(bps){
         if(!bps || bps <= 0) return '';
         if(bps >= 1024 * 1024) return (bps / 1024 / 1024).toFixed(2) + ' MB/s';
         if(bps >= 1024) return Math.round(bps / 1024) + ' KB/s';
         return Math.round(bps) + ' B/s';
     }
+    // 秒 → 剩余时间文本
     function formatRemaining(sec){
         sec = Math.max(0, Math.round(sec || 0));
         if(!sec) return '';
@@ -1318,15 +1421,18 @@
         if(sec >= 60) return Math.floor(sec / 60) + ' 分 ' + (sec % 60) + ' 秒';
         return sec + ' 秒';
     }
+    // B 站画质编码 → 友好名称（80=1080P 等）
     function qualityLabel(q){
         const map = { 127:'8K', 126:'杜比', 125:'HDR', 120:'4K', 116:'1080P60', 112:'1080P+', 80:'1080P', 74:'720P60', 64:'720P', 32:'480P', 16:'360P', 6:'240P' };
         return map[q] || (q ? (q + 'P') : '');
     }
+    // 从当前 URL 提取 BV 号
     function getVideoBvidFromUrl(){
         const m = location.href.match(/\/video\/(BV[0-9A-Za-z]+|av\d+)/i);
         return m ? m[1] : null;
     }
 
+    // 收集当前页可下载的视频（当前视频 / 收藏夹列表）
     function collectVideoItems(){
         const items = [];
         if(/\/video\/(BV[0-9A-Za-z]+|av\d+)/i.test(location.pathname)){
@@ -1356,6 +1462,7 @@
         return items;
     }
 
+    // 读取合集元信息 sid / mid / 标题（__INITIAL_STATE__ 优先，DOM 兜底）
     function getCollectionMeta(){
         const st = window.__INITIAL_STATE__;
         const vd = st && st.videoData;
@@ -1372,6 +1479,7 @@
         return null;
     }
 
+    // 并发分页拉取整个合集的视频列表（最新在前）
     async function collectCollectionItems(){
         try{
             const meta = getCollectionMeta();
@@ -1419,6 +1527,7 @@
         }
     }
 
+    // 调用 view 接口获取 cid、分 P、标题与时长
     async function fetchViewCid(bvid){
         try{
             const text = await fetchText('https://api.bilibili.com/x/web-interface/view?bvid=' + bvid);
@@ -1434,6 +1543,7 @@
         return null;
     }
 
+    // 调用 playurl 接口获取 DASH 视频/音频流地址与大小
     async function fetchVideoStreams(bvid, cid){
         try{
             const text = await fetchText('https://api.bilibili.com/x/player/playurl?bvid=' + bvid + '&cid=' + cid + '&qn=80&fnval=16&fourk=1');
@@ -1470,6 +1580,7 @@
         return null;
     }
 
+    // 向本地服务指定路径 POST JSON（视频保存通道）
     function postJsonToPath(pathName, payload, timeoutMs){
         if(typeof GM_xmlhttpRequest === 'function'){
             return new Promise((resolve, reject) => {
@@ -1499,10 +1610,12 @@
         }).then(r => r.json());
     }
 
+    // 视频下载面板：列表 / 大小画质 / 下载进度
     function openVideoPanel(){
         const existing = document.getElementById('bili-video-panel');
         if(existing){ existing.remove(); }
         const panel = document.createElement('div');
+        // ── 面板容器 ──
         panel.id = 'bili-video-panel';
         Object.assign(panel.style, {
             position:'fixed', right:'20px', bottom:'180px', zIndex:999999,
@@ -1512,6 +1625,7 @@
         });
         panel.innerHTML =
             '<div style="display:flex;align-items:center;margin-bottom:10px;">' +
+            // ── 面板 HTML：标题 + 列表 + 进度 + 底部操作 ──
             '<b style="font-size:15px;color:#00a1d6;">📹 视频批量下载</b>' +
             '<span style="margin-left:auto;font-size:12px;color:#888;" id="bili-video-hint"></span>' +
             '</div>' +
@@ -1521,13 +1635,13 @@
             '<span id="bili-video-prog-text" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">准备中…</span>' +
             '<b id="bili-video-prog-pct" style="color:#00a1d6;flex-shrink:0;margin-left:8px;">0%</b>' +
             '</div>' +
-            '<div style="height:6px;background:#e3e6ec;border-radius:3px;overflow:hidden;"><div id="bili-video-prog-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#00a1d6,#00b3e6);border-radius:3px;transition:width .3s;"></div></div>' +
+            '<div style="height:6px;background:#e3e6ec;border-radius:3px;overflow:hidden;"><div id="bili-video-prog-bar" style="' + STYLE.barFill + '"></div></div>' +
             '<div id="bili-video-prog-sub" style="margin-top:5px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>' +
             '</div>' +
             '<div style="display:flex;align-items:center;gap:10px;margin-top:10px;">' +
             '<label style="font-size:12px;color:#555;cursor:pointer;"><input type="checkbox" id="bili-video-all" style="vertical-align:middle;"> 全选</label>' +
             '<span style="flex:1;"></span>' +
-            '<button id="bili-video-dl" style="padding:6px 16px;border:none;background:#00a1d6;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;">下载选中</button>' +
+            '<button id="bili-video-dl" style="' + STYLE.btnPrimary + '">下载选中</button>' +
             '<button id="bili-video-close" style="padding:6px 12px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px;">关闭</button>' +
             '</div>';
         document.body.appendChild(panel);
@@ -1536,8 +1650,10 @@
         const hintEl = panel.querySelector('#bili-video-hint');
         const allEl = panel.querySelector('#bili-video-all');
 
+        // ── 状态 ──
         const state = { items: [], ready: false };
 
+        // ── 渲染视频列表（合集项带 [合集] 标记）──
         const render = () => {
             if(!state.items.length){
                 listEl.innerHTML = '<div style="color:#999;padding:24px;text-align:center;">当前页面未检测到视频。</div>';
@@ -1557,6 +1673,7 @@
             }).join('');
         };
 
+        // ── 补齐 cid（仅当前视频/收藏夹项；合集项 cid 已知，跳过）──
         const fillCids = async () => {
             const need = state.items.filter(it => it.cid == null && !it.fromCollection);
             if(!need.length) return;
@@ -1593,6 +1710,7 @@
             hintEl.textContent = '共 ' + state.items.length + ' 个';
         };
 
+        // ── 获取大小与画质（跳过合集项，改为下载时按需获取）──
         const fetchSizes = async () => {
             hintEl.textContent = '正在获取大小与画质...';
             let done = 0;
@@ -1613,6 +1731,7 @@
             hintEl.textContent = '共 ' + state.items.length + ' 个（已自动获取大小与画质）';
         };
 
+        // ── 下载选中：先补齐缺失的流地址，再交给本地服务下载 ──
         panel.querySelector('#bili-video-dl').addEventListener('click', async () => {
             const checks = listEl.querySelectorAll('.bili-video-check:checked');
             const picked = Array.from(checks).map(c => state.items[Number(c.getAttribute('data-i'))]);
@@ -1742,12 +1861,14 @@
             }
         });
 
+        // ── 其它交互：关闭 / 全选 ──
         panel.querySelector('#bili-video-close').addEventListener('click', () => panel.remove());
 
         allEl.addEventListener('change', () => {
             listEl.querySelectorAll('.bili-video-check').forEach(c => { c.checked = allEl.checked; });
         });
 
+        // ── 初始化：先渲染当前视频，再异步拉取合集视频 ──
         const items = collectVideoItems();
         state.items = items;
         render();
@@ -1779,6 +1900,10 @@
         })();
     }
 
+    // ========================================================================
+    // 十四、悬浮按钮与启动
+    // ========================================================================
+    // 创建右下角悬浮按钮组
     function makeButton(){
         const wrap = document.createElement('div');
         Object.assign(wrap.style, { position:'fixed', right:'20px', bottom:'20px', zIndex:999999, display:'flex', flexDirection:'column', gap:'8px', alignItems:'flex-end' });
@@ -1829,8 +1954,9 @@
         document.body.appendChild(wrap);
     }
 
-                                         
+
     let autoStarted = false;
+    // 按设置与页面类型决定是否自动提取
     function maybeAutoRun(){
         if(autoStarted) return;
         autoStarted = true;
@@ -1843,7 +1969,7 @@
             return;
         }
         if(!AUTO_RUN) return;
-                                                    
+
         const info = detectPageType();
         if(!info || !info.imagePage){
             if(info && info.type === 'space-other'){
@@ -1862,6 +1988,7 @@
         }, 1500);
     }
 
+    // 启动自检：本地服务连通性与脚本完整性
     function verifySetup(){
         const REPO = 'https://github.com/FNAS-496/bilibili-image-saver';
         getSaveDir().then(dirInfo => {
@@ -1872,6 +1999,10 @@
         });
     }
 
+    // ========================================================================
+    // 十五、初始化入口
+    // ========================================================================
+    // 初始化入口
     function init(){
         applyTheme(THEME);
         makeButton();

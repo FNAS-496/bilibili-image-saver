@@ -5,7 +5,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-0.9.26-00a1d6)
+![Version](https://img.shields.io/badge/version-0.9.27-00a1d6)
 ![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-orange)
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -113,6 +113,33 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 ```
 
 > 下载的图片默认保存在 `bilibili_images/`，该目录已加入 `.gitignore`，不会被提交到仓库。
+
+### 🧭 代码结构 / Code Map（便于二次开发）
+
+`bilibili-save.user.js` 按功能划分为 15 个区块，每节都有醒目标题（形如 `// ===== 三、图片地址处理 =====`），可直接搜索关键字跳转：
+
+| 区块 | 主要内容 |
+| --- | --- |
+| 一、配置与持久化 | 设置读写、默认值 |
+| 二、通用工具 | 延时、主题 CSS 变量 |
+| 三、图片地址处理 | URL 补全、缩略图还原原图、噪声过滤 |
+| 四、图片地址提取 | DOM / 文本 / JSON / 子页面 |
+| 五、网络抓取 | `fetchText`（优先 GM_xmlhttpRequest） |
+| 六、状态提示 UI | 浮窗 / toast / 进度条 |
+| 七、本地服务通信 | `/save`、`/setdir` 等接口调用 |
+| 八、页面类型识别 | 收藏夹 / 动态 / 作品 / 空间 |
+| 九、打赏面板 | 下载成功后的面板 |
+| 十、审查模式 | 左键位 · 中预览 · 右 UP 信息 |
+| 十一、主流程 | 提取图片并按设置下载 |
+| 十二、设置面板 | 目录 / 下载参数 / 下载模式 / 键位 |
+| 十三、视频下载 | 当前视频 / 分 P / 订阅合集 |
+| 十四、悬浮按钮与启动 | 按钮组、自动运行判断 |
+| 十五、初始化入口 | `init()` |
+
+`save_images_server.js` 同样分为 4 个区块：工具函数 → 图片下载 → 视频下载 → 视频保存。
+
+> 💡 常见二次开发位置：**改配色/主题** → `applyTheme()` 与 `STYLE` 常量；**改审查面板布局** → `openReviewPanel()`（内含「左栏/中栏/右栏」分区注释）；**改下载参数** → 设置面板。跨面板复用的样式集中在 `STYLE` 常量，改一处即可全局生效。
+
 
 ---
 

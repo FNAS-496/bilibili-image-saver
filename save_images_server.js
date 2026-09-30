@@ -1,15 +1,19 @@
-                                                                      
-                                     
-                                                                                                  
-                                                                              
+
+
+
+
 
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 
-                                                                 
+
 const QR_DIR = path.join(__dirname, 'watermark');
+// ========================================================================
+// 一、工具函数
+// ========================================================================
+// 定位收款码图片（watermark 目录，支持多种扩展名）
 function resolveQrPath(){
     for(const n of ['wechat_qr.png','wechat_qr.jpg','wechat_qr.jpeg','wechat_qr.webp']){
         const c = path.join(QR_DIR, n);
@@ -25,11 +29,11 @@ function resolveQrPath(){
 const PORT = 8765;
 const CONCURRENCY = 8;               
 
-                                                             
-                                               
-       
-                                                                
-                                             
+
+
+
+
+
 const DIR_FILE = path.join(__dirname, 'outdir.txt');
 let OUT_DIR = (process.env.BILI_SAVE_DIR && process.env.BILI_SAVE_DIR.trim())
     ? path.resolve(process.env.BILI_SAVE_DIR)
@@ -50,6 +54,7 @@ let VIDEO_OUT_DIR = VIDEO_DIR;
 const videoJobs = new Map();
 let videoJobSeq = 0;
 
+// 从 URL 推断文件扩展名
 function extensionFromUrl(u){
     try{
         const parsed = new URL(u);
@@ -59,6 +64,7 @@ function extensionFromUrl(u){
     return '.jpg';
 }
 
+// 文件名净化：保留中文等 Unicode，仅替换非法字符与路径穿越
 function sanitizeFilename(name){
     let s = String(name)
         .replace(/[\u0000-\u001f\u007f]/g, '')
@@ -70,6 +76,7 @@ function sanitizeFilename(name){
     return s;
 }
 
+// 下载请求头（模拟浏览器 UA / Referer）
 function getRequestHeaders(){
     return {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -78,6 +85,7 @@ function getRequestHeaders(){
     };
 }
 
+// 生成 webp→jpg 的变体地址
 function getWebpToJpgVariant(url){
     try{
         const parsed = new URL(url);
@@ -92,8 +100,9 @@ function getWebpToJpgVariant(url){
     return null;
 }
 
-                                  
-                                                             
+
+
+// 图片地址规范化（反转义 / 去 @ 缩略参数 / 格式转换 / 取原图）
 function normalizeImageUrl(url){
     try{
         let u = String(url).replace(/\\u002F/g, '/').replace(/\\\//g, '/');
@@ -115,6 +124,10 @@ function normalizeImageUrl(url){
     }
 }
 
+// ========================================================================
+// 二、图片下载
+// ========================================================================
+// 下载并写入文件（带超时与 Content-Type 校验）
 async function downloadToFile(fileUrl, destPath, timeoutMs){
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs || 30000);
@@ -131,8 +144,8 @@ async function downloadToFile(fileUrl, destPath, timeoutMs){
         if(contentType.includes('text/html') || contentType.includes('application/json')){
             throw new Error('Server returned ' + contentType + ' instead of an image (blocked / risk page)');
         }
-                                                                         
-                                                 
+
+
         const buffer = Buffer.from(await res.arrayBuffer());
         await fs.promises.writeFile(destPath, buffer);
         return { path: destPath, contentType: res.headers.get('content-type') };
@@ -146,6 +159,7 @@ async function downloadToFile(fileUrl, destPath, timeoutMs){
     }
 }
 
+// 保存 base64 内嵌图片
 async function saveBase64File(file, index){
     const filename = sanitizeFilename(file.filename || `image_${index}.jpg`);
     const outPath = path.join(OUT_DIR, filename);
@@ -154,6 +168,7 @@ async function saveBase64File(file, index){
     return outPath;
 }
 
+// 判断图片是否已存在（按原图 hash 命名）
 function imageExistsOnDisk(rawUrl){
     try{
         const url = normalizeImageUrl(rawUrl);
@@ -178,6 +193,7 @@ function imageExistsOnDisk(rawUrl){
     return false;
 }
 
+// 单张图片下载（含重试与查重）
 async function tryDownloadFile(rawUrl, index, opts){
     const url = normalizeImageUrl(rawUrl);
     const variants = [url];
@@ -213,6 +229,10 @@ async function tryDownloadFile(rawUrl, index, opts){
     throw lastError || new Error('Download failed');
 }
 
+// ========================================================================
+// 三、视频下载
+// ========================================================================
+// 下载视频 / 音频流（支持进度回调）
 async function downloadVideoToFile(fileUrl, destPath, timeoutMs, onProgress){
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs || 600000);
@@ -265,6 +285,7 @@ async function downloadVideoToFile(fileUrl, destPath, timeoutMs, onProgress){
     }
 }
 
+// 定位 ffmpeg（项目内置目录优先，其次系统 PATH）
 function resolveFfmpeg(){
     const candidates = [
         path.join(__dirname, 'ffmpeg', 'ffmpeg.exe'),
@@ -276,12 +297,14 @@ function resolveFfmpeg(){
     return 'ffmpeg';
 }
 
+// 检测 ffmpeg 是否可用
 function ffmpegAvailable(){
     return new Promise(resolve => {
         execFile(resolveFfmpeg(), ['-version'], { timeout: 5000 }, (err) => resolve(!err));
     });
 }
 
+// 调用 ffmpeg 合并音视频为 mp4
 function mergeWithFfmpeg(videoPath, audioPath, outPath){
     return new Promise((resolve, reject) => {
         execFile(resolveFfmpeg(), ['-y', '-i', videoPath, '-i', audioPath, '-c', 'copy', outPath],
@@ -289,6 +312,10 @@ function mergeWithFfmpeg(videoPath, audioPath, outPath){
     });
 }
 
+// ========================================================================
+// 四、视频保存
+// ========================================================================
+// 保存单个视频：下载流 → 有 ffmpeg 则合并，否则音画分开保存
 async function saveVideo(item, index, job){
     const rawTitle = String(item.title || '').trim();
     const safeTitle = sanitizeFilename(rawTitle) || `video_${index}`;
@@ -429,7 +456,7 @@ const server = http.createServer((req, res) => {
             const dlInterval = Math.max(0, parseInt(payload.interval, 10) || 0);
             const dlOpts = { timeout: dlTimeout, dedupe: dlDedupe };
 
-                                                
+
             const seen = new Set();
             const urls = [];
             for(const u of rawUrls){
@@ -445,7 +472,7 @@ const server = http.createServer((req, res) => {
                 return;
             }
 
-                                              
+
             let idx = 0;
             const concurrency = Math.min(CONCURRENCY, urls.length);
             async function worker(){
@@ -475,7 +502,7 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-                             
+
     if(req.method === 'POST' && req.url === '/video/save'){
         let body = '';
         req.on('data', chunk => { body += chunk; if(body.length > 50 * 1024 * 1024){ req.destroy(); } });
@@ -604,7 +631,7 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-                           
+
     if(req.method === 'GET' && req.url === '/qr'){
         const qr = resolveQrPath();
         if(qr){
