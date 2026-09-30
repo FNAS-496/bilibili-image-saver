@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.31
+// @version      0.9.32
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -1256,7 +1256,7 @@
             '</div>' +
             '<div style="' + cardStyle + '">' +
             '<div style="' + groupTitle + '">📁 保存目录</div>' +
-            '<div style="' + labelStyle + '">留空 = 默认 bilibili_images 文件夹</div>' +
+            '<div style="' + labelStyle + '">留空 = 自动保存到桌面「B站下载」文件夹</div>' +
             '<input id="bili-dir-input" type="text" placeholder="例如 D:\\bilibili_pics" value="' + (s.saveDir||'').replace(/"/g,'&quot;') + '" style="' + inputStyle + '">' +
             '<div id="bili-dir-current" style="font-size:11px;color:var(--bili-save-muted);margin-bottom:2px;word-break:break-all;"></div>' +
             '</div>' +
@@ -1332,7 +1332,13 @@
                     showToast('❌ 设置失败：请先双击「一键启动.bat」启动本地服务');
                 }
             } else {
-                showToast('✅ 设置已保存（保存目录：默认 bilibili_images）');
+                // 留空 = 恢复默认（桌面「B站下载」）；必须通知服务端，否则服务仍沿用旧目录
+                const info = await setSaveDir('');
+                if(info && info.ok){
+                    showToast('✅ 已恢复默认保存位置：桌面「B站下载」' + (info.dir ? '\n' + info.dir : ''));
+                } else {
+                    showToast('✅ 设置已保存（保存目录：桌面「B站下载」）\n本地服务未运行时，重启「一键启动.bat」后生效');
+                }
             }
             close();
             try{ localStorage.setItem(DIR_ASKED_KEY, '1'); }catch(e){}

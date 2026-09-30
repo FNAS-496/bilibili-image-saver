@@ -5,6 +5,7 @@
 
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 
@@ -35,6 +36,32 @@ const CONCURRENCY = 8;
 
 
 const DIR_FILE = path.join(__dirname, 'outdir.txt');
+
+// 默认保存位置：桌面下的「B站下载」文件夹。
+// 这样即使跑的是便携版（服务目录在子文件夹里），用户也能在桌面直接找到下载内容。
+// 兼容 OneDrive 重定向的桌面；都取不到时回退到项目目录。
+function resolveDefaultOutDir(){
+    try{
+        const home = os.homedir();
+        if(home){
+            const candidates = [
+                path.join(home, 'Desktop'),
+                path.join(home, 'OneDrive', 'Desktop'),
+                path.join(home, 'OneDrive', '桌面'),
+                path.join(home, '桌面')
+            ];
+            for(const c of candidates){
+                try{
+                    if(fs.existsSync(c) && fs.statSync(c).isDirectory()) return path.join(c, 'B站下载');
+                }catch(e){}
+            }
+            return path.join(home, 'Desktop', 'B站下载');
+        }
+    }catch(e){}
+    return path.join(__dirname, 'bilibili_images');
+}
+
+// 保存目录优先级：环境变量 > 命令行参数 > 已保存的设置（outdir.txt）> 默认（桌面「B站下载」）
 let OUT_DIR = (process.env.BILI_SAVE_DIR && process.env.BILI_SAVE_DIR.trim())
     ? path.resolve(process.env.BILI_SAVE_DIR)
     : (process.argv[2] ? path.resolve(process.argv[2]) : (() => {
@@ -42,7 +69,7 @@ let OUT_DIR = (process.env.BILI_SAVE_DIR && process.env.BILI_SAVE_DIR.trim())
             const persisted = fs.existsSync(DIR_FILE) ? fs.readFileSync(DIR_FILE, 'utf8').trim() : '';
             if(persisted) return path.resolve(persisted);
         }catch(e){}
-        return path.join(__dirname, 'bilibili_images');
+        return resolveDefaultOutDir();
     })());
 if(!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
@@ -604,19 +631,19 @@ const server = http.createServer((req, res) => {
             try{
                 const p = JSON.parse(body);
                 const dir = (p && p.dir && String(p.dir).trim()) || '';
-                if(dir){
-                    OUT_DIR = path.resolve(dir);
-                    fs.mkdirSync(OUT_DIR, { recursive: true });
-                    VIDEO_OUT_DIR = path.join(OUT_DIR, 'videos');
-                    fs.mkdirSync(VIDEO_OUT_DIR, { recursive: true });
-                    try{ fs.writeFileSync(DIR_FILE, OUT_DIR, 'utf8'); }catch(e){}
-                    console.log('保存目录已更新为', OUT_DIR);
-                    res.writeHead(200, {'Content-Type':'application/json'});
-                    res.end(JSON.stringify({ ok:true, dir: OUT_DIR }));
-                } else {
-                    res.writeHead(200, {'Content-Type':'application/json'});
-                    res.end(JSON.stringify({ ok:false, error:'dir required' }));
-                }
+                // 传空目录 = 恢复默认（桌面「B站下载」）：删掉持久化设置并回退
+                const target = dir ? path.resolve(dir) : resolveDefaultOutDir();
+                OUT_DIR = target;
+                fs.mkdirSync(OUT_DIR, { recursive: true });
+                VIDEO_OUT_DIR = path.join(OUT_DIR, 'videos');
+                fs.mkdirSync(VIDEO_OUT_DIR, { recursive: true });
+                try{
+                    if(dir) fs.writeFileSync(DIR_FILE, OUT_DIR, 'utf8');
+                    else if(fs.existsSync(DIR_FILE)) fs.unlinkSync(DIR_FILE);
+                }catch(e){}
+                console.log('保存目录已更新为', OUT_DIR);
+                res.writeHead(200, {'Content-Type':'application/json'});
+                res.end(JSON.stringify({ ok:true, dir: OUT_DIR, reset: !dir }));
             }catch(e){
                 res.writeHead(400, {'Content-Type':'application/json'});
                 res.end(JSON.stringify({ ok:false, error:'invalid json' }));

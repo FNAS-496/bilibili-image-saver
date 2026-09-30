@@ -5,7 +5,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-0.9.31-00a1d6)
+![Version](https://img.shields.io/badge/version-0.9.32-00a1d6)
 ![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-orange)
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -112,7 +112,7 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 └── .gitignore                 # Git 忽略规则（含 bilibili_images/ 与 watermark/ 源图）
 ```
 
-> 下载的图片默认保存在 `bilibili_images/`，该目录已加入 `.gitignore`，不会被提交到仓库。
+> 下载内容**默认保存到桌面的 `B站下载` 文件夹**（无需配置，也不会藏在程序目录里找不到）。该目录由本地服务自动创建。
 
 ### 🧭 代码结构 / Code Map（便于二次开发）
 
@@ -195,7 +195,7 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 > 收藏夹与动态的 `{你的UID}` 替换成你自己的空间 UID（打开 `space.bilibili.com` 后地址栏里的数字）；`t.bilibili.com` 与 `opus` 为任意动态/作品示例。
 
 3. 下载完成后，右下角浮窗会显示：`保存完成：新增 X 张，已存在 Y 张，失败 Z 张`。
-4. 图片默认保存在项目目录的 **`bilibili_images/`** 文件夹（文件名即原图 hash，如 `ea017859....png`）。
+4. 图片**默认保存到桌面的 `B站下载` 文件夹**（文件名即原图 hash，如 `ea017859....png`）。
 
 **手动重试**：若中途失败或想重新抓取，点击页面右下角的「重新提取并保存」按钮即可。
 
@@ -269,7 +269,7 @@ set "SAVE_DIR="
 set "SAVE_DIR=D:\bilibili_pics"
 ```
 
-保存后重新双击即可。留空则使用默认目录 `bilibili_images`。
+保存后重新双击即可。留空则使用默认目录（桌面「B站下载」）。
 
 ### 方式 C：命令行参数 / 环境变量（macOS / Linux / 通用）
 
@@ -281,7 +281,7 @@ node save_images_server.js "/Users/me/Pictures/bili"
 BILI_SAVE_DIR="/Users/me/Pictures/bili" node save_images_server.js
 ```
 
-> 说明：页面内设置（方式 A）即时生效并**自动记忆**（重启服务后仍然有效）；`一键启动.bat` 与命令行在服务**启动时**设定目录。优先级：环境变量 / 命令行参数 > 页面内设置（持久化）> 默认 `bilibili_images`。
+> 说明：页面内设置（方式 A）即时生效并**自动记忆**（重启服务后仍然有效）；`一键启动.bat` 与命令行在服务**启动时**设定目录。优先级：环境变量 / 命令行参数 > 页面内设置（持久化）> 默认（**桌面「B站下载」**）。在设置面板中把目录**清空**即可恢复默认。
 
 ---
 
@@ -293,8 +293,8 @@ A: 说明本地服务没启动。Windows 双击 `一键启动.bat`；macOS/Linux
 **Q: 如何更新脚本到新版本？**
 A: 手动重新导入 `bilibili-save.user.js`（覆盖安装即可），然后**刷新** B 站页面。
 
-**Q: 图片保存在哪里？**
-A: 默认在项目目录的 `bilibili_images/`；可在 `一键启动.bat` 顶部或命令行指定其他目录（见上节）。
+**Q: 图片 / 视频保存在哪里？**
+A: 默认保存到桌面的 **`B站下载`** 文件夹（视频在其中的 `videos/` 子目录）。也可在设置面板、`一键启动.bat` 顶部或命令行指定其他目录（见上节）。视频面板底部会直接显示当前实际保存位置。
 
 **Q: 有些图片下载失败（显示失败 N 张）？**
 A: 多为需要登录 Cookie 才能访问的图片（如私密收藏夹、部分作者的图）。这是 B 站权限限制，本地服务无法绕过。
