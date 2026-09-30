@@ -5,7 +5,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-0.9.30-00a1d6)
+![Version](https://img.shields.io/badge/version-0.9.31-00a1d6)
 ![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-orange)
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -212,7 +212,10 @@ B 站页面上的图片通常是经过压缩的缩略图（带 `@446w_...` 之�
 - 自动识别**收藏夹页**与**视频播放页**（含分 P 列表）中的视频
 - 视频播放页同时会列出页面右侧**「订阅合集」**中的全部视频（通过 B 站合集接口拉取，与当前视频一起展示，自动去重）
 - 面板会**自动获取每个视频的大小与画质**（无需手动操作；合集视频较多，勾选下载时才会获取其大小）
-- 勾选要下载的视频 → 点「下载选中」即可批量下载到本地 `videos/` 目录
+- 面板底部**显示文件实际保存位置**（便携版会把目录放在自己的文件夹内，避免"下了却找不到文件"）
+- **已下载的视频自动标记 `✅ 已下载`**：勾选时用「全选未下载」可一键跳过它们，下载时也会自动略过，不会重复消耗流量
+- 「下载选中 (N)」会显示已选数量，旁边「清空」一键取消全部勾选
+- 下载完成后提示**新增 / 已存在 / 失败**数量；失败时会点名具体是哪些视频，并给出**完整保存路径**
 - 检测到 ffmpeg 时自动把视频流+音频流**合并为带声音的 mp4**；未安装 ffmpeg 则音画分开保存（`.video.mp4` + `.audio.m4a`）
 
 > 需要合并成带声音的 mp4？请安装 [FFmpeg](https://ffmpeg.org) 并加入系统 PATH，或把 `ffmpeg.exe` 放到项目目录的 `ffmpeg\` 子目录（无需环境直接安装版已内置 `ffmpeg\ffmpeg.exe`）。

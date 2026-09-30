@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.30
+// @version      0.9.31
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -1628,7 +1628,8 @@
             '<div id="bili-video-prog-sub" style="margin-top:5px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>' +
             '</div>' +
             '<div style="display:flex;align-items:center;gap:10px;margin-top:10px;">' +
-            '<label style="font-size:12px;color:#555;cursor:pointer;"><input type="checkbox" id="bili-video-all" style="vertical-align:middle;"> 全选</label>' +
+            '<label style="font-size:12px;color:#555;cursor:pointer;" title="只勾选尚未下载的视频，避免重复下载"><input type="checkbox" id="bili-video-all" style="vertical-align:middle;"> 全选未下载</label>' +
+            '<button id="bili-video-clear" style="padding:4px 10px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:12px;color:#555;">清空</button>' +
             '<span style="flex:1;"></span>' +
             '<button id="bili-video-dl" style="' + STYLE.btnPrimary + '">下载选中</button>' +
             '<button id="bili-video-close" style="padding:6px 12px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px;">关闭</button>' +
@@ -1641,7 +1642,18 @@
         const allEl = panel.querySelector('#bili-video-all');
 
         // ── 状态 ──
-        const state = { items: [], ready: false };
+        //   items      : 列表项
+        //   downloaded : 已下载的 bvid 集合（从本地服务 /video/list 读回）
+        //   checked    : 已勾选的项，存对象引用而非下标 —— 列表重绘（fillCids 会 splice 展开分P）后仍能保持勾选
+        const state = { items: [], ready: false, downloaded: new Set(), checked: new Set() };
+        const dlBtnEl = panel.querySelector('#bili-video-dl');
+
+        // 同步「下载选中」按钮上的数量提示
+        const refreshDlBtn = () => {
+            if(!dlBtnEl) return;
+            const n = state.checked.size;
+            dlBtnEl.textContent = n ? ('下载选中 (' + n + ')') : '下载选中';
+        };
 
         // ── 渲染视频列表（合集项带 [合集] 标记）──
         const render = () => {
@@ -1655,10 +1667,12 @@
                 const size = it.size ? (' · ' + formatSize(it.size)) : '';
                 const q = it.quality ? (' · ' + qualityLabel(it.quality)) : '';
                 const err = it.error ? ' · <span style="color:#f00;">获取失败</span>' : '';
+                const done = state.downloaded.has(it.bvid) ? ' · <span style="color:#00a85d;">✅ 已下载</span>' : '';
+                const ck = state.checked.has(it) ? ' checked' : '';
                 return '<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid #f2f2f2;cursor:pointer;">' +
-                    '<input type="checkbox" class="bili-video-check" data-i="' + i + '" style="flex-shrink:0;">' +
+                    '<input type="checkbox" class="bili-video-check" data-i="' + i + '"' + ck + ' style="flex-shrink:0;">' +
                     '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + it.title.replace(/"/g,'&quot;') + '">' + it.title + '</span>' +
-                    '<span style="color:#999;font-size:12px;flex-shrink:0;">' + tag + dur + size + q + err + '</span>' +
+                    '<span style="color:#999;font-size:12px;flex-shrink:0;">' + tag + dur + size + q + err + done + '</span>' +
                     '</label>';
             }).join('');
         };
@@ -1723,16 +1737,20 @@
 
         // ── 下载选中：先补齐缺失的流地址，再交给本地服务下载 ──
         panel.querySelector('#bili-video-dl').addEventListener('click', async () => {
-            const checks = listEl.querySelectorAll('.bili-video-check:checked');
-            const picked = Array.from(checks).map(c => state.items[Number(c.getAttribute('data-i'))]);
+            // 以 state.checked 为准：勾选状态由事件委托维护，不受列表重绘影响
+            const picked = Array.from(state.checked).filter(it => state.items.indexOf(it) >= 0);
             if(!picked.length){ showToast('请先勾选视频'); return; }
-            const dlBtn = panel.querySelector('#bili-video-dl');
+            // 已下载的项直接跳过（服务端也会跳过，这里省掉多余请求）
+            const skippedDone = picked.filter(it => state.downloaded.has(it.bvid)).length;
+            const targets = picked.filter(it => !state.downloaded.has(it.bvid));
+            if(!targets.length){ showToast('所选视频都已经下载过了（如需重新下载，请先删除本地文件）'); return; }
+            const dlBtn = dlBtnEl || panel.querySelector('#bili-video-dl');
             const progEl = panel.querySelector('#bili-video-progress');
             const progText = panel.querySelector('#bili-video-prog-text');
             const progSub = panel.querySelector('#bili-video-prog-sub');
             dlBtn.disabled = true;
             dlBtn.textContent = '准备中…';
-            const need = picked.filter(it => !it.videoUrl);
+            const need = targets.filter(it => !it.videoUrl);
             if(need.length){
                 if(progEl) progEl.style.display = 'block';
                 if(progText) progText.textContent = '正在获取下载地址 ' + need.length + ' 个…';
@@ -1761,11 +1779,11 @@
                 }
                 await Promise.all(Array.from({ length: Math.min(CHILD_CONCURRENCY, need.length) }, () => prepWorker()));
             }
-            const chosen = picked.filter(it => it.videoUrl && !it.error);
+            const chosen = targets.filter(it => it.videoUrl && !it.error);
             if(!chosen.length){
                 showToast('未能获取所选视频的下载地址，请重试（可能是网络或接口限流）');
                 dlBtn.disabled = false;
-                dlBtn.textContent = '下载选中';
+                refreshDlBtn();
                 return;
             }
             if(progEl) progEl.style.display = 'block';
@@ -1826,21 +1844,36 @@
                 if(progPct) progPct.textContent = '100%';
                 const json = summary;
                 if(json && json.ok && json.results){
-                    const saved = json.results.filter(r => r.saved && !r.error).length;
-                    const failed = json.results.filter(r => r.error).length;
+                    const saved = json.results.filter(r => r.saved && !r.error && !r.exists).length;
+                    const exists = json.results.filter(r => r.exists).length;
+                    const failResults = json.results.filter(r => r.error);
+                    const failed = failResults.length;
                     const separate = json.results.filter(r => r.separate).length;
                     const merged = json.results.filter(r => r.merged).length;
                     if(progText) progText.textContent = '✅ 下载完成';
-                    if(progSub) progSub.textContent = '成功 ' + saved + ' 个，失败 ' + failed + ' 个';
+                    if(progSub) progSub.textContent = '新增 ' + saved + ' 个'
+                        + (exists ? '，已有 ' + exists + ' 个' : '')
+                        + (failed ? '，失败 ' + failed + ' 个' : '');
                     // 从服务端返回的实际文件路径中取出保存目录，避免用户不知道文件存到了哪里
                     const firstSaved = json.results.find(r => r.saved && !r.error);
                     const savedDir = firstSaved ? String(firstSaved.saved).replace(/[\\/][^\\/]+$/, '') : '';
-                    showToast('视频下载完成：成功 ' + saved + ' 个'
+                    // 失败时点名具体是哪些，方便用户判断要不要重试
+                    const failNames = failResults.slice(0, 3).map(r => String(r.title || '').slice(0, 16)).join('；');
+                    showToast('视频下载完成：新增 ' + saved + ' 个'
                         + (merged ? '（含合并 mp4 ' + merged + ' 个）' : '')
                         + (separate ? '，音画分开保存 ' + separate + ' 个' : '')
-                        + '，失败 ' + failed + ' 个'
+                        + (exists ? '，已有 ' + exists + ' 个' : '')
+                        + (failed ? '，失败 ' + failed + ' 个：' + failNames + (failResults.length > 3 ? ' 等' : '') : '')
+                        + (skippedDone ? '\n（已跳过 ' + skippedDone + ' 个已下载）' : '')
                         + (savedDir ? '\n保存位置：' + savedDir : ''));
-                    if(saved > 0) showDonatePanel({ saved: saved, exists: 0, failed: failed });
+                    // 把本次落盘成功的项记为「已下载」并刷新列表，避免下次重复下载
+                    json.results.forEach((r, i) => {
+                        if(!r.error && (r.saved || r.exists) && chosen[i]) state.downloaded.add(chosen[i].bvid);
+                    });
+                    state.checked.clear();
+                    if(allEl) allEl.checked = false;
+                    render();
+                    if(saved > 0) showDonatePanel({ saved: saved, exists: exists, failed: failed });
                 } else {
                     if(progText) progText.textContent = '❌ 下载失败';
                     if(progSub) progSub.textContent = (json && json.error) || '下载未成功完成';
@@ -1851,16 +1884,45 @@
                 showToast('❌ 视频下载失败：\n' + (err && err.message) + '\n请先双击「一键启动.bat」启动本地服务');
             } finally {
                 dlBtn.disabled = false;
-                dlBtn.textContent = '下载选中';
+                refreshDlBtn();
             }
         });
 
         // ── 其它交互：关闭 / 全选 ──
         panel.querySelector('#bili-video-close').addEventListener('click', () => panel.remove());
 
-        allEl.addEventListener('change', () => {
-            listEl.querySelectorAll('.bili-video-check').forEach(c => { c.checked = allEl.checked; });
+        // ── 勾选状态：事件委托维护（列表重建后依然有效，不会因重绘丢失勾选）──
+        listEl.addEventListener('change', (e) => {
+            const cb = e.target && e.target.closest ? e.target.closest('.bili-video-check') : null;
+            if(!cb) return;
+            const it = state.items[Number(cb.getAttribute('data-i'))];
+            if(!it) return;
+            if(cb.checked) state.checked.add(it); else state.checked.delete(it);
+            refreshDlBtn();
         });
+
+        // ── 全选：只勾选「尚未下载」的项，避免重复下载浪费流量 ──
+        allEl.addEventListener('change', () => {
+            state.checked.clear();
+            if(allEl.checked){
+                state.items.forEach(it => {
+                    if(!state.downloaded.has(it.bvid)) state.checked.add(it);
+                });
+            }
+            render();
+            refreshDlBtn();
+        });
+
+        // ── 清空选择 ──
+        const clearEl = panel.querySelector('#bili-video-clear');
+        if(clearEl){
+            clearEl.addEventListener('click', () => {
+                state.checked.clear();
+                if(allEl) allEl.checked = false;
+                render();
+                refreshDlBtn();
+            });
+        }
 
         // ── 初始化：先渲染当前视频，再异步拉取合集视频 ──
         // 显示实际保存位置：避免用户下载完不知道文件存到哪（便携版会把目录放在自己的文件夹内）
@@ -1881,6 +1943,24 @@
         state.items = items;
         render();
         if(!items.length){ hintEl.textContent = ''; return; }
+
+        // 读取本地已下载列表并在列表上标记「✅ 已下载」：全选与下载都会自动跳过，避免重复下载
+        // 注意：这里不做 state.items 过滤 —— 合集项是稍后才异步合并进来的，
+        // 先把 bvid 全部记入 state.downloaded，render 时再动态判断，避免漏标。
+        (async () => {
+            const list = await serverApi('/video/list');
+            if(!list || !Array.isArray(list.videos) || !list.videos.length) return;
+            let hit = 0;
+            for(const v of list.videos){
+                const m = /_(BV[0-9A-Za-z]{10})\.[0-9A-Za-z]+$/.exec(String(v.name || ''));
+                if(m && !state.downloaded.has(m[1])){
+                    state.downloaded.add(m[1]);
+                    hit++;
+                }
+            }
+            if(hit){ render(); refreshDlBtn(); }
+        })();
+
         (async () => {
             let col = null;
             try{ col = await collectCollectionItems(); }catch(e){}
