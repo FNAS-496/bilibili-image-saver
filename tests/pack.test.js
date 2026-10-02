@@ -272,6 +272,15 @@ check('完整版：本地有内置运行时就带上，没有就跳过（不硬�
     assert.ok(names.some(n => n.endsWith('/ffmpeg/ffmpeg.exe')));
 });
 
+check('Release 说明：占位符都换掉了，附件名和版本都列进去了', () => {
+    const body = pack.releaseBody([envResult, portableResult]);
+    assert.ok(!/@@[A-Z_]+@@/.test(body), '还有占位符没替换');
+    assert.ok(body.includes(path.basename(envResult.zipPath)));
+    assert.ok(body.includes(path.basename(portableResult.zipPath)));
+    assert.ok(body.includes('**环境版**'));
+    assert.ok(body.includes('Bilibili-Plus v' + pack.VERSION));
+});
+
 if (PY) {
     const py = pythonInspect(envResult.zipPath);
     check('Python zipfile 交叉验证：发行包结构正常、说明文字没乱码', () => {
