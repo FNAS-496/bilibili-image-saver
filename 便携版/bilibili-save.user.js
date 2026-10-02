@@ -1,12 +1,10 @@
 // ==UserScript==
-// @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
-// @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
+// @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）（便携版·无需环境）
+// @name:en      Bilibili-Plus - Enhanced Bilibili Downloader (Portable)
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
 // @version      0.9.32
-// @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
-// @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
-// @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、日夜主题（默认不自动下载，需点击按钮）；需配合“一键启动.bat”启动本地服务）
+// @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、日夜主题（默认不自动下载，需点击按钮）；便携版纯浏览器运行，无需安装任何环境）
 // @description:en Bilibili-Plus: auto-download original images from Bilibili favorites, dynamics, opus and space pages; video batch download, review mode, custom keys (needs the local server started via "一键启动.bat")
 // @homepageURL  https://github.com/FNAS-496/bilibili-image-saver
 // @supportURL   https://github.com/FNAS-496/bilibili-image-saver/issues
@@ -16,12 +14,11 @@
 // @grant        GM_xmlhttpRequest
 // @connect      hdslb.com
 // @connect      bilibili.com
-// @connect      127.0.0.1
 // @noframes
 // @license      CC BY-NC-SA 4.0
 // ==/UserScript==
 // ⚠️ 本文件由 build.js 从 src/bilibili-save.user.js 生成，请勿直接修改；
-//    改完源文件后运行 `npm run build` 重新生成（模式：full）。
+//    改完源文件后运行 `npm run build` 重新生成（模式：portable）。
 
 
 
@@ -31,7 +28,7 @@
     const LOCAL_SERVER = 'http://127.0.0.1:8765/save';
     const AUTO_SAVE_PARAM = 'bili_auto_save';
     // 构建期由 build.js 替换：'full' = 环境版（配合本地服务）| 'portable' = 便携版（纯浏览器，零环境）
-    const BUILD_MODE = 'full';
+    const BUILD_MODE = 'portable';
     const IS_PORTABLE = BUILD_MODE === 'portable';
     const REPO_URL = 'https://github.com/FNAS-496/bilibili-image-saver';
     // 需要本地环境（Node + ffmpeg）时给出的下载地址
