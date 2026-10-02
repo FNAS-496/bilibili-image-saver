@@ -244,13 +244,33 @@ check('「文件说明.txt」把包内每个文件都列了一遍，备注不是
     assert.ok(text.includes('（大小见文件本身）'), '文件说明自己那一条没标注大小');
 });
 
-check('「使用说明.txt」里的运行时指引按版本替换（没有 @@ 残留）', () => {
+check('每个包都有自己的使用说明（四个包不再共用一份模板）', () => {
+    const env = pack.usageText(specOf('env'));
+    const full = pack.usageText(specOf('full'));
+    const source = pack.usageText(specOf('source'));
+    assert.notStrictEqual(env, full, '环境版和完整版还在用同一份说明');
+    assert.notStrictEqual(env, source);
+    assert.ok(env.includes('本包不带，需要自己装'), '环境版该说「自己装 Node」');
+    assert.ok(full.includes('本包已内置'), '完整版该说「已内置运行时」');
+    assert.ok(source.includes('npm run pack'), '源码版该讲怎么重新打包');
+    for (const text of [env, full, source]) {
+        assert.ok(text.includes('Bilibili-Plus v' + pack.VERSION), '版本号没替换');
+        assert.ok(!/@@(?!VERSION@@)/.test(text) && !/@@VERSION@@/.test(text), '还有没替换的占位符');
+    }
+    assert.throws(() => pack.usageText(specOf('portable')), /还没有自己的使用说明/,
+        '便携版应该直接用仓库里的 便携版/使用说明.txt，不该再有第四份模板');
+});
+
+check('「使用说明.txt」随包发出，且没有 @@ 残留', () => {
+    for (const r of [envResult, portableResult]) {
+        const text = r.items.find(i => i.to === '使用说明.txt').data.toString('utf8');
+        assert.ok(text.length > 300, '说明太短，是不是读到模板了');
+        assert.ok(!/@@[A-Z_]+@@/.test(text), '还有占位符没替换');
+    }
     const envText = envResult.items.find(i => i.to === '使用说明.txt').data.toString('utf8');
-    assert.ok(envText.includes('本包不带运行环境'));
-    assert.ok(!/@@[A-Z_]+@@/.test(envText), '还有占位符没替换');
-    const usage = pack.usageText(specOf('full'));
-    assert.ok(usage.includes('本包已内置运行环境'));
-    assert.ok(usage.includes('Bilibili-Plus v' + pack.VERSION));
+    assert.ok(envText.includes('本包不带，需要自己装'));
+    const portableText = portableResult.items.find(i => i.to === '使用说明.txt').data.toString('utf8');
+    assert.ok(portableText.includes('便携版'), '便携版包里应该还是那份便携版说明');
 });
 
 check('备注注入到了包里的脚本文件（装完看一眼文件就知道是啥）', () => {
@@ -306,10 +326,13 @@ if (PY) {
 check('源码版：带上源码、构建与打包工具，不带生成物', () => {
     const r = pack.buildEdition(specOf('source'), TMP);
     const names = listZip(r.zipPath).map(e => e.name.split('/').slice(1).join('/'));
-    for (const want of ['src/bilibili-save.user.js', 'src/lib/browser-save.js', 'build.js', 'pack/pack.js', 'pack/zip.js', 'package.json', 'README.md', '.gitignore']) {
+    for (const want of ['src/bilibili-save.user.js', 'src/lib/browser-save.js', 'build.js', 'pack/pack.js', 'pack/zip.js',
+        'package.json', 'README.md', '.gitignore', '使用说明.txt',
+        '一键启动.bat', 'save_images_server.js', '便携版/使用说明.txt']) {
         assert.ok(names.includes(want), '少了 ' + want);
     }
     assert.ok(!names.includes('bilibili-save.user.js'), '源码版不该混进根目录的生成物');
+    assert.ok(!names.includes('便携版/bilibili-save.user.js'), '便携版脚本是生成物，不该进源码包');
 });
 
 check('source 版 README 备注不会破坏 Markdown 标题', () => {

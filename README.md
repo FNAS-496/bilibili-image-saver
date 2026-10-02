@@ -187,7 +187,7 @@ npm start         # 跑本地保存服务（环境版）
 
 > `bilibili-save.user.js` 和 `便携版/bilibili-save.user.js` 都是**生成出来的**喵，别直接改；改了 src 再跑一次 build 就好。
 
-打包相关的手写文件也在这几个地方喵：发行包的说明模板 `pack/usage-env.txt`、Release 说明 `pack/release-notes.md`、每个文件的备注表 `pack/notes.js`。加了新文件记得在备注表里补一条，否则 `npm run pack` 会直接报错拦下来喵。
+打包相关的手写文件也在这几个地方喵：四个发行包**各有一份自己的使用说明**——环境版 [pack/usage-env.txt](pack/usage-env.txt)、完整版 [pack/usage-full.txt](pack/usage-full.txt)、源码版 [pack/usage-source.txt](pack/usage-source.txt)，便携版直接用手写的 [便携版/使用说明.txt](便携版/使用说明.txt)；另外还有 Release 说明 [pack/release-notes.md](pack/release-notes.md)、每个文件的备注表 [pack/notes.js](pack/notes.js)。加了新文件记得在备注表里补一条，否则 `npm run pack` 会直接报错拦下来喵。
 
 `发行版/`（打包产物）和 `无需环境直接安装版/`（放内置 Node/ffmpeg 的地方）都不入库喵，前者走 GitHub Release，后者体积太大。
 
