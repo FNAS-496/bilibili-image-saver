@@ -82,8 +82,14 @@ async function uploadAsset({ owner, repo, releaseId, token, file }) {
     });
     const text = await res.text();
     if (!res.ok) {
-        let msg = text.slice(0, 200);
-        try { msg = JSON.parse(text).message || msg; } catch (e) { /* 保持原文 */ }
+        let msg = text.slice(0, 300);
+        try {
+            const j = JSON.parse(text);
+            msg = j.message || msg;
+            if (Array.isArray(j.errors) && j.errors.length) {
+                msg += ' → ' + j.errors.map(e => e.field ? (e.field + ' ' + e.code) : JSON.stringify(e)).join('；');
+            }
+        } catch (e) { /* 非 JSON 就用原文 */ }
         throw new Error('上传 ' + name + ' 失败：' + res.status + ' ' + msg);
     }
     console.log('ok（' + ((Date.now() - t0) / 1000).toFixed(1) + 's）');
@@ -94,6 +100,14 @@ async function publishRelease({ tag, name, body, assets, draft = false, prerelea
     const token = readToken();
     const { owner, repo } = repoSlug();
     const base = '/repos/' + owner + '/' + repo;
+
+    // 附件名只能是纯 ASCII：GitHub 会把非 ASCII 字符直接抹掉（中文名会变成一串下划线）
+    for (const file of assets) {
+        const base = path.basename(file);
+        if (/[^\x20-\x7e]/.test(base)) {
+            throw new Error('附件名必须是纯 ASCII（GitHub 会抹掉非 ASCII 字符）：' + base);
+        }
+    }
 
     let release = null;
     try {
@@ -118,13 +132,16 @@ async function publishRelease({ tag, name, body, assets, draft = false, prerelea
         });
     }
 
-    // 同名附件先删掉，否则重复发布会 422
-    const existing = await api(base + '/releases/' + release.id + '/assets?per_page=100', { token });
+    // 同名附件先删；另外把改了名的旧附件也清掉（不然会一直堆在 Release 上）
+    const existing = (await api(base + '/releases/' + release.id + '/assets?per_page=100', { token })) || [];
     const wanted = new Set(assets.map(f => path.basename(f)));
-    for (const a of existing || []) {
-        if (wanted.has(a.name)) {
+    for (const a of existing) {
+        const renamed = !wanted.has(a.name) && /^Bilibili-Plus[-_]/.test(a.name);
+        if (wanted.has(a.name) || renamed) {
             await api(base + '/releases/assets/' + a.id, { method: 'DELETE', token });
-            console.log('  删掉旧附件：' + a.name);
+            console.log('  删掉旧附件：' + a.name + (renamed ? '（改名前的旧包）' : ''));
+        } else {
+            console.log('  保留不认识的附件：' + a.name);
         }
     }
 
