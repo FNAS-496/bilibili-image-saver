@@ -30,23 +30,14 @@ const STAMP_MTIME = fs.statSync(path.join(ROOT, 'package.json')).mtime;
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
-const RUNTIME_BUNDLED = [
-    '本包已内置运行环境，装都不用装：',
-    '    node\\node.exe          内置 Node.js（本地保存服务用它跑）',
-    '    ffmpeg\\ffmpeg.exe      内置 FFmpeg（视频音画合并用）',
-    '双击「一键启动.bat」即可，一行都不用配。'
-].join('\n');
-
-const RUNTIME_MANUAL = [
-    '本包不带运行环境，请自备：',
-    '    Node.js（必须）      https://nodejs.org/zh-cn/download',
-    '    FFmpeg（可选）       https://www.gyan.dev/ffmpeg/builds/',
-    '装好 Node 就行——「一键启动.bat」会自动找到它（在系统 PATH 里即可）。',
-    'FFmpeg 用来把视频流和音频流合并成一个 mp4：把 ffmpeg.exe 放到本目录的',
-    'ffmpeg\\ffmpeg.exe，或者加进系统 PATH。不装也能下视频，只是音画分开存。'
-].join('\n');
-
 const MIN_BUNDLE_SIZE = 1024 * 1024;      // 内置运行时不该这么小，多半是没下完的残包
+
+// 使用说明：四个包各有各的一份，互不共用——
+//   便携版 → 便携版/使用说明.txt（仓库里给用户看的那份，直接打进包）
+//   环境版 → pack/usage-env.txt
+//   完整版 → pack/usage-full.txt
+//   源码版 → pack/usage-source.txt
+// 里面只有 @@VERSION@@ 是占位符（打包时按 package.json 的版本替换）。
 
 function rel(abs) {
     return path.relative(ROOT, abs).split(path.sep).join('/');
@@ -133,6 +124,8 @@ function editionSpecs() {
             kind: 'source',
             blurb: '源码 + 构建/打包/发布工具 + 单测，改完跑 npm run build && npm run pack',
             files: [
+                { to: '一键启动.bat', src: path.join(ROOT, '一键启动.bat') },
+                { to: 'save_images_server.js', src: path.join(ROOT, 'save_images_server.js') },
                 ...dirItems('src'),
                 ...dirItems('tests'),
                 ...dirItems('pack'),
@@ -140,18 +133,18 @@ function editionSpecs() {
                 { to: 'package.json', src: path.join(ROOT, 'package.json') },
                 { to: 'README.md', src: path.join(ROOT, 'README.md') },
                 { to: 'LICENSE', src: path.join(ROOT, 'LICENSE') },
-                { to: '.gitignore', src: path.join(ROOT, '.gitignore') }
+                { to: '.gitignore', src: path.join(ROOT, '.gitignore') },
+                { to: '便携版/使用说明.txt', src: path.join(ROOT, '便携版', '使用说明.txt') },
+                { gen: 'usage' }
             ]
         }
     ];
 }
 
 function usageText(spec) {
-    const tpl = fs.readFileSync(path.join(__dirname, 'usage-env.txt'), 'utf8');
-    return tpl
-        .replace(/@@VERSION@@/g, VERSION)
-        .replace(/@@EDITION@@/g, spec.title)
-        .replace(/@@RUNTIME@@/g, spec.kind === 'full' ? RUNTIME_BUNDLED : RUNTIME_MANUAL);
+    const file = path.join(__dirname, 'usage-' + spec.key + '.txt');
+    if (!fs.existsSync(file)) throw new Error('这个版本还没有自己的使用说明：' + file);
+    return fs.readFileSync(file, 'utf8').replace(/@@VERSION@@/g, VERSION);
 }
 
 // 把条目读成内存数据（生成的说明文档也在这里拼）
