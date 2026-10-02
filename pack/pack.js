@@ -226,8 +226,9 @@ function syncBundleFolder(result) {
 }
 
 function releaseBody(results) {
-    const rows = results.map(r => '| `' + path.basename(r.zipPath) + '` | ' + r.spec.blurb + ' | ' + humanSize(r.written.bytes) + ' |');
-    const table = ['| 包 | 适合谁 / 里面有什么 | 体积 |', '|---|---|---|', ...rows].join('\n');
+    const rows = results.map(r => '| `' + path.basename(r.zipPath) + '` | **' + r.spec.suffix + '** · ' +
+        r.spec.blurb + ' | ' + humanSize(r.written.bytes) + ' |');
+    const table = ['| 下载包 | 这个包里有什么喵 | 体积 |', '|---|---|---|', ...rows].join('\n');
     return fs.readFileSync(path.join(__dirname, 'release-notes.md'), 'utf8')
         .replace(/@@VERSION@@/g, VERSION)
         .replace(/@@ASSET_TABLE@@/g, table);
