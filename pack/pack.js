@@ -25,6 +25,8 @@ let OUT_DIR = path.join(ROOT, '发行版');                      // 可用 --out
 const BUNDLE_DIR = path.join(ROOT, '无需环境直接安装版');      // 本地放 node/ffmpeg 的目录（不入库）
 const NOTES_FILE = '文件说明.txt';
 const USAGE_FILE = '使用说明.txt';
+// 生成的说明文档用 package.json 的修改时间当时间戳，这样同样源码打出来的 zip 字节一致（可复现）
+const STAMP_MTIME = fs.statSync(path.join(ROOT, 'package.json')).mtime;
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
@@ -158,7 +160,7 @@ function resolveItems(spec) {
     const items = [];
     for (const it of spec.files) {
         if (it.gen === 'usage') {
-            items.push({ to: USAGE_FILE, data: Buffer.from(usageText(spec), 'utf8'), bundle: false, generated: true });
+            items.push({ to: USAGE_FILE, data: Buffer.from(usageText(spec), 'utf8'), mtime: STAMP_MTIME, bundle: false, generated: true });
             continue;
         }
         const src = it.src || (BUNDLE_DIR && it.bundle ? path.join(BUNDLE_DIR, ...it.bundle.split('/')) : null);
@@ -192,6 +194,7 @@ function buildEdition(spec, outDir = OUT_DIR) {
     items.push({
         to: NOTES_FILE,
         data: Buffer.from(fileNotesText({ version: VERSION, edition: spec.title, items: noteItems }), 'utf8'),
+        mtime: STAMP_MTIME,
         bundle: false,
         generated: true
     });

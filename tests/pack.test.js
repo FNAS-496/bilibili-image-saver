@@ -15,6 +15,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
+const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const { writeZip, listZip, verifyZip, ZIP_FLAGS_UTF8 } = require('../pack/zip.js');
@@ -270,6 +271,16 @@ check('完整版：本地有内置运行时就带上，没有就跳过（不硬�
     const names = listZip(r.zipPath).map(e => e.name);
     assert.ok(names.some(n => n.endsWith('/node/node.exe')));
     assert.ok(names.some(n => n.endsWith('/ffmpeg/ffmpeg.exe')));
+});
+
+check('同一个包打两次字节一致（生成的说明用固定时间戳，产物可复现）', () => {
+    const sha = b => crypto.createHash('sha256').update(fs.readFileSync(b)).digest('hex');
+    const dirA = fs.mkdtempSync(path.join(TMP, 'a-'));
+    const dirB = fs.mkdtempSync(path.join(TMP, 'b-'));
+    const a = pack.buildEdition(specOf('env'), dirA);
+    const b = pack.buildEdition(specOf('env'), dirB);
+    assert.strictEqual(path.basename(a.zipPath), path.basename(b.zipPath));
+    assert.strictEqual(sha(a.zipPath), sha(b.zipPath), '两次打包的字节不一样，产物不可复现');
 });
 
 check('Release 说明：占位符都换掉了，附件名和版本都列进去了', () => {
