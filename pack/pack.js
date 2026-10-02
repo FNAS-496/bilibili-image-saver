@@ -79,9 +79,12 @@ function editionSpecs() {
         { to: 'LICENSE', src: path.join(ROOT, 'LICENSE') }
     ];
 
+    // key：zip 文件名用（GitHub 附件名会把非 ASCII 字符直接抹掉，所以只用 ASCII）；
+    // suffix：zip 里的顶层目录名用（中文，解压出来好看）
     return [
         {
             id: 'portable',
+            key: 'portable',
             suffix: '便携版',
             title: '便携版（无需环境）',
             kind: 'portable',
@@ -94,6 +97,7 @@ function editionSpecs() {
         },
         {
             id: 'env',
+            key: 'env',
             suffix: '环境版',
             title: '环境版（需自备 Node）',
             kind: 'env',
@@ -102,6 +106,7 @@ function editionSpecs() {
         },
         {
             id: 'full',
+            key: 'full',
             suffix: '完整版',
             title: '完整版（内置 Node.js + FFmpeg·免配置）',
             kind: 'full',
@@ -120,6 +125,7 @@ function editionSpecs() {
         },
         {
             id: 'source',
+            key: 'source',
             suffix: '源码版',
             title: '源码版（含构建与打包工具）',
             kind: 'source',
@@ -191,7 +197,7 @@ function buildEdition(spec, outDir = OUT_DIR) {
     });
 
     const folder = 'Bilibili-Plus_v' + VERSION + '_' + spec.suffix;
-    const zipPath = path.join(outDir, folder + '.zip');
+    const zipPath = path.join(outDir, 'Bilibili-Plus_v' + VERSION + '_' + spec.key + '.zip');
     fs.mkdirSync(outDir, { recursive: true });
 
     const written = writeZip(zipPath, items.map(i => ({

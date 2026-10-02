@@ -206,12 +206,14 @@ check('editionSpecs：四个发行版都在，且 id 唯一', () => {
 const envResult = pack.buildEdition(specOf('env'), TMP);
 const portableResult = pack.buildEdition(specOf('portable'), TMP);
 
-check('发行包：zip 名与顶层目录一致（解压不会散落一地）', () => {
+check('发行包：zip 文件名纯 ASCII，顶层目录用中文（GitHub 附件名会抹掉非 ASCII）', () => {
     for (const r of [envResult, portableResult]) {
         const base = path.basename(r.zipPath, '.zip');
+        assert.ok(/^[\x20-\x7e]+$/.test(base), 'zip 文件名有非 ASCII 字符：' + base);
+        assert.strictEqual(base, 'Bilibili-Plus_v' + pack.VERSION + '_' + r.spec.key);
         const names = listZip(r.zipPath).map(e => e.name);
-        assert.ok(names.every(n => n.startsWith(base + '/')), '顶层目录不对：' + r.zipPath);
-        assert.strictEqual(base, 'Bilibili-Plus_v' + pack.VERSION + '_' + r.spec.suffix);
+        const folder = 'Bilibili-Plus_v' + pack.VERSION + '_' + r.spec.suffix;
+        assert.ok(names.every(n => n.startsWith(folder + '/')), '顶层目录不对：' + r.zipPath);
     }
 });
 
@@ -273,9 +275,10 @@ check('完整版：本地有内置运行时就带上，没有就跳过（不硬�
 if (PY) {
     const py = pythonInspect(envResult.zipPath);
     check('Python zipfile 交叉验证：发行包结构正常、说明文字没乱码', () => {
+        const folder = 'Bilibili-Plus_v' + pack.VERSION + '_' + envResult.spec.suffix;
         assert.strictEqual(py.bad, null);
         assert.strictEqual(py.names.length, listZip(envResult.zipPath).length);
-        const notes = py.texts[path.basename(envResult.zipPath, '.zip') + '/文件说明.txt'];
+        const notes = py.texts[folder + '/文件说明.txt'];
         assert.ok(notes && notes.includes('【备注】'), 'Python 读出来的文件说明不对');
     });
 }
