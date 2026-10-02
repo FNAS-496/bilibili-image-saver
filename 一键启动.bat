@@ -1,4 +1,10 @@
 @echo off
+:: ==================== 备注（本文件是启动脚本） ====================
+:: 双击即可：检查文件是否齐全 →（缺收款码时）从本文件释放收款码 → 找 Node
+::（优先用本目录 node\node.exe，没有就用系统里装的）→ 启动本地保存服务 → 打开 B 站。
+:: 文件末尾那一长串是内嵌的收款码数据，别删别改，删了打赏面板就没图了。
+:: 详细说明见同目录的「使用说明.txt」；每个文件干啥的见「文件说明.txt」。
+:: ================================================================
 setlocal
 cd /d "%~dp0"
 title Bilibili-Plus 一键启动 / One-Click Start
@@ -28,10 +34,13 @@ if not exist "watermark\wechat_qr.jpg" if not exist "watermark\wechat_qr.png" if
 )
 
 REM ============ Node.js 检查 / Node.js check ============
+REM 优先用本目录内置的 node\node.exe（完整版自带），把它塞进 PATH；
+REM 没有内置时就退回系统装的 Node（此处的 PATH 改动只在本次运行里有效）
+if exist "%~dp0node\node.exe" set "PATH=%~dp0node;%PATH%"
 where node >nul 2>nul
 if errorlevel 1 (
-  echo [错误/Error] 缺少 Node.js，请到 https://nodejs.org 安装后重试。
-  echo [Error] Node.js not found. Install from https://nodejs.org
+  echo [错误/Error] 缺少 Node.js：把 node\node.exe 放进本文件夹，或到 https://nodejs.org 安装后重试。
+  echo [Error] Node.js not found. Put node\node.exe in this folder, or install from https://nodejs.org
   pause
   exit /b 1
 )

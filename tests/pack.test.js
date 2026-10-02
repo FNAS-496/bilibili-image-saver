@@ -1,0 +1,301 @@
+/**
+ * 打包工具链单测（运行：node tests/pack.test.js）
+ *
+ * 覆盖三块：
+ *   pack/zip.js    ZIP 写入器（结构、中文名 EFS、CRC、坏包能被发现）
+ *   pack/notes.js  备注注入（JS / TXT / GITIGNORE 各自的注释写法）
+ *   pack/pack.js   发行包内容（打出来的 zip 里有啥、说明文档全不全）
+ *
+ * 机器上有 Python 时，再用 Python 的 zipfile 交叉验证一遍（不是自己验自己）。
+ */
+'use strict';
+
+const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const zlib = require('zlib');
+const { execFileSync } = require('child_process');
+
+const { writeZip, listZip, verifyZip, ZIP_FLAGS_UTF8 } = require('../pack/zip.js');
+const { noteFor, annotate } = require('../pack/notes.js');
+const pack = require('../pack/pack.js');
+
+const ROOT = path.join(__dirname, '..');
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bili-pack-test-'));
+let passed = 0;
+const check = (name, fn) => {
+    try {
+        fn();
+        passed++;
+        console.log('  ok   ' + name);
+    } catch (e) {
+        console.error('  FAIL ' + name + '\n       ' + e.message);
+        process.exitCode = 1;
+    }
+};
+
+// ── Python 交叉验证（没有 Python 就跳过，不当失败）──
+const PY = (() => {
+    try {
+        execFileSync('python', ['-c', 'pass'], { stdio: 'ignore' });
+        return true;
+    } catch (e) {
+        return false;
+    }
+})();
+
+function pythonInspect(zipPath) {
+    const script = path.join(TMP, 'inspect_zip.py');
+    if (!fs.existsSync(script)) {
+        fs.writeFileSync(script, [
+            'import sys, zipfile, json, io',
+            'out = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")',
+            'z = zipfile.ZipFile(sys.argv[1])',
+            'res = {"bad": z.testzip(), "names": z.namelist()}',
+            'for n in res["names"]:',
+            '    if n.endswith(".txt"):',
+            '        res.setdefault("texts", {})[n] = z.read(n).decode("utf-8")',
+            'out.write(json.dumps(res, ensure_ascii=False))'
+        ].join('\n'), 'utf8');
+    }
+    const out = execFileSync('python', [script, zipPath], {
+        encoding: 'utf8',
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+    });
+    return JSON.parse(out);
+}
+
+console.log('pack 单测（打包工具链）');
+
+// ── pack/zip.js ──
+const TXT = 'Bilibili-Plus 打包测试：中文内容 & 换行。\n'.repeat(30);
+const JS = '// ' + 'x'.repeat(400) + '\n';
+const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 5, 6, 7, 8]);
+const smallZip = path.join(TMP, 'small.zip');
+const when = new Date(2026, 9, 2, 18, 0, 0);
+
+writeZip(smallZip, [
+    { name: '使用说明.txt', data: Buffer.from(TXT, 'utf8'), mtime: when },
+    { name: 'images/封面 图片.jpg', data: JPG, mtime: when },
+    { name: 'src/app.js', data: Buffer.from(JS, 'utf8'), mtime: when }
+]);
+
+const listed = listZip(smallZip);
+
+check('writeZip：条目名按写入顺序在中央目录里原样出现', () => {
+    assert.deepStrictEqual(listed.map(e => e.name), ['使用说明.txt', 'images/封面 图片.jpg', 'src/app.js']);
+});
+
+check('writeZip：非 ASCII 名字置了 EFS(0x0800) 标志', () => {
+    for (const e of listed) assert.ok(e.flags & ZIP_FLAGS_UTF8, '缺 EFS：' + e.name);
+    assert.strictEqual(ZIP_FLAGS_UTF8, 0x0800);
+});
+
+check('writeZip：已压缩格式走 STORE，文本走 DEFLATE 且确实更小', () => {
+    const byName = Object.fromEntries(listed.map(e => [e.name, e]));
+    assert.strictEqual(byName['images/封面 图片.jpg'].method, 0, '图片不该再压缩');
+    assert.strictEqual(byName['使用说明.txt'].method, 8, '文本应该 deflate');
+    assert.strictEqual(byName['src/app.js'].method, 8, '重复文本应该 deflate');
+    assert.ok(byName['src/app.js'].packed < byName['src/app.js'].size, 'deflate 后反而更大就不该用 deflate');
+    assert.strictEqual(byName['images/封面 图片.jpg'].packed, JPG.length);
+});
+
+check('writeZip：回读校验通过，且未压缩长度与原文一致', () => {
+    const entries = verifyZip(smallZip);
+    assert.strictEqual(entries.length, 3);
+    const txt = entries.find(e => e.name === '使用说明.txt');
+    assert.strictEqual(txt.size, Buffer.byteLength(TXT));
+});
+
+check('writeZip：CRC 与运行时自带的 zlib.crc32 一致', () => {
+    if (typeof zlib.crc32 !== 'function') return;         // Node < 22 没有这个函数
+    const payloads = {
+        '使用说明.txt': Buffer.from(TXT, 'utf8'),
+        'images/封面 图片.jpg': JPG,
+        'src/app.js': Buffer.from(JS, 'utf8')
+    };
+    for (const e of listed) {
+        assert.strictEqual(e.crc >>> 0, zlib.crc32(payloads[e.name]) >>> 0, 'CRC 不一致：' + e.name);
+    }
+});
+
+check('writeZip：单个条目名超过 65535 字节直接报错', () => {
+    assert.throws(() => writeZip(path.join(TMP, 'longname.zip'), [{ name: 'x'.repeat(70000) + '.txt', data: Buffer.from('a') }]),
+        /条目名过长/);
+});
+
+check('verifyZip：内容被改一个字节能查出来（坏包别想发出去）', () => {
+    const bad = path.join(TMP, 'tamper.zip');
+    fs.copyFileSync(smallZip, bad);
+    const buf = fs.readFileSync(bad);
+    const jpg = listZip(bad).find(e => e.name.endsWith('.jpg'));
+    const nameLen = buf.readUInt16LE(jpg.offset + 26);
+    const extraLen = buf.readUInt16LE(jpg.offset + 28);
+    const at = jpg.offset + 30 + nameLen + extraLen;
+    buf[at] = buf[at] ^ 0xff;
+    fs.writeFileSync(bad, buf);
+    assert.throws(() => verifyZip(bad), /CRC|长度|签名|不一致/, '篡改后没报错');
+});
+
+if (PY) {
+    const py = pythonInspect(smallZip);
+    check('Python zipfile 交叉验证：中文名不乱码、testzip 无坏条目', () => {
+        assert.strictEqual(py.bad, null);
+        assert.deepStrictEqual(py.names, ['使用说明.txt', 'images/封面 图片.jpg', 'src/app.js']);
+    });
+    check('Python 读出的 txt 内容与写进去的一模一样', () => {
+        assert.strictEqual(py.texts['使用说明.txt'], TXT);
+    });
+} else {
+    console.log('  skip 未找到 python，跳过交叉验证');
+}
+
+// ── pack/notes.js ──
+check('noteFor：没备注的文件直接报错（逼着维护者补备注）', () => {
+    assert.throws(() => noteFor('随便一个不存在的文件.txt', 'env'), /没有备注/);
+    assert.ok(noteFor('node/node.exe', 'full').length > 0);
+    assert.ok(noteFor('bilibili-save.user.js', 'portable').includes('便携版'));
+});
+
+check('annotate：用户脚本的备注插在 ==/UserScript== 之后', () => {
+    const src = '// ==UserScript==\n// @name x\n// ==/UserScript==\nconsole.log(1);\n';
+    const out = annotate('bilibili-save.user.js', Buffer.from(src, 'utf8'), 'env').toString('utf8');
+    assert.ok(out.startsWith('// ==UserScript=='), '头部不能被挤掉');
+    assert.ok(out.includes('// 【备注】'));
+    assert.ok(out.indexOf('// 【备注】') < out.indexOf('console.log(1)'));
+});
+
+check('annotate：txt 前置备注，.gitignore 用 # 注释，json 不动', () => {
+    const txt = annotate('使用说明.txt', Buffer.from('正文\n', 'utf8'), 'env').toString('utf8');
+    assert.ok(txt.startsWith('【备注】'));
+    assert.ok(txt.endsWith('正文\n'));
+    const gi = annotate('.gitignore', Buffer.from('node_modules/\n', 'utf8'), 'source').toString('utf8');
+    assert.ok(gi.startsWith('# 【备注】'));
+    const json = Buffer.from('{"a":1}', 'utf8');
+    assert.strictEqual(annotate('package.json', json, 'source'), json);
+});
+
+check('一键启动.bat：备注写在源文件里（GBK 编码，打包时原样带走）', () => {
+    const raw = fs.readFileSync(path.join(ROOT, '一键启动.bat'));
+    let text;
+    try {
+        text = new TextDecoder('gbk').decode(raw);
+    } catch (e) {
+        console.log('       （本机 Node 不支持 gbk 解码，跳过内容断言）');
+        return;
+    }
+    assert.ok(/^@echo off\r?\n/.test(text), '首行必须是 @echo off');
+    const noteAt = text.indexOf('备注（本文件是启动脚本）');
+    assert.ok(noteAt > 0, 'bat 里没有备注块');
+    assert.ok(text.indexOf('setlocal') > noteAt, '备注要插在 @echo off 之后、逻辑之前');
+    assert.ok(text.includes('set "PATH=%~dp0node;%PATH%"'), '内置 Node 优先的写法不见了');
+    assert.ok(text.includes('cmd /k "node save_images_server.js"'), '真正的启动行不该被改');
+    assert.ok(text.includes('::#FILE:watermark'), '内嵌收款码数据段还在');
+});
+
+// ── pack/pack.js：发行包内容 ──
+const specOf = id => pack.editionSpecs().find(s => s.id === id);
+
+check('editionSpecs：四个发行版都在，且 id 唯一', () => {
+    const specs = pack.editionSpecs();
+    assert.deepStrictEqual(specs.map(s => s.id), ['portable', 'env', 'full', 'source']);
+    assert.strictEqual(new Set(specs.map(s => s.suffix)).size, 4);
+});
+
+const envResult = pack.buildEdition(specOf('env'), TMP);
+const portableResult = pack.buildEdition(specOf('portable'), TMP);
+
+check('发行包：zip 名与顶层目录一致（解压不会散落一地）', () => {
+    for (const r of [envResult, portableResult]) {
+        const base = path.basename(r.zipPath, '.zip');
+        const names = listZip(r.zipPath).map(e => e.name);
+        assert.ok(names.every(n => n.startsWith(base + '/')), '顶层目录不对：' + r.zipPath);
+        assert.strictEqual(base, 'Bilibili-Plus_v' + pack.VERSION + '_' + r.spec.suffix);
+    }
+});
+
+check('环境版：脚本 + 服务 + 启动脚本 + 两份说明都在，没有运行时二进制', () => {
+    const names = listZip(envResult.zipPath).map(e => e.name.split('/').slice(1).join('/'));
+    for (const want of ['一键启动.bat', 'save_images_server.js', 'bilibili-save.user.js', '使用说明.txt', '文件说明.txt', 'LICENSE']) {
+        assert.ok(names.includes(want), '少了 ' + want);
+    }
+    assert.ok(!names.some(n => /node\.exe|ffmpeg\.exe/.test(n)), '环境版不该带运行时');
+});
+
+check('便携版：带的是便携版脚本（没有 @connect 127.0.0.1）', () => {
+    const script = portableResult.items.find(i => i.to === 'bilibili-save.user.js').data.toString('utf8');
+    assert.ok(script.includes('// @name'), '不是用户脚本');
+    assert.ok(!/@connect\s+127\.0\.0\.1/.test(script), '便携版不该连本地服务');
+    assert.ok(!/@updateURL/.test(script), '便携版不做自动更新');
+});
+
+check('「文件说明.txt」把包内每个文件都列了一遍，备注不是空话', () => {
+    const text = envResult.items.find(i => i.to === '文件说明.txt').data.toString('utf8');
+    for (const it of envResult.items) {
+        const shown = it.to.split('/').join('\\');
+        assert.ok(text.includes('【文件】' + shown), '文件说明里漏了 ' + shown);
+    }
+    assert.ok(!text.includes('undefined'), '备注没填上（出现 undefined）');
+    assert.ok(text.includes('本地保存服务'), '服务端脚本的备注没写进文件说明');
+    assert.ok(text.includes('（大小见文件本身）'), '文件说明自己那一条没标注大小');
+});
+
+check('「使用说明.txt」里的运行时指引按版本替换（没有 @@ 残留）', () => {
+    const envText = envResult.items.find(i => i.to === '使用说明.txt').data.toString('utf8');
+    assert.ok(envText.includes('本包不带运行环境'));
+    assert.ok(!/@@[A-Z_]+@@/.test(envText), '还有占位符没替换');
+    const usage = pack.usageText(specOf('full'));
+    assert.ok(usage.includes('本包已内置运行环境'));
+    assert.ok(usage.includes('Bilibili-Plus v' + pack.VERSION));
+});
+
+check('备注注入到了包里的脚本文件（装完看一眼文件就知道是啥）', () => {
+    const server = envResult.items.find(i => i.to === 'save_images_server.js').data.toString('utf8');
+    assert.ok(server.startsWith('// 【备注】'), '服务端脚本缺备注');
+    assert.ok(server.includes("require('http')"), '备注把代码顶掉了？');
+});
+
+check('完整版：本地有内置运行时就带上，没有就跳过（不硬编一个假包）', () => {
+    const needs = ['node/node.exe', 'ffmpeg/ffmpeg.exe'].map(p => path.join(pack.BUNDLE_DIR, ...p.split('/')));
+    const haveAll = needs.every(p => fs.existsSync(p));
+    if (!haveAll) {
+        const r = pack.buildEdition(specOf('full'), TMP);
+        assert.ok(r.skipped && r.skipped.includes('缺少内置运行时'), '缺运行时却还在打包');
+        return;
+    }
+    const r = pack.buildEdition(specOf('full'), TMP);
+    const names = listZip(r.zipPath).map(e => e.name);
+    assert.ok(names.some(n => n.endsWith('/node/node.exe')));
+    assert.ok(names.some(n => n.endsWith('/ffmpeg/ffmpeg.exe')));
+});
+
+if (PY) {
+    const py = pythonInspect(envResult.zipPath);
+    check('Python zipfile 交叉验证：发行包结构正常、说明文字没乱码', () => {
+        assert.strictEqual(py.bad, null);
+        assert.strictEqual(py.names.length, listZip(envResult.zipPath).length);
+        const notes = py.texts[path.basename(envResult.zipPath, '.zip') + '/文件说明.txt'];
+        assert.ok(notes && notes.includes('【备注】'), 'Python 读出来的文件说明不对');
+    });
+}
+
+check('源码版：带上源码、构建与打包工具，不带生成物', () => {
+    const r = pack.buildEdition(specOf('source'), TMP);
+    const names = listZip(r.zipPath).map(e => e.name.split('/').slice(1).join('/'));
+    for (const want of ['src/bilibili-save.user.js', 'src/lib/browser-save.js', 'build.js', 'pack/pack.js', 'pack/zip.js', 'package.json', 'README.md', '.gitignore']) {
+        assert.ok(names.includes(want), '少了 ' + want);
+    }
+    assert.ok(!names.includes('bilibili-save.user.js'), '源码版不该混进根目录的生成物');
+});
+
+check('source 版 README 备注不会破坏 Markdown 标题', () => {
+    const r = pack.buildEdition(specOf('source'), TMP);
+    const readme = r.items.find(i => i.to === 'README.md').data.toString('utf8');
+    assert.ok(readme.startsWith('> 【备注】'));
+    assert.ok(/^# /m.test(readme), 'README 的一级标题不见了');
+});
+
+// ── 收尾 ──
+fs.rmSync(TMP, { recursive: true, force: true });
+console.log(passed + ' 项通过' + (process.exitCode ? '，有失败项' : ''));

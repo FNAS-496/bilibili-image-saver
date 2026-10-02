@@ -9,8 +9,10 @@
   "scripts": {
     "start": "node save_images_server.js",
     "build": "node build.js",
-    "test": "node tests/browser-save.test.js",
-    "check": "node --check src/bilibili-save.user.js && node --check 便携版/bilibili-save.user.js"
+    "pack": "node pack/pack.js",
+    "release": "node pack/pack.js --publish",
+    "test": "node tests/browser-save.test.js && node tests/pack.test.js",
+    "check": "node --check src/bilibili-save.user.js && node --check 便携版/bilibili-save.user.js && node --check save_images_server.js && node --check build.js && node --check pack/zip.js && node --check pack/notes.js && node --check pack/pack.js && node --check pack/publish.js"
   },
   "keywords": [
     "bilibili",

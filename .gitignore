@@ -16,6 +16,8 @@ node_modules/
 # ---- 无需环境直接安装版（含内置 node/ffmpeg 二进制，体积大不提交）----
 无需环境直接安装版/
 无需环境直接安装版.zip
+# ---- 发行包（npm run pack 的产物，走 GitHub Release，不入库）----
+发行版/
 
 # ---- 临时 / 测试脚本 ----
 tmp_*.js
