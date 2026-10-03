@@ -11,8 +11,8 @@
     "build": "node build.js",
     "pack": "node pack/pack.js",
     "release": "node pack/pack.js --publish",
-    "test": "node tests/browser-save.test.js && node tests/pack.test.js",
-    "check": "node --check src/bilibili-save.user.js && node --check 便携版/bilibili-save.user.js && node --check save_images_server.js && node --check build.js && node --check pack/zip.js && node --check pack/notes.js && node --check pack/pack.js && node --check pack/publish.js"
+    "test": "node tests/browser-save.test.js && node tests/pack.test.js && node tests/server.test.js",
+    "check": "node --check src/bilibili-save.user.js && node --check 便携版/bilibili-save.user.js && node --check save_images_server.js && node --check build.js && node --check pack/zip.js && node --check pack/notes.js && node --check pack/pack.js && node --check pack/publish.js && node --check tests/server.test.js"
   },
   "keywords": [
     "bilibili",
