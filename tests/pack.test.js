@@ -323,43 +323,22 @@ if (PY) {
     });
 }
 
-// ── 收款码：每个包都得有（用户要的「只要有就行」）──
+// ── 收款码：内嵌在脚本里，用户打开打赏面板就能看到（不依赖任何文件）──
 const builtCache = new Map();
 const buildOnce = spec => {
     if (!builtCache.has(spec.id)) builtCache.set(spec.id, pack.buildEdition(spec, TMP));
     return builtCache.get(spec.id);
 };
-const qrOf = r => r.items.find(i => i.to === 'watermark/wechat_qr.jpg');
-const sha256 = buf => crypto.createHash('sha256').update(buf).digest('hex');
 
-check('四个发行包都带收款码，而且是同一张（字节一致）', () => {
-    const hashes = [];
-    for (const spec of pack.editionSpecs()) {
-        const r = buildOnce(spec);
-        if (r.skipped) continue;                       // 缺内置运行时才会跳过（full）
-        const qr = qrOf(r);
-        assert.ok(qr, spec.id + ' 里没有 watermark/wechat_qr.jpg');
-        assert.ok(qr.data.length > 1000, spec.id + ' 的收款码太小，可能是空文件');
-        hashes.push(spec.id + '=' + sha256(qr.data));
+check('打赏收款码内嵌在用户脚本里（能看见即可，不需要附带图片文件）', () => {
+    for (const r of [portableResult, envResult]) {
+        const script = r.items.find(i => i.to === 'bilibili-save.user.js').data.toString('utf8');
+        const m = /data:image\/(?:jpeg|png);base64,([A-Za-z0-9+/=]{100,})/.exec(script);
+        assert.ok(m, r.spec.id + ' 的脚本里没找到内嵌的收款码');
+        const bytes = Buffer.from(m[1], 'base64');
+        assert.ok(bytes.length > 1000, '收款码数据太小，可能是坏的');
+        assert.deepStrictEqual([...bytes.slice(0, 3)], [0xff, 0xd8, 0xff], '内嵌的数据不是一张 jpg');
     }
-    assert.ok(hashes.length >= 3, '至少要验证到三个包');
-    assert.strictEqual(new Set(hashes.map(h => h.split('=')[1])).size, 1, '各包收款码不是同一张：' + hashes.join(', '));
-});
-
-check('收款码解码：图片文件不在时能从「一键启动.bat」的内嵌数据段解出来', () => {
-    const fromBat = pack.findQrInBat();
-    assert.ok(fromBat, '没能从 bat 里解出收款码');
-    const qr = qrOf(envResult);
-    assert.strictEqual(sha256(fromBat), sha256(qr.data), 'bat 内嵌的收款码和图片文件不是同一张');
-});
-
-check('用户脚本内嵌的收款码与包里的收款码图片是同一张', () => {
-    const qr = qrOf(envResult);
-    const script = envResult.items.find(i => i.to === 'bilibili-save.user.js').data.toString('utf8');
-    const m = /data:image\/(?:jpeg|png);base64,([A-Za-z0-9+/=]{100,})/.exec(script);
-    assert.ok(m, '脚本里没找到内嵌的收款码 data URI');
-    assert.strictEqual(sha256(Buffer.from(m[1], 'base64')), sha256(qr.data),
-        '脚本内嵌的收款码和图片文件不是同一张（改图时要同步 src 里的 DONATE_QR）');
 });
 
 check('备注不会把 #! 挤到第二行（否则 node 直接语法错误）', () => {
@@ -425,7 +404,7 @@ check('源码版：带上源码、构建与打包工具，不带生成物', () =
     const r = buildOnce(specOf('source'));
     const names = listZip(r.zipPath).map(e => e.name.split('/').slice(1).join('/'));
     for (const want of ['src/bilibili-save.user.js', 'src/lib/browser-save.js', 'build.js', 'pack/pack.js', 'pack/zip.js',
-        'package.json', 'README.md', '.gitignore', '使用说明.txt', 'watermark/wechat_qr.jpg',
+        'package.json', 'README.md', '.gitignore', '使用说明.txt',
         '一键启动.bat', 'save_images_server.js', '便携版/使用说明.txt']) {
         assert.ok(names.includes(want), '少了 ' + want);
     }
