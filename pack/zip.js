@@ -42,6 +42,9 @@ function normalize(entry) {
     if (!entry || !entry.name) throw new Error('ZIP 条目缺少 name');
     const name = String(entry.name).replace(/\\/g, '/').replace(/^\/+/, '');
     if (!name || name.endsWith('/')) throw new Error('ZIP 条目名不合法：' + entry.name);
+    // 拒绝对外逃逸的条目名（zip-slip）：name 由调用方给，别指望调用方永远可信
+    if (name.split('/').includes('..')) throw new Error('ZIP 条目名不能含 ".."：' + entry.name);
+    if (/^[a-zA-Z]:/.test(name)) throw new Error('ZIP 条目名不能是盘符路径：' + entry.name);
     let data, mtime;
     if (entry.data !== undefined) {
         data = Buffer.from(entry.data);
@@ -197,6 +200,10 @@ function verifyZip(file) {
         if (buf.toString('utf8', o + 30, o + 30 + nameLen) !== e.name) broken.push(e.name + ': 本地头条目名不一致');
         if (/[^\x20-\x7e]/.test(e.name) && !(e.flags & ZIP_FLAGS_UTF8)) broken.push(e.name + ': 非 ASCII 名没置 EFS 标志');
         const start = o + 30 + nameLen + extraLen;
+        if (start + e.packed > buf.length) {           // 条目数据越过文件末尾（截断）——早点说清楚，别让 inflate 抛天书
+            broken.push(e.name + ': 条目数据超出文件长度（包被截断了？）');
+            continue;
+        }
         const raw = buf.subarray(start, start + e.packed);
         const data = e.method === METHOD_DEFLATE ? zlib.inflateRawSync(raw) : raw;
         if (data.length !== e.size) broken.push(e.name + ': 解压后长度不符');

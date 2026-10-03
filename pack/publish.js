@@ -111,7 +111,8 @@ function planAssetCleanup(existing, wantedNames, { pruneStale = false, prefix = 
     });
 }
 
-async function publishRelease({ tag, name, body, assets, draft = false, prerelease = false, pruneStaleAssets = false }) {
+async function publishRelease({ tag, name, body, assets, draft = false, prerelease = false, pruneStaleAssets = false,
+                               targetCommitish = 'main', stalePrefix = /^Bilibili-Plus[-_]/ }) {
     const token = readToken();
     const { owner, repo } = repoSlug();
     const base = '/repos/' + owner + '/' + repo;
@@ -136,7 +137,7 @@ async function publishRelease({ tag, name, body, assets, draft = false, prerelea
         release = await api(base + '/releases', {
             method: 'POST',
             token,
-            body: { tag_name: tag, target_commitish: 'main', name, body, draft, prerelease }
+            body: { tag_name: tag, target_commitish: targetCommitish, name, body, draft, prerelease }
         });
         console.log('已创建 Release：' + release.html_url);
     } else {
@@ -149,7 +150,8 @@ async function publishRelease({ tag, name, body, assets, draft = false, prerelea
 
     // 同名附件先删；改名/改版留下的旧包只在完整发布时清（见 planAssetCleanup 的注释）
     const existing = (await api(base + '/releases/' + release.id + '/assets?per_page=100', { token })) || [];
-    for (const { asset, action } of planAssetCleanup(existing, assets.map(f => path.basename(f)), { pruneStale: pruneStaleAssets })) {
+    for (const { asset, action } of planAssetCleanup(existing, assets.map(f => path.basename(f)),
+        { pruneStale: pruneStaleAssets, prefix: stalePrefix })) {
         if (action === 'keep') {
             console.log('  保留不认识的附件：' + asset.name);
             continue;
