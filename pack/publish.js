@@ -96,7 +96,22 @@ async function uploadAsset({ owner, repo, releaseId, token, file }) {
 }
 
 // 建或更新一次 Release，并把 assets 全部传上去；返回 release 的网页地址
-async function publishRelease({ tag, name, body, assets, draft = false, prerelease = false }) {
+// 决定哪些附件要清理：
+//   replace —— 本次要上传的同名附件（不删会 422 name already_exists）
+//   prune   —— 改名/改版留下的旧包，只在「本次是完整发布」时清（否则）
+//   keep    —— 不认识的附件，留着
+// 关键点：`--only env --publish` 这种局部发布绝不能按前缀大扫除——那会把同一个 Release 上的
+// full / portable / source 一起删掉（full 有 70MB，删了得重传）。所以 prune 必须显式开启。
+function planAssetCleanup(existing, wantedNames, { pruneStale = false, prefix = /^Bilibili-Plus[-_]/ } = {}) {
+    const wanted = new Set(wantedNames);
+    return existing.map(asset => {
+        if (wanted.has(asset.name)) return { asset, action: 'replace' };
+        if (pruneStale && prefix.test(asset.name)) return { asset, action: 'prune' };
+        return { asset, action: 'keep' };
+    });
+}
+
+async function publishRelease({ tag, name, body, assets, draft = false, prerelease = false, pruneStaleAssets = false }) {
     const token = readToken();
     const { owner, repo } = repoSlug();
     const base = '/repos/' + owner + '/' + repo;
@@ -132,17 +147,15 @@ async function publishRelease({ tag, name, body, assets, draft = false, prerelea
         });
     }
 
-    // 同名附件先删；另外把改了名的旧附件也清掉（不然会一直堆在 Release 上）
+    // 同名附件先删；改名/改版留下的旧包只在完整发布时清（见 planAssetCleanup 的注释）
     const existing = (await api(base + '/releases/' + release.id + '/assets?per_page=100', { token })) || [];
-    const wanted = new Set(assets.map(f => path.basename(f)));
-    for (const a of existing) {
-        const renamed = !wanted.has(a.name) && /^Bilibili-Plus[-_]/.test(a.name);
-        if (wanted.has(a.name) || renamed) {
-            await api(base + '/releases/assets/' + a.id, { method: 'DELETE', token });
-            console.log('  删掉旧附件：' + a.name + (renamed ? '（改名前的旧包）' : ''));
-        } else {
-            console.log('  保留不认识的附件：' + a.name);
+    for (const { asset, action } of planAssetCleanup(existing, assets.map(f => path.basename(f)), { pruneStale: pruneStaleAssets })) {
+        if (action === 'keep') {
+            console.log('  保留不认识的附件：' + asset.name);
+            continue;
         }
+        await api(base + '/releases/assets/' + asset.id, { method: 'DELETE', token });
+        console.log('  删掉旧附件：' + asset.name + (action === 'prune' ? '（改名前的旧包）' : '（要重新上传）'));
     }
 
     for (const file of assets) {
@@ -153,7 +166,7 @@ async function publishRelease({ tag, name, body, assets, draft = false, prerelea
     return release.html_url;
 }
 
-module.exports = { publishRelease, readToken, repoSlug };
+module.exports = { publishRelease, planAssetCleanup, readToken, repoSlug };
 
 if (require.main === module) {
     const args = process.argv.slice(2);
@@ -171,7 +184,9 @@ if (require.main === module) {
         body: notesFile && fs.existsSync(notesFile) ? fs.readFileSync(notesFile, 'utf8') : (flag('--body') || ''),
         assets: files,
         draft: args.includes('--draft'),
-        prerelease: args.includes('--prerelease')
+        prerelease: args.includes('--prerelease'),
+        // 手动只传一两个包时别加这个开关，否则会按前缀把同一 Release 上的其它包一起删掉
+        pruneStaleAssets: args.includes('--prune-stale')
     }).then(url => console.log('完成：' + url)).catch(e => {
         console.error('发布失败：' + e.message);
         process.exit(1);

@@ -17,7 +17,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const { writeZip, verifyZip } = require('./zip.js');
-const { annotate, fileNotesText, humanSize, noteFor } = require('./notes.js');
+const { annotate, fileNotesText, humanSize, noteFor, stripInjectedNote } = require('./notes.js');
 const { publishRelease } = require('./publish.js');
 
 const ROOT = path.join(__dirname, '..');
@@ -221,11 +221,14 @@ function syncBundleFolder(result) {
     console.log('  已刷新 ' + rel(BUNDLE_DIR) + ' 里的 ' + written.length + ' 个文件（跟 zip 内容一致）');
 }
 
-function releaseBody(results) {
+// Release 说明：模板要先剥掉打包备注——从源码包发布时，那份 release-notes.md 是被注过备注的，
+// 不剥就会把「> 【备注】…」印到公开的 Release 页上（备注正文里的 @@VERSION@@ 还会被替换成版本号）。
+function releaseBody(results, templatePath = path.join(__dirname, 'release-notes.md')) {
     const rows = results.map(r => '| `' + path.basename(r.zipPath) + '` | **' + r.spec.suffix + '** · ' +
         r.spec.blurb + ' | ' + humanSize(r.written.bytes) + ' |');
     const table = ['| 下载包 | 这个包里有什么喵 | 体积 |', '|---|---|---|', ...rows].join('\n');
-    return fs.readFileSync(path.join(__dirname, 'release-notes.md'), 'utf8')
+    const template = stripInjectedNote('release-notes.md', fs.readFileSync(templatePath, 'utf8'));
+    return template
         .replace(/@@VERSION@@/g, VERSION)
         .replace(/@@ASSET_TABLE@@/g, table);
 }
@@ -252,9 +255,11 @@ function main() {
 
     console.log('打包 → ' + rel(OUT_DIR) + '/');
     const results = [];
+    let skippedCount = 0;
     for (const spec of specs) {
         const r = buildEdition(spec);
         if (r.skipped) {
+            skippedCount++;
             console.log('  跳过[' + spec.id + '] ' + r.skipped);
             continue;
         }
@@ -270,12 +275,15 @@ function main() {
 
     if (doPublish) {
         const tag = 'v' + VERSION;
-        console.log('\n发布 GitHub Release：' + tag);
+        // 只有「完整发布」才允许清理同一 Release 上的旧附件（局部发布清理会把别的包误删）
+        const completePublish = !only && skippedCount === 0;
+        console.log('\n发布 GitHub Release：' + tag + (completePublish ? '' : '（局部发布，不动其它附件）'));
         return publishRelease({
             tag,
             name: 'Bilibili-Plus ' + tag + ' 🐾',
             body: releaseBody(results),
-            assets: results.map(r => r.zipPath)
+            assets: results.map(r => r.zipPath),
+            pruneStaleAssets: completePublish
         }).then(url => console.log('已发布：' + url));
     }
     return null;

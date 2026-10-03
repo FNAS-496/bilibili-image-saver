@@ -31,8 +31,10 @@ function defaultStore(name) {
 }
 
 function dosTime(d) {
-    const time = ((d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1)) & 0xffff;
-    const date = (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()) & 0xffff;
+    // 用 UTC 而不是本地时间：否则同一份源码在不同时区的机器上打出的字节不同（可复现性只在同机同区成立）
+    const year = Math.max(1980, d.getUTCFullYear());     // DOS 年份下限是 1980，早于此的文件别写出负数
+    const time = ((d.getUTCHours() << 11) | (d.getUTCMinutes() << 5) | (d.getUTCSeconds() >> 1)) & 0xffff;
+    const date = (((year - 1980) << 9) | ((d.getUTCMonth() + 1) << 5) | d.getUTCDate()) & 0xffff;
     return { time, date };
 }
 
@@ -98,6 +100,8 @@ function writeZip(outPath, entries) {
 
     for (const b of built) {
         locals.push(b.local, b.nameBuf, b.payload);
+        // 4GB 守卫必须放在写字段之前：writeUInt32LE 越界会抛 ERR_OUT_OF_RANGE，那报错没人看得懂
+        if (offset > MAX_U32) throw new Error('ZIP 超过 4GB 上限（本工具不做 Zip64），请拆包');
         const cd = Buffer.alloc(46);
         cd.writeUInt32LE(0x02014b50, 0);         // 中央目录头签名
         cd.writeUInt16LE(20, 4);                 // 生成者版本 2.0
