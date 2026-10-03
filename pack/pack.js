@@ -63,55 +63,13 @@ function bundleItem(to) {
     return { to, bundle: to };
 }
 
-// 收款码：每个发行包都带上（打赏面板用）。搜图顺序——
-//   ① 仓库根的 watermark\wechat_qr.*
-//   ② 无需环境直接安装版\watermark\wechat_qr.*
-//   ③ 从「一键启动.bat」内嵌的 base64 解出来（这段是入库的，所以新克隆也解得出）
-// 时间戳用固定值，保证打两次包字节一致。
-const QR_TO = 'watermark/wechat_qr.jpg';
-const QR_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif'];
-
-function findQrInDir(dir) {
-    const sub = path.join(dir, 'watermark');
-    if (!fs.existsSync(sub)) return null;
-    for (const ext of QR_EXTS) {
-        const f = path.join(sub, 'wechat_qr' + ext);
-        if (fs.existsSync(f)) return fs.readFileSync(f);
-    }
-    const hit = fs.readdirSync(sub).find(n => /^wechat_qr\.(png|jpe?g|webp|gif)$/i.test(n));
-    return hit ? fs.readFileSync(path.join(sub, hit)) : null;
-}
-
-function findQrInBat() {
-    const bat = path.join(ROOT, '一键启动.bat');
-    if (!fs.existsSync(bat)) return null;
-    const lines = fs.readFileSync(bat, 'latin1').split(/\r?\n/);   // 按字节读，只关心 ASCII 的 base64
-    const b64 = [];
-    let on = false;
-    for (const line of lines) {
-        if (/^::#FILE:watermark/.test(line)) { on = true; continue; }
-        if (on && /^::#END/.test(line)) break;
-        if (on) b64.push(line.trim());
-    }
-    return b64.length ? Buffer.from(b64.join(''), 'base64') : null;
-}
-
-function qrItem() {
-    const data = findQrInDir(ROOT) || findQrInDir(BUNDLE_DIR) || findQrInBat();
-    if (!data || data.length < 1000) {
-        throw new Error('找不到收款码：把图片放到 watermark\\wechat_qr.jpg，或确认「一键启动.bat」里的内嵌数据段完整');
-    }
-    return { to: QR_TO, data, mtime: STAMP_MTIME };
-}
-
 function editionSpecs() {
     const envFiles = [
         { to: '一键启动.bat', src: path.join(ROOT, '一键启动.bat') },
         { to: 'save_images_server.js', src: path.join(ROOT, 'save_images_server.js') },
         { to: 'bilibili-save.user.js', src: path.join(ROOT, 'bilibili-save.user.js') },
         { gen: 'usage' },
-        { to: 'LICENSE', src: path.join(ROOT, 'LICENSE') },
-        qrItem()
+        { to: 'LICENSE', src: path.join(ROOT, 'LICENSE') }
     ];
 
     // key：zip 文件名用（GitHub 附件名会把非 ASCII 字符直接抹掉，所以只用 ASCII）；
@@ -127,8 +85,7 @@ function editionSpecs() {
             files: [
                 { to: 'bilibili-save.user.js', src: path.join(ROOT, '便携版', 'bilibili-save.user.js') },
                 { to: USAGE_FILE, src: path.join(ROOT, '便携版', '使用说明.txt') },
-                { to: 'LICENSE', src: path.join(ROOT, 'LICENSE') },
-                qrItem()
+                { to: 'LICENSE', src: path.join(ROOT, 'LICENSE') }
             ]
         },
         {
@@ -154,7 +111,7 @@ function editionSpecs() {
                 { to: 'bilibili-save.user.js', src: path.join(ROOT, 'bilibili-save.user.js') },
                 bundleItem('node/node.exe'),
                 bundleItem('ffmpeg/ffmpeg.exe'),
-                qrItem(),
+                bundleItem('watermark/wechat_qr.jpg'),
                 { gen: 'usage' },
                 { to: 'LICENSE', src: path.join(ROOT, 'LICENSE') }
             ]
@@ -178,8 +135,7 @@ function editionSpecs() {
                 { to: 'LICENSE', src: path.join(ROOT, 'LICENSE') },
                 { to: '.gitignore', src: path.join(ROOT, '.gitignore') },
                 { to: '便携版/使用说明.txt', src: path.join(ROOT, '便携版', '使用说明.txt') },
-                { gen: 'usage' },
-                qrItem()
+                { gen: 'usage' }
             ]
         }
     ];
@@ -198,10 +154,6 @@ function resolveItems(spec) {
     for (const it of spec.files) {
         if (it.gen === 'usage') {
             items.push({ to: USAGE_FILE, data: Buffer.from(usageText(spec), 'utf8'), mtime: STAMP_MTIME, bundle: false, generated: true });
-            continue;
-        }
-        if (it.data) {                                   // 已经在内存里的条目（收款码）
-            items.push({ to: it.to, data: it.data, mtime: it.mtime || STAMP_MTIME, bundle: false, generated: true });
             continue;
         }
         const src = it.src || (BUNDLE_DIR && it.bundle ? path.join(BUNDLE_DIR, ...it.bundle.split('/')) : null);
@@ -329,7 +281,7 @@ function main() {
     return null;
 }
 
-module.exports = { VERSION, editionSpecs, buildEdition, usageText, releaseBody, qrItem, findQrInBat, ROOT, BUNDLE_DIR };
+module.exports = { VERSION, editionSpecs, buildEdition, usageText, releaseBody, ROOT, BUNDLE_DIR };
 
 if (require.main === module) {
     try {
