@@ -862,15 +862,24 @@
         setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
 
-    // 写入授权目录（blob 已就绪时直接流式落盘）
-    async function writeBlobToDir(dir, filename, blob){
+    // 授权目录里是否已有这个文件（用于「已存在就跳过」，而不是覆盖甚至误删用户原有的文件）
+    async function fileExistsInDir(dir, filename){
+        try{ await dir.getFileHandle(filename); return true; }
+        catch(e){ return false; }
+    }
+
+    // 写入授权目录（blob 已就绪时直接流式落盘）；skipExisting=true 且文件已存在时返回 false（不覆盖）
+    async function writeBlobToDir(dir, filename, blob, skipExisting){
+        if(skipExisting && await fileExistsInDir(dir, filename)) return false;
         const fh = await dir.getFileHandle(filename, { create:true });
         const w = await fh.createWritable();
         await blob.stream().pipeTo(w);
+        return true;
     }
 
-    // 边下边写：响应体不整块进内存，直接流进授权目录；失败时清掉写坏的半成品
-    async function fetchToDir(dir, filename, url, timeoutMs){
+    // 边下边写：响应体不整块进内存，直接流进授权目录；失败时只清掉本次自己写的半成品
+    async function fetchToDir(dir, filename, url, timeoutMs, skipExisting){
+        if(skipExisting && await fileExistsInDir(dir, filename)) return false;
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), (timeoutMs || 30000));
         let started = false;
@@ -883,8 +892,9 @@
             }
             const fh = await dir.getFileHandle(filename, { create:true });
             const w = await fh.createWritable();
-            started = true;
+            started = true;                          // create:true 会截断同名文件，从这里开始这个文件才算「本次写的」
             await res.body.pipeTo(w);
+            return true;
         }catch(err){
             if(started){ try{ await dir.removeEntry(filename); }catch(e){} }
             if(err.name === 'AbortError') throw new Error('timeout');
@@ -951,8 +961,9 @@
             if(dir){
                 for(const r of okItems){
                     try{
-                        await writeBlobToDir(dir, r.name, new Blob([r.bytes]));
+                        const written = await writeBlobToDir(dir, r.name, new Blob([r.bytes]), dedupe);
                         r.saved = dir.name + '/' + r.name;
+                        if(written === false) r.exists = true;      // 目录里已有同名文件：按查重跳过，不覆盖
                     }catch(e){
                         r.error = '写入失败：' + (e.message || e);
                     }
@@ -1039,7 +1050,8 @@
         for(let i = 0; i < items.length; i++){
             const it = items[i];
             const safeTitle = BS.sanitizeFilename(String(it.title || '').trim()) || ('video_' + (i + 1));
-            const base = (safeTitle.length > 60 ? safeTitle.slice(0, 60) : safeTitle) + (it.bvid ? '_' + it.bvid : '');
+            const base = (safeTitle.length > 60 ? safeTitle.slice(0, 60) : safeTitle) + (it.bvid ? '_' + it.bvid : '')
+                + (it.multiPart && it.cid != null ? '_c' + it.cid : '');   // 多 P 分 P 必须带 cid，否则认不出是哪一 P
             const pct = Math.round(i / items.length * 100);
             if(ui.progBar) ui.progBar.style.width = pct + '%';
             if(ui.progPct) ui.progPct.textContent = pct + '%';
@@ -1073,14 +1085,21 @@
                     const vName = base + '.video.' + (it.ext || 'mp4');
                     const aName = base + '.audio.m4a';
                     if(dir){
-                        // 目录模式：边下边写，不整块进内存
-                        await fetchToDir(dir, vName, it.videoUrl, 600000);
+                        // 目录模式：边下边写，不整块进内存；已有同名文件就跳过（不覆盖用户文件）
+                        const wroteVideo = await fetchToDir(dir, vName, it.videoUrl, 600000, true);
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
+                        let wroteAudio = true;
                         try{
-                            await fetchToDir(dir, aName, it.audioUrl, 600000);
+                            wroteAudio = await fetchToDir(dir, aName, it.audioUrl, 600000, true);
                         }catch(e){
-                            try{ await dir.removeEntry(vName); }catch(_e){}
-                            throw e;                       // 音频失败时连视频文件一起清掉，不留半套
+                            // 只清掉本次自己写的那个文件，别动用户原有的
+                            if(wroteVideo !== false){ try{ await dir.removeEntry(vName); }catch(_e){} }
+                            throw e;
+                        }
+                        if(wroteVideo === false && wroteAudio === false){
+                            results.push({ idx:i, bvid: it.bvid, title: it.title, saved: vName, exists:true, separate:true });
+                            mergeNotice = true;
+                            continue;                      // 音画两个文件都在，不用重下
                         }
                     }else{
                         const vBytes = await fetchBytes(it.videoUrl, 600000);
@@ -1094,9 +1113,13 @@
                     mergeNotice = true;
                 }else{
                     const name = base + '.' + (it.ext || 'mp4');
-                    if(dir) await fetchToDir(dir, name, it.videoUrl, 600000);
-                    else triggerBlobDownload(new Blob([await fetchBytes(it.videoUrl, 600000)]), name);
-                    results.push({ idx:i, bvid: it.bvid, title: it.title, saved: name });
+                    if(dir){
+                        const wrote = await fetchToDir(dir, name, it.videoUrl, 600000, true);
+                        results.push({ idx:i, bvid: it.bvid, title: it.title, saved: name, exists: wrote === false });
+                    }else{
+                        triggerBlobDownload(new Blob([await fetchBytes(it.videoUrl, 600000)]), name);
+                        results.push({ idx:i, bvid: it.bvid, title: it.title, saved: name });
+                    }
                 }
             }catch(err){
                 results.push({ idx:i, bvid: it.bvid, title: it.title, error: err.message || String(err) });
@@ -1386,8 +1409,8 @@
                 donateViewLink.style.display = 'none';
             }else{
                 donateViewLink.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    notifyEnvRequired('图片相册页（由本地服务提供）');
+                    // 提示确实弹出来了才拦下跳转；否则（已提示过/关掉了提示）就让它照常跳，别做成死链
+                    if(notifyEnvRequired('图片相册页（由本地服务提供）')) e.preventDefault();
                 });
             }
         }
@@ -1635,6 +1658,7 @@
         const followBtn = panel.querySelector('#bili-review-follow');
         let fullMode = false;
         let capturing = false;
+        let pendingKeyListener = null;                 // 正在等待按键的那次录制，面板关掉时要注销，否则会吞掉下一次按键
 
         // ── 渲染当前图片与下载进度 ──
         const render = () => {
@@ -1648,6 +1672,11 @@
         const close = () => {
             panel.remove();
             document.removeEventListener('keydown', onKey);
+            if(pendingKeyListener){
+                document.removeEventListener('keydown', pendingKeyListener);
+                pendingKeyListener = null;
+                capturing = false;
+            }
             if(onDone) onDone(downloaded.size);
             if(downloaded.size) showDonatePanel({ saved: downloaded.size, exists: 0, failed: 0 }, '审查结束');
         };
@@ -1759,6 +1788,7 @@
                     e.preventDefault();
                     e.stopPropagation();
                     document.removeEventListener('keydown', listener);
+                    pendingKeyListener = null;
                     capturing = false;
                     let k = e.key;
                     if(k === ' ') k = 'Space';
@@ -1776,6 +1806,7 @@
                     saveSettings(settings);
                     refreshKeycaps();
                 };
+                pendingKeyListener = listener;
                 document.addEventListener('keydown', listener);
             });
         });
@@ -1943,16 +1974,22 @@
             });
             return;
         }
-        showProgress(`正在下载 ${urls.length} 张原图到本地...`, () => { stopFlag.stop = true; });
+        // 抓取阶段可以停；进入保存阶段后没法中断，就不放一个点了没反应的「停止」按钮了
+        showProgress(`正在下载 ${urls.length} 张原图到本地...`);
         const json = await sendUrlsToServer(urls, settings);
         if(json && json.results){
             const c = countResults(json);
-            // 便携版不写本地服务的目录，别让它谎报「已保存到 bilibili_images」
+            // 便携版不写本地服务的目录；环境版直接从返回的实际路径里取保存位置，
+            // 不要再写死「bilibili_images」——默认目录早就不是它了
             const where = IS_PORTABLE
                 ? (loadSettings().portableSave === 'dir' && FSA_SUPPORTED
                     ? '\n图片已写入你选择的文件夹'
                     : '\n图片已打包为 ZIP，存在浏览器「下载」文件夹')
-                : '\n图片已保存到 bilibili_images 目录';
+                : (() => {
+                    const first = json.results.find(r => r.saved && !r.error);
+                    const dir = first ? String(first.saved).replace(/[\\/][^\\/]+$/, '') : '';
+                    return dir ? '\n保存位置：' + dir : '';
+                })();
             showToast(`保存完成：新增 ${c.saved} 张，已存在 ${c.exists} 张，失败 ${c.failed} 张` + where);
             showDonatePanel(c);                   
             if(failCount) console.warn('解析失败的作品数:', failCount);
@@ -1967,28 +2004,43 @@
         const seen = new Set();
         const queue = new Set();
         let timer = null;
-        const flush = () => {
+        let stopped = false;
+        // 全文档扫描很贵（img/source/video/a/[style] + 所有内联 script），
+        // 所以放在防抖回调里做一次，而不是每个滚动/变更事件都做一次
+        const scan = () => {
             timer = null;
-            if(!queue.size) return;
-            const urls = Array.from(queue).filter(isContentImageUrl);
-            queue.clear();
-            if(urls.length){
-                const st = Object.assign({}, DEFAULT_SETTINGS, loadSettings());
-                if(!st.autoRun || st.downloadMode === 'review') return;
-                showToast(`发现 ${urls.length} 张新图片，自动保存中...`);
-                sendUrlsToServer(urls);
-            }
-        };
-        const collect = () => {
+            if(stopped) return;
             extractUrlsFromDoc(document).forEach(u => {
                 if(!seen.has(u)){ seen.add(u); queue.add(u); }
             });
+            if(!queue.size) return;
+            const urls = Array.from(queue).filter(isContentImageUrl);
+            if(!urls.length) return;
+            const st = Object.assign({}, DEFAULT_SETTINGS, loadSettings());
+            if(!st.autoRun || st.downloadMode === 'review') return;   // 设置不允许自动存：先留在队列里，等设置改了再说
+            queue.clear();
+            showToast(`发现 ${urls.length} 张新图片，自动保存中...`);
+            sendUrlsToServer(urls).then(res => {
+                if(!res || res.ok === false) urls.forEach(u => queue.add(u));   // 没存成功就放回去，下次重试
+            }).catch(err => {
+                urls.forEach(u => queue.add(u));
+                console.error('自动保存失败', err);
+            });
+        };
+        const collect = () => {
+            if(stopped) return;
             clearTimeout(timer);
-            timer = setTimeout(flush, 1500);
+            timer = setTimeout(scan, 1500);
         };
         const observer = new MutationObserver(collect);
         observer.observe(document.body, { childList: true, subtree: true });
         window.addEventListener('scroll', collect, { passive: true });
+        window.addEventListener('pagehide', () => {
+            stopped = true;
+            clearTimeout(timer);
+            observer.disconnect();
+            window.removeEventListener('scroll', collect);
+        }, { once: true });
     }
 
 
@@ -2194,7 +2246,13 @@
             });
         }
         refreshDirInfo();
-        const close = () => { panel.remove(); };
+        const close = () => {
+            panel.remove();
+            if(pendingKeyListener){
+                document.removeEventListener('keydown', pendingKeyListener);
+                pendingKeyListener = null;
+            }
+        };
         panel.querySelector('#bili-dir-cancel').addEventListener('click', () => {
             close();
             try{ localStorage.setItem(DIR_ASKED_KEY, '1'); }catch(e){}
@@ -2267,6 +2325,7 @@
 
         window.__biliPendingKeys = window.__biliPendingKeys || {};
         const KEY_BTN_LABELS = { next:'下一页', prev:'上一页', download:'下载', exit:'退出' };
+        let pendingKeyListener = null;                 // 面板关掉时要注销，否则会吞掉下一次按键
         panel.querySelectorAll('.bili-key-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const which = btn.getAttribute('data-key');
@@ -2275,6 +2334,7 @@
                     e.preventDefault();
                     e.stopPropagation();
                     document.removeEventListener('keydown', listener);
+                    pendingKeyListener = null;
                     let k = e.key;
                     if(k === ' ') k = 'Space';
                     if(k.length === 1) k = k.toUpperCase();
@@ -2288,6 +2348,7 @@
                     window.__biliPendingKeys[which] = k;
                     btn.innerHTML = KEY_BTN_LABELS[which] + ' <b>' + k + '</b>';
                 };
+                pendingKeyListener = listener;
                 document.addEventListener('keydown', listener);
             });
         });
@@ -2342,19 +2403,33 @@
         const map = { 127:'8K', 126:'杜比', 125:'HDR', 120:'4K', 116:'1080P60', 112:'1080P+', 80:'1080P', 74:'720P60', 64:'720P', 32:'480P', 16:'360P', 6:'240P' };
         return map[q] || (q ? (q + 'P') : '');
     }
-    // 从当前 URL 提取 BV 号
+    // 视频号 → 接口参数（BV… 用 bvid=，av… 必须用 aid=，拿 bvid 传 av 号接口只会报错）
+    function videoIdParam(id){
+        const s = String(id || '').trim();
+        return /^av\d+$/i.test(s) ? ('aid=' + s.slice(2)) : ('bvid=' + s);
+    }
+    // 视频唯一标识：多 P 视频各分 P 的 bvid 相同，必须带上 cid 才分得清谁下过
+    function videoKey(v){
+        if(!v) return '';
+        return String(v.bvid || '') + ((v.multiPart && v.cid != null) ? '#' + v.cid : '');
+    }
+    // 从当前 URL 提取视频号（BV… / av… 都原样返回，接口参数名由 videoIdParam 决定）
     function getVideoBvidFromUrl(){
         const m = location.href.match(/\/video\/(BV[0-9A-Za-z]+|av\d+)/i);
         return m ? m[1] : null;
     }
+    // 收藏夹页面一次最多列出多少个（避免长列表把面板撑爆）
+    const MAX_FAV_PANEL_ITEMS = 50;
+    let lastFavTruncated = false;
 
     // 收集当前页可下载的视频（当前视频 / 收藏夹列表）
     function collectVideoItems(){
         const items = [];
+        lastFavTruncated = false;
         if(/\/video\/(BV[0-9A-Za-z]+|av\d+)/i.test(location.pathname)){
             const bvid = getVideoBvidFromUrl();
             if(bvid){
-                items.push({ bvid, cid: null, title: '视频 ' + bvid, duration: null, useApiTitle: true });
+                items.push({ bvid, cid: null, title: '视频 ' + bvid, duration: null });
             }
             return items;
         }
@@ -2371,9 +2446,10 @@
                 const card = a.closest('li, .fav-video, [class*="video-card"]') || a;
                 const titleEl = card.querySelector('.title, [class*="title"]');
                 const domTitle = ((titleEl ? titleEl.textContent : (a.getAttribute('title') || a.textContent)) || '').trim();
-                items.push({ bvid, cid: null, title: domTitle || ('视频 ' + bvid), duration: null, useApiTitle: true });
+                items.push({ bvid, cid: null, title: domTitle || ('视频 ' + bvid), duration: null });
             });
-            return items.slice(0, 50);
+            lastFavTruncated = items.length > MAX_FAV_PANEL_ITEMS;
+            return items.slice(0, MAX_FAV_PANEL_ITEMS);
         }
         return items;
     }
@@ -2443,9 +2519,9 @@
     }
 
     // 调用 view 接口获取 cid、分 P、标题与时长
-    async function fetchViewCid(bvid){
+    async function fetchViewCid(id){
         try{
-            const text = await fetchText('https://api.bilibili.com/x/web-interface/view?bvid=' + bvid);
+            const text = await fetchText('https://api.bilibili.com/x/web-interface/view?' + videoIdParam(id));
             const j = JSON.parse(text);
             if(j && j.code === 0 && j.data){
                 const d = j.data;
@@ -2459,10 +2535,10 @@
     }
 
     // 调用 playurl 接口获取 DASH 视频/音频流地址与大小
-    async function fetchVideoStreams(bvid, cid){
+    async function fetchVideoStreams(id, cid){
         try{
             // 便携版优先取「音视频合一的官方 mp4」（durl），这样没有 ffmpeg 也能拿到带声音的完整文件
-            const streamApi = 'https://api.bilibili.com/x/player/playurl?bvid=' + bvid + '&cid=' + cid + '&qn=80&fourk=1&fnval=';
+            const streamApi = 'https://api.bilibili.com/x/player/playurl?' + videoIdParam(id) + '&cid=' + cid + '&qn=80&fourk=1&fnval=';
             let j = JSON.parse(await fetchText(streamApi + (IS_PORTABLE ? 1 : 16)));
             if(IS_PORTABLE && !(j && j.code === 0 && j.data && j.data.durl && j.data.durl.length)){
                 // 该视频只有 DASH：回退到音画分离（合并需要 ffmpeg，会给出一次性提示）
@@ -2575,7 +2651,7 @@
 
         // ── 状态 ──
         //   items      : 列表项
-        //   downloaded : 已下载的 bvid 集合（从本地服务 /video/list 读回）
+        //   downloaded : 已下载集合，键 = videoKey(项)（BV 号；多 P 再加 #cid）
         //   checked    : 已勾选的项，存对象引用而非下标 —— 列表重绘（fillCids 会 splice 展开分P）后仍能保持勾选
         const state = { items: [], ready: false, downloaded: new Set(), checked: new Set() };
         const dlBtnEl = panel.querySelector('#bili-video-dl');
@@ -2599,11 +2675,11 @@
                 const size = it.size ? (' · ' + formatSize(it.size)) : '';
                 const q = it.quality ? (' · ' + qualityLabel(it.quality)) : '';
                 const err = it.error ? ' · <span style="color:#f00;">获取失败</span>' : '';
-                const done = state.downloaded.has(it.bvid) ? ' · <span style="color:#00a85d;">✅ 已下载</span>' : '';
+                const done = state.downloaded.has(videoKey(it)) ? ' · <span style="color:#00a85d;">✅ 已下载</span>' : '';
                 const ck = state.checked.has(it) ? ' checked' : '';
                 return '<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid #f2f2f2;cursor:pointer;">' +
                     '<input type="checkbox" class="bili-video-check" data-i="' + i + '"' + ck + ' style="flex-shrink:0;">' +
-                    '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + it.title.replace(/"/g,'&quot;') + '">' + it.title + '</span>' +
+                    '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(it.title) + '">' + escapeHtml(it.title) + '</span>' +
                     '<span style="color:#999;font-size:12px;flex-shrink:0;">' + tag + dur + size + q + err + done + '</span>' +
                     '</label>';
             }).join('');
@@ -2625,14 +2701,15 @@
                             const expanded = v.pages.map(p => ({
                                 bvid: it.bvid,
                                 cid: p.cid,
+                                multiPart: true,
                                 title: 'P' + p.page + ' ' + (p.part || ''),
-                                duration: p.duration || null,
-                                useApiTitle: true
+                                duration: p.duration || null
                             }));
                             state.items.splice(state.items.indexOf(it), 1, ...expanded);
                         } else {
                             it.cid = v.cid;
                             if(!it.duration) it.duration = v.duration;
+                            if(!it.title || it.title.indexOf('视频 ') === 0) it.title = v.title || it.title;
                             it.title = v.title || it.title;
                         }
                     } else {
@@ -2673,8 +2750,8 @@
             const picked = Array.from(state.checked).filter(it => state.items.indexOf(it) >= 0);
             if(!picked.length){ showToast('请先勾选视频'); return; }
             // 已下载的项直接跳过（服务端也会跳过，这里省掉多余请求）
-            const skippedDone = picked.filter(it => state.downloaded.has(it.bvid)).length;
-            const targets = picked.filter(it => !state.downloaded.has(it.bvid));
+            const skippedDone = picked.filter(it => state.downloaded.has(videoKey(it))).length;
+            const targets = picked.filter(it => !state.downloaded.has(videoKey(it)));
             if(!targets.length){ showToast('所选视频都已经下载过了（如需重新下载，请先删除本地文件）'); return; }
             const dlBtn = dlBtnEl || panel.querySelector('#bili-video-dl');
             const progEl = panel.querySelector('#bili-video-progress');
@@ -2720,7 +2797,10 @@
             }
             if(progEl) progEl.style.display = 'block';
             dlBtn.textContent = '下载中…';
-            const videos = chosen.map(it => ({ title: it.title, videoUrl: it.videoUrl, audioUrl: it.audioUrl, ext: it.ext, bvid: it.bvid }));
+            const videos = chosen.map(it => ({
+                title: it.title, videoUrl: it.videoUrl, audioUrl: it.audioUrl, ext: it.ext,
+                bvid: it.bvid, cid: it.cid, multiPart: !!it.multiPart
+            }));
             const jobId = 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
             const progBar = panel.querySelector('#bili-video-prog-bar');
             const progPct = panel.querySelector('#bili-video-prog-pct');
@@ -2734,12 +2814,13 @@
                     try{
                         const marks = okItems.map(it => {
                             const t = BS.sanitizeFilename(String(it.title || '').trim()) || ('video_' + it.bvid);
-                            const base = (t.length > 60 ? t.slice(0, 60) : t) + '_' + it.bvid;
-                            return 'video:' + base + '.mp4';      // 记录标记（文件名里带 BV 号，面板据此标「已下载」）
+                            const base = (t.length > 60 ? t.slice(0, 60) : t) + '_' + it.bvid
+                                + (it.multiPart && it.cid != null ? '_c' + it.cid : '');
+                            return 'video:' + base + '.mp4';      // 记录标记（文件名里带 BV 号、多 P 还带 cid，面板据此标「已下载」）
                         });
                         if(marks.length) await BS.idbAddNames(marks);
                     }catch(e){}
-                    okItems.forEach(it => { state.downloaded.add(it.bvid); });
+                    okItems.forEach(it => { state.downloaded.add(videoKey(it)); });
                     state.checked.clear();
                     if(allEl) allEl.checked = false;
                     render();
@@ -2751,9 +2832,18 @@
                 const activeJobId = startJson.jobId || jobId;
                 let summary = null;
                 let lastBytes = 0, lastTime = 0, speedBps = 0;
+                let pollFails = 0;
                 for(;;){
                     const p = await serverApi('/video/progress?job=' + encodeURIComponent(activeJobId));
-                    if(p && p.ok){
+                    // 服务端重启 / job 被淘汰 / 请求超时都会返回空：连续失败就退出，
+                    // 否则面板会永远卡在「下载中」并一直空转轮询
+                    if(!p || !p.ok){
+                        if(++pollFails >= 15) throw new Error('进度查询连续失败，本地服务可能已关闭');
+                        await sleep(800);
+                        continue;
+                    }
+                    pollFails = 0;
+                    if(p.ok){
                         const total = p.total || 1;
                         const doneN = p.done || 0;
                         const overall = Math.min(99, Math.round(doneN / total * 100));
@@ -2820,8 +2910,13 @@
                         + (skippedDone ? '\n（已跳过 ' + skippedDone + ' 个已下载）' : '')
                         + (savedDir ? '\n保存位置：' + savedDir : ''));
                     // 把本次落盘成功的项记为「已下载」并刷新列表，避免下次重复下载
+                    // 服务端是并发下载、按完成顺序返回的，位置对不上：优先按 bvid(+cid) 认领，
+                    // 只有当结果没带标识（旧版服务端）时才退回按位置匹配
+                    const byKey = new Map();
+                    chosen.forEach(it => byKey.set(videoKey(it), it));
                     json.results.forEach((r, i) => {
-                        if(!r.error && (r.saved || r.exists) && chosen[i]) state.downloaded.add(chosen[i].bvid);
+                        const it = (r && r.bvid) ? byKey.get(videoKey(r)) : chosen[i];
+                        if(!r.error && (r.saved || r.exists) && it) state.downloaded.add(videoKey(it));
                     });
                     state.checked.clear();
                     if(allEl) allEl.checked = false;
@@ -2860,7 +2955,7 @@
             state.checked.clear();
             if(allEl.checked){
                 state.items.forEach(it => {
-                    if(!state.downloaded.has(it.bvid)) state.checked.add(it);
+                    if(!state.downloaded.has(videoKey(it))) state.checked.add(it);
                 });
             }
             render();
@@ -2915,10 +3010,14 @@
             if(!list || !Array.isArray(list.videos) || !list.videos.length) return;
             let hit = 0;
             for(const v of list.videos){
-                const m = /_(BV[0-9A-Za-z]{10})\.[0-9A-Za-z]+$/.exec(String(v.name || ''));
-                if(m && !state.downloaded.has(m[1])){
-                    state.downloaded.add(m[1]);
-                    hit++;
+                // 文件名可能是 xxx_BV号.mp4 / xxx_BV号_c<cid>.mp4 / xxx_BV号.video.mp4
+                const m = /_(BV[0-9A-Za-z]{10})(?:_c(\d+))?(?:\.[0-9A-Za-z]+)+$/.exec(String(v.name || ''));
+                if(m){
+                    const key = m[2] ? (m[1] + '#' + m[2]) : m[1];       // 多 P 分 P 靠 cid 区分，不能只认 BV 号
+                    if(!state.downloaded.has(key)){
+                        state.downloaded.add(key);
+                        hit++;
+                    }
                 }
             }
             if(hit){ render(); refreshDlBtn(); }
@@ -2946,7 +3045,8 @@
                     : '（合集项下载时获取大小）';
                 hintEl.textContent = '视频 ' + videoCount + ' 个 · ' + colName + tip;
             } else {
-                hintEl.textContent = '共 ' + state.items.length + ' 个';
+                hintEl.textContent = '共 ' + state.items.length + ' 个'
+                    + (lastFavTruncated ? '（收藏夹只列出前 ' + MAX_FAV_PANEL_ITEMS + ' 个）' : '');
             }
         })();
     }

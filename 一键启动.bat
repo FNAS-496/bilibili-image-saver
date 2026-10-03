@@ -47,8 +47,20 @@ if errorlevel 1 (
 
 REM ============ 检测服务是否已在运行 / Check if server already running ============
 netstat -ano 2>nul | findstr ":8765" | findstr "LISTENING" >nul 2>nul
-if not errorlevel 1 goto open
+if errorlevel 1 goto start_server
+REM 端口上有人在听，但必须确认那是「本保存服务」——别的程序占着 8765 不能算成功
+call :probe_server
+if errorlevel 1 (
+  echo [错误/Error] 端口 8765 被别的程序占用了（不是本保存服务）。
+  echo [Error] Port 8765 is occupied by another program, not this save server.
+  echo [提示/Info] 关掉占用它的程序（或重启电脑）后再双击本文件。
+  echo [Info] Close that program (or reboot), then run this file again.
+  pause
+  exit /b 1
+)
+goto open
 
+:start_server
 REM ============ 启动本地服务 / Start local server ============
 if defined SAVE_DIR set "BILI_SAVE_DIR=%SAVE_DIR%"
 start "Bilibili-Plus 保存服务 / Save Server" cmd /k "node save_images_server.js"
@@ -69,6 +81,11 @@ echo [完成/Done] 服务已就绪，正在打开 B 站...
 echo [Done] Server ready, opening Bilibili...
 start "" "https://www.bilibili.com"
 exit /b 0
+
+:probe_server
+REM 探测 8765 上跑的到底是不是我们的服务（/getdir 要返回 {"ok":true,"dir":...} 才算数）
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try{ $wc = New-Object System.Net.WebClient; $t = $wc.DownloadString('http://127.0.0.1:8765/getdir'); if($t.Trim().StartsWith('{') -and $t.Contains('ok') -and $t.Contains('dir')){ exit 0 } else { exit 1 } }catch{ exit 1 }"
+exit /b %errorlevel%
 
 REM ===================== 内嵌数据段 / Embedded data =====================
 ::#FILE:watermark\wechat_qr.jpg

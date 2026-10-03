@@ -103,6 +103,46 @@ function sanitizeFilename(name){
     return s;
 }
 
+// 从地址取落盘文件名（规则与便携版内核 hashFileNameFromUrl 保持一致，
+// 否则同一张图在两个版本里会落成两个名字，跨版本查重失效）
+function fileNameFromUrl(u){
+    try{
+        const raw = new URL(u).pathname.split('/').pop() || '';
+        let decoded = raw;
+        try{ decoded = decodeURIComponent(raw); }catch(e){ decoded = raw; }
+        const name = sanitizeFilename(decoded.split('@')[0]);
+        if(name && name !== '.' && name !== '..') return name;
+    }catch(e){}
+    return '';
+}
+
+// 视频扩展名白名单：ext 来自请求体，绝不允许夹带路径分隔符或 ".."
+// （否则 path.join 会把 ".tmp_x_v.a/../../../pwn" 归一化成保存目录之外）
+function normalizeVideoExt(ext){
+    const s = String(ext == null ? '' : ext).trim().replace(/^\.+/, '');
+    return /^[0-9a-z]{1,8}$/i.test(s) ? s.toLowerCase() : 'mp4';
+}
+
+// 断言目标路径落在 dir 内（名字已净化过，这里再挡一道越界）
+function assertInsideDir(dir, target){
+    const base = path.resolve(dir);
+    const full = path.resolve(target);
+    if(full !== base && !full.startsWith(base + path.sep) && !full.startsWith(base + '/')){
+        throw new Error('拒绝越界写入：' + target);
+    }
+    return full;
+}
+
+// 目录内安全拼接：先净化名字，再断言不越界
+function safeJoin(dir, name){
+    return assertInsideDir(dir, path.join(dir, sanitizeFilename(name)));
+}
+
+// 文件存在且非空
+function fileHasContent(p){
+    try{ return fs.statSync(p).size > 0; }catch(e){ return false; }
+}
+
 // 下载请求头（模拟浏览器 UA / Referer）
 function getRequestHeaders(){
     return {
@@ -189,7 +229,7 @@ async function downloadToFile(fileUrl, destPath, timeoutMs){
 // 保存 base64 内嵌图片
 async function saveBase64File(file, index){
     const filename = sanitizeFilename(file.filename || `image_${index}.jpg`);
-    const outPath = path.join(OUT_DIR, filename);
+    const outPath = safeJoin(OUT_DIR, filename);
     const buffer = Buffer.from(file.data, 'base64');
     await fs.promises.writeFile(outPath, buffer);
     return outPath;
@@ -204,15 +244,11 @@ function imageExistsOnDisk(rawUrl){
         if(jpgVariant && jpgVariant !== url) variants.unshift(jpgVariant);
         for(const candidate of variants){
             const ext = extensionFromUrl(candidate) || '.jpg';
-            let base = '';
-            try{
-                base = path.basename(new URL(candidate).pathname).split('@')[0];
-            }catch(e){}
-            base = sanitizeFilename(base);
-            if(!base || base === '.' || base === '..') continue;
+            let base = fileNameFromUrl(candidate);
+            if(!base) continue;
             if(!path.extname(base)) base += ext;
-            const outPath = path.join(OUT_DIR, base);
-            if(fs.existsSync(outPath) && fs.statSync(outPath).size > 0){
+            const outPath = assertInsideDir(OUT_DIR, path.join(OUT_DIR, base));
+            if(fileHasContent(outPath)){
                 return true;
             }
         }
@@ -234,15 +270,11 @@ async function tryDownloadFile(rawUrl, index, opts){
         for(const candidate of variants){
             try{
                 const ext = extensionFromUrl(candidate) || '.jpg';
-                let base = '';
-                try{
-                    base = path.basename(new URL(candidate).pathname).split('@')[0];
-                }catch(e){}
-                base = sanitizeFilename(base);
-                if(!base || base === '.' || base === '..') base = `image_${index}`;
+                let base = fileNameFromUrl(candidate);
+                if(!base) base = `image_${index}`;
                 if(!path.extname(base)) base += ext;
-                const outPath = path.join(OUT_DIR, base);
-                if(dedupe && fs.existsSync(outPath) && fs.statSync(outPath).size > 0){
+                const outPath = assertInsideDir(OUT_DIR, path.join(OUT_DIR, base));
+                if(dedupe && fileHasContent(outPath)){
                     return { url: candidate, saved: outPath, exists: true };
                 }
                 const result = await downloadToFile(candidate, outPath, timeoutMs);
@@ -263,6 +295,7 @@ async function tryDownloadFile(rawUrl, index, opts){
 async function downloadVideoToFile(fileUrl, destPath, timeoutMs, onProgress){
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs || 600000);
+    let ws = null;
     try {
         const res = await fetch(fileUrl, {
             headers: {
@@ -280,29 +313,42 @@ async function downloadVideoToFile(fileUrl, destPath, timeoutMs, onProgress){
             throw new Error('Server returned text/html instead of video (blocked / risk page)');
         }
         const total = parseInt(res.headers.get('content-length') || '0', 10) || 0;
-        const chunks = [];
         let received = 0;
+        // 边收边写：整段视频不进内存（4K 视频动辄几个 GB，全塞进 Buffer 会把服务撑爆）
+        ws = fs.createWriteStream(destPath);
+        let streamErr = null;
+        ws.on('error', e => { streamErr = e; });
+        const writeChunk = chunk => new Promise((resolve, reject) => {
+            if(streamErr) return reject(streamErr);
+            if(ws.write(chunk)) return resolve();
+            const cleanup = () => { ws.removeListener('drain', onDrain); ws.removeListener('close', onClose); };
+            const onDrain = () => { cleanup(); streamErr ? reject(streamErr) : resolve(); };
+            const onClose = () => { cleanup(); reject(streamErr || new Error('写入中断')); };
+            ws.once('drain', onDrain);
+            ws.once('close', onClose);
+        });
         if(res.body && typeof res.body.getReader === 'function'){
             const reader = res.body.getReader();
             for(;;){
                 const { done, value } = await reader.read();
                 if(done) break;
-                if(value){
-                    chunks.push(value);
+                if(value && value.length){
                     received += value.length;
                     if(onProgress) onProgress(received, total);
+                    await writeChunk(Buffer.from(value));
                 }
             }
         } else {
             const buf = Buffer.from(await res.arrayBuffer());
             received = buf.length;
-            chunks.push(buf);
             if(onProgress) onProgress(received, total);
+            await writeChunk(buf);
         }
-        const buffer = Buffer.concat(chunks);
-        await fs.promises.writeFile(destPath, buffer);
-        return buffer.length;
+        await new Promise((resolve, reject) => ws.end(err => err ? reject(err) : resolve()));
+        ws = null;
+        return received;
     } catch(err){
+        if(ws){ try{ ws.destroy(); }catch(e){} ws = null; }
         if(err.name === 'AbortError'){
             throw new Error('timeout');
         }
@@ -332,10 +378,24 @@ function ffmpegAvailable(){
 }
 
 // 调用 ffmpeg 合并音视频为 mp4
+// 先写 .part 再改名：ffmpeg 中途失败时不会留下一个"看着像成品"的半截 mp4
+// （半截文件会被查重当成已完成，用户之后怎么重下都会被跳过）
 function mergeWithFfmpeg(videoPath, audioPath, outPath){
+    const tmpOut = outPath + '.part';
     return new Promise((resolve, reject) => {
-        execFile(resolveFfmpeg(), ['-y', '-i', videoPath, '-i', audioPath, '-c', 'copy', outPath],
-            { timeout: 600000 }, (err) => err ? reject(err) : resolve());
+        execFile(resolveFfmpeg(), ['-y', '-i', videoPath, '-i', audioPath, '-c', 'copy', tmpOut],
+            { timeout: 600000 }, (err) => {
+                if(err){
+                    try{ fs.unlinkSync(tmpOut); }catch(e){}
+                    return reject(err);
+                }
+                try{ fs.renameSync(tmpOut, outPath); }
+                catch(e){
+                    try{ fs.unlinkSync(tmpOut); }catch(e2){}
+                    return reject(e);
+                }
+                resolve();
+            });
     });
 }
 
@@ -347,23 +407,38 @@ async function saveVideo(item, index, job){
     const rawTitle = String(item.title || '').trim();
     const safeTitle = sanitizeFilename(rawTitle) || `video_${index}`;
     const bvid = sanitizeFilename(String(item.bvid || '').trim());
-    const suffix = bvid ? '_' + bvid : '';
+    // 多 P 视频各分 P 共用同一个 BV 号：必须把 cid 也写进文件名，否则磁盘上分不清哪一 P 下过
+    const cidTag = (item.multiPart && /^\d+$/.test(String(item.cid == null ? '' : item.cid))) ? '_c' + item.cid : '';
+    const suffix = bvid ? '_' + bvid + cidTag : '';
     const maxBase = Math.max(40, 80 - suffix.length);
     const base = (safeTitle.length > maxBase ? safeTitle.slice(0, maxBase) : safeTitle) + suffix;
-    const outMp4 = path.join(VIDEO_OUT_DIR, base + '.mp4');
-    if(fs.existsSync(outMp4) && fs.statSync(outMp4).size > 0){
-        return { title: rawTitle, saved: outMp4, exists: true };
+    const audioUrl = item.audioUrl ? String(item.audioUrl).trim() : '';
+    // ext 来自请求体：只取扩展名，绝不放路径分隔符进来
+    const ext = normalizeVideoExt(item.ext);
+
+    const outMp4 = assertInsideDir(VIDEO_OUT_DIR, path.join(VIDEO_OUT_DIR, base + '.mp4'));
+    const vOnly = assertInsideDir(VIDEO_OUT_DIR, path.join(VIDEO_OUT_DIR, base + '.video.' + ext));
+    const aOnly = assertInsideDir(VIDEO_OUT_DIR, path.join(VIDEO_OUT_DIR, base + '.audio.m4a'));
+    const identity = { title: rawTitle, bvid: item.bvid || '', cid: (item.cid == null ? null : item.cid), multiPart: !!item.multiPart };
+
+    if(fileHasContent(outMp4)){
+        return Object.assign({ saved: outMp4, exists: true }, identity);
+    }
+
+    // 没装 ffmpeg 时产物是 .video/.audio 两个文件，它们也要参与查重，
+    // 不然每次重下都会白下一遍（还会覆盖掉已经下好的）
+    const hasFfmpeg = audioUrl ? await ffmpegAvailable() : false;
+    if(audioUrl && !hasFfmpeg && fileHasContent(vOnly) && fileHasContent(aOnly)){
+        return Object.assign({ saved: vOnly, audio: aOnly, exists: true, note: '音画分开的产物已存在' }, identity);
     }
 
     const videoUrl = String(item.videoUrl || item.url || '').trim();
     if(!videoUrl){
         throw new Error('no video url');
     }
-    const audioUrl = item.audioUrl ? String(item.audioUrl).trim() : '';
-    const ext = (item.ext || 'mp4').replace(/^\./, '');
 
-    const tmpVideo = path.join(VIDEO_OUT_DIR, `.tmp_${Date.now()}_${index}_v.${ext}`);
-    const tmpAudio = path.join(VIDEO_OUT_DIR, `.tmp_${Date.now()}_${index}_a.m4a`);
+    const tmpVideo = assertInsideDir(VIDEO_OUT_DIR, path.join(VIDEO_OUT_DIR, `.tmp_${Date.now()}_${index}_v.${ext}`));
+    const tmpAudio = assertInsideDir(VIDEO_OUT_DIR, path.join(VIDEO_OUT_DIR, `.tmp_${Date.now()}_${index}_a.m4a`));
     const setJob = (phase, message, bytes, bytesTotal) => {
         if(job){ job.phase = phase; job.message = message; job.bytes = bytes || 0; job.bytesTotal = bytesTotal || 0; }
     };
@@ -373,28 +448,54 @@ async function saveVideo(item, index, job){
         if(audioUrl){
             setJob('downloading-audio', '下载音频流');
             await downloadVideoToFile(audioUrl, tmpAudio, null, (received, total) => setJob('downloading-audio', '下载音频流', received, total));
-            if(await ffmpegAvailable()){
+            if(hasFfmpeg){
                 setJob('merging', 'ffmpeg 合并音画');
                 await mergeWithFfmpeg(tmpVideo, tmpAudio, outMp4);
                 try{ fs.unlinkSync(tmpVideo); }catch(e){}
                 try{ fs.unlinkSync(tmpAudio); }catch(e){}
-                return { title: item.title, saved: outMp4, merged: true };
-            } else {
-                const vOnly = path.join(VIDEO_OUT_DIR, base + '.video.' + ext);
-                const aOnly = path.join(VIDEO_OUT_DIR, base + '.audio.m4a');
-                fs.renameSync(tmpVideo, vOnly);
-                fs.renameSync(tmpAudio, aOnly);
-                return { title: item.title, saved: vOnly, exists: false, separate: true, audio: aOnly, note: 'ffmpeg 未找到，音画已分开保存' };
+                return Object.assign({ saved: outMp4, merged: true }, identity);
             }
-        } else {
-            fs.renameSync(tmpVideo, outMp4);
-            return { title: item.title, saved: outMp4 };
+            fs.renameSync(tmpVideo, vOnly);
+            fs.renameSync(tmpAudio, aOnly);
+            return Object.assign({ saved: vOnly, separate: true, audio: aOnly, note: 'ffmpeg 未找到，音画已分开保存' }, identity);
         }
+        fs.renameSync(tmpVideo, outMp4);
+        return Object.assign({ saved: outMp4 }, identity);
     } catch(err){
         try{ if(fs.existsSync(tmpVideo)) fs.unlinkSync(tmpVideo); }catch(e){}
         try{ if(fs.existsSync(tmpAudio)) fs.unlinkSync(tmpAudio); }catch(e){}
         throw err;
     }
+}
+
+// 读请求体：限长（超了直接 413，别让无上限的字符串拼接把内存吃光），
+// 并兜住回调里抛出的异常（否则 async 回调的 reject 会变成 unhandledRejection）
+function readBody(req, res, limit, onDone){
+    let body = '';
+    let tooBig = false;
+    req.on('data', chunk => {
+        if(tooBig) return;
+        body += chunk;
+        if(body.length > limit){
+            tooBig = true;
+            body = '';
+            try{
+                res.writeHead(413, {'Content-Type':'application/json'});
+                res.end(JSON.stringify({ ok:false, error:'request body too large' }));
+            }catch(e){}
+            req.destroy();
+        }
+    });
+    req.on('end', () => {
+        if(tooBig) return;
+        Promise.resolve().then(() => onDone(body)).catch(err => {
+            console.error('handler failed', err);
+            try{
+                res.writeHead(500, {'Content-Type':'application/json'});
+                res.end(JSON.stringify({ ok:false, error: err.message }));
+            }catch(e){}
+        });
+    });
 }
 
 const server = http.createServer((req, res) => {
@@ -418,9 +519,7 @@ const server = http.createServer((req, res) => {
     }
 
     if(req.method === 'POST' && req.url === '/check'){
-        let body = '';
-        req.on('data', chunk => { body += chunk; });
-        req.on('end', () => {
+        readBody(req, res, 5 * 1024 * 1024, body => {
             let payload;
             try{
                 payload = JSON.parse(body);
@@ -438,12 +537,7 @@ const server = http.createServer((req, res) => {
     }
 
     if(req.method === 'POST' && req.url === '/save'){
-        let body = '';
-        req.on('data', chunk => {
-            body += chunk;
-            if(body.length > 50 * 1024 * 1024){ req.destroy(); }
-        });
-        req.on('end', async () => {
+        readBody(req, res, 50 * 1024 * 1024, async body => {
             let payload;
             try{
                 payload = JSON.parse(body);
@@ -531,9 +625,7 @@ const server = http.createServer((req, res) => {
 
 
     if(req.method === 'POST' && req.url === '/video/save'){
-        let body = '';
-        req.on('data', chunk => { body += chunk; if(body.length > 50 * 1024 * 1024){ req.destroy(); } });
-        req.on('end', () => {
+        readBody(req, res, 50 * 1024 * 1024, body => {
             let payload;
             try{ payload = JSON.parse(body); }catch(e){
                 res.writeHead(400, {'Content-Type':'application/json'});
@@ -558,7 +650,7 @@ const server = http.createServer((req, res) => {
             res.writeHead(200, {'Content-Type':'application/json'});
             res.end(JSON.stringify({ ok:true, jobId }));
             (async () => {
-                const results = [];
+                const results = [];                       // 下标 = 请求里的下标，避免并发完成顺序打乱对应关系
                 let idx = 0;
                 const concurrency = Math.min(2, videos.length);
                 async function worker(){
@@ -571,14 +663,14 @@ const server = http.createServer((req, res) => {
                         job.bytes = 0; job.bytesTotal = 0;
                         try{
                             const result = await saveVideo(v, i + 1, job);
-                            results.push(result);
+                            results[i] = result;                  // 按下标落位：返回顺序必须与请求顺序一致
                             job.done++;
                             if(result.exists) console.log('Video exists (skip)', result.saved);
                             else if(result.separate) console.log('Video saved (separate streams)', result.saved, '+', result.audio);
                             else console.log('Video saved', result.saved);
                         }catch(err){
                             console.error('Video failed', v && v.title, err.message);
-                            results.push({ title: v && v.title, error: err.message });
+                            results[i] = { title: (v && v.title) || '', bvid: (v && v.bvid) || '', cid: (v && v.cid != null ? v.cid : null), multiPart: !!(v && v.multiPart), error: err.message };
                             job.done++;
                         }
                     }
@@ -625,9 +717,7 @@ const server = http.createServer((req, res) => {
     }
 
     if(req.method === 'POST' && req.url === '/setdir'){
-        let body = '';
-        req.on('data', c => body += c);
-        req.on('end', () => {
+        readBody(req, res, 1024 * 1024, body => {
             try{
                 const p = JSON.parse(body);
                 const dir = (p && p.dir && String(p.dir).trim()) || '';
@@ -725,11 +815,36 @@ const server = http.createServer((req, res) => {
     res.end();
 });
 
-server.listen(PORT, '127.0.0.1', ()=>{
-    console.log(`save_images_server listening on http://127.0.0.1:${PORT}, output directory: ${OUT_DIR}`);
-    const qr = resolveQrPath();
-    console.log(`[check] 打赏收款码(兼容 /qr): ${qr ? 'OK (' + path.basename(qr) + ')' : '无（脚本已内嵌收款码，不影响使用）'}`);
+server.on('error', (e)=>{
+    if(e && e.code === 'EADDRINUSE'){
+        console.error(`端口 ${PORT} 已被占用：可能已经有一个保存服务在运行，或别的程序占了这个端口。`);
+        console.error(`Port ${PORT} is already in use. Close the other program / server window, then retry.`);
+    } else {
+        console.error('server error', e);
+    }
+    process.exit(1);
 });
+
+if(require.main === module){
+    server.listen(PORT, '127.0.0.1', ()=>{
+        console.log(`save_images_server listening on http://127.0.0.1:${PORT}, output directory: ${OUT_DIR}`);
+        const qr = resolveQrPath();
+        console.log(`[check] 打赏收款码(兼容 /qr): ${qr ? 'OK (' + path.basename(qr) + ')' : '无（脚本已内嵌收款码，不影响使用）'}`);
+    });
+}
 
 process.on('uncaughtException', (e)=>{ console.error('uncaught', e); });
 process.on('unhandledRejection', (e)=>{ console.error('unhandledRejection', e); });
+
+// 导出纯函数供单测使用（被 require 时不会监听端口）
+module.exports = {
+    PORT,
+    sanitizeFilename,
+    fileNameFromUrl,
+    normalizeVideoExt,
+    normalizeImageUrl,
+    extensionFromUrl,
+    assertInsideDir,
+    safeJoin,
+    server
+};
