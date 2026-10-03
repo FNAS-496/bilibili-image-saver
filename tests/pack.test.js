@@ -468,6 +468,35 @@ check('附件清理：局部发布不会误删同一个 Release 上的其它包'
     assert.strictEqual(full.find(x => x.asset.id === 4).action, 'keep', '不认识的附件永远别动');
 });
 
+check('zip 条目名守卫：拒绝 ".." 与盘符路径（zip-slip）', () => {
+    for (const bad of ['../evil.txt', 'a/../../evil.txt', 'C:/Windows/evil.txt', 'c:evil.txt']) {
+        assert.throws(() => writeZip(path.join(TMP, 'slip.zip'), [{ name: bad, data: Buffer.from('x') }]),
+            /条目名/, '竟然接受了危险条目名：' + bad);
+    }
+    assert.ok(writeZip(path.join(TMP, 'ok.zip'), [{ name: 'a/b/ok.txt', data: Buffer.from('x') }]).bytes > 0);
+});
+
+check('verifyZip：条目数据越过文件末尾时明确指出（而不是抛解压天书）', () => {
+    const f = path.join(TMP, 'overrun.zip');
+    writeZip(f, [
+        { name: 'a.txt', data: Buffer.from('hello world '.repeat(20)) },
+        { name: 'b.txt', data: Buffer.from('second entry '.repeat(20)) }
+    ]);
+    const buf = fs.readFileSync(f);
+    const eocd = buf.length - 22;
+    let p = buf.readUInt32LE(eocd + 16);                  // 中央目录起点
+    let patched = false;
+    for (let i = 0; i < buf.readUInt16LE(eocd + 10); i++) {
+        const nameLen = buf.readUInt16LE(p + 28);
+        const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+        if (name === 'b.txt') { buf.writeUInt32LE(0xfffff0, p + 20); patched = true; break; }   // 谎报压缩后长度
+        p += 46 + nameLen + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
+    }
+    assert.ok(patched, '没找到 b.txt 的中央目录条目');
+    fs.writeFileSync(f, buf);
+    assert.throws(() => verifyZip(f), /超出文件长度|CRC|长度不符/, '越界的包没被拦下');
+});
+
 check('源码版：带上源码、构建与打包工具，不带生成物', () => {
     const r = buildOnce(specOf('source'));
     const names = listZip(r.zipPath).map(e => e.name.split('/').slice(1).join('/'));

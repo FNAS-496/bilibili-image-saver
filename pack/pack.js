@@ -268,7 +268,7 @@ function main() {
         console.log('  ' + path.basename(r.zipPath).padEnd(38) +
             String(r.items.length).padStart(2) + ' 个文件  ' +
             humanSize(r.written.bytes).padStart(9) + '（解压后 ' + humanSize(srcBytes) + '）');
-        if (spec.id === 'full') syncBundleFolder(r);
+        if (spec.id === 'full' && !out) syncBundleFolder(r);   // --out 指到别处时别回头写仓库里的目录
     }
     if (!results.length) throw new Error('一个包都没打出来');
     console.log('完成：' + results.length + ' 个发行包，全部通过 ZIP 回读校验。');
