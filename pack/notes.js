@@ -16,7 +16,7 @@ const NOTES = {
     '一键启动.bat': '双击本文件就完事：检查文件是否齐全 →（缺收款码时）从本文件里释放内嵌的收款码 → 找 Node（优先用本目录 node\\node.exe，没有就用系统装的）→ 启动 save_images_server.js → 打开 B 站。文件末尾那一大串是内嵌的收款码数据，别删别改。（本文件是 GBK 编码，用记事本/VS Code 打开都能正常显示中文。）',
     'node/node.exe': '内置的 Node.js（运行环境）。「一键启动.bat」会优先用它，所以你不用自己装 Node。删了它就得靠系统里的 Node 了。',
     'ffmpeg/ffmpeg.exe': '内置的 FFmpeg，只干一件事：把 B 站分开的视频流和音频流合并成一个带声音的 mp4。删了也不影响图片下载，只是视频可能变成「画面.mp4 + 声音.m4a」两个文件。',
-    'watermark/wechat_qr.jpg': '收款码图片，打赏面板会显示它。（本包直接带着图片文件；如果是脚本自己从 bat 里释放出来的那份，内容一样，可以删。）',
+    'watermark/wechat_qr.jpg': '收款码图片（打赏用）。用户脚本里已经内嵌了同一张图（base64），所以打赏面板不依赖这个文件；它主要给本地服务的 /qr 接口用（便携版没有本地服务，留着只是图个一致，删了也不影响打赏面板）。',
     'LICENSE': '开源协议正文：CC BY-NC-SA 4.0（署名、非商用、改完也要用同样的协议开源）。',
     '文件说明.txt': '就是你正在看的这份：把本包里每个文件是干啥的、能不能删，一条条写清楚。',
     'README.md': '项目总说明：两个版本的区别、功能、安装、常见问题、开发构建，都在这。',
@@ -65,42 +65,53 @@ function noteFor(rel, kind) {
 }
 
 // 往包内文件里插一段【备注】；返回新的 Buffer（加不了注释的原样返回）
-// 注意：「一键启动.bat」是 GBK 编码，备注直接写在源文件里（打包时不动它），
-// 免得在这里做编码转换。
+// 注意：
+//   ① 「一键启动.bat」是 GBK 编码，备注直接写在源文件里（打包时不动它）；
+//   ② 有 `#!` 的文件，备注要插在 shebang 之后，否则 `node 文件` 直接语法错误；
+//   ③ 幂等：先去掉上次注入的备注再加，避免「从源码包重打包」时备注层层叠加
+//      （比如 pack/usage-*.txt 会变成包里的 使用说明.txt，那一层还会再注入一次）。
+const NOTE_JS_RE = /^[ \t]*\/\/ 【备注】[^\r\n]*\r?\n/gm;
+const NOTE_TXT_RE = /^【备注】[^\r\n]*\r?\n─+\r?\n/;
+const NOTE_HASH_RE = /^# 【备注】[^\r\n]*\r?\n/;
+const NOTE_MD_RE = /^> 【备注】[^\r\n]*\r?\n\r?\n/;
+
+function stripInjectedNote(name, text) {
+    const lower = name.toLowerCase();
+    if (lower.endsWith('.js')) return text.replace(NOTE_JS_RE, '');
+    if (lower.endsWith('.txt')) return text.replace(NOTE_TXT_RE, '');
+    if (lower.endsWith('.md')) return text.replace(NOTE_MD_RE, '');
+    if (lower === '.gitignore') return text.replace(NOTE_HASH_RE, '');
+    return text;
+}
+
+function insertJsNote(line, text) {
+    if (text.startsWith('#!')) {                       // shebang 必须留在第一行
+        const nl = text.indexOf('\n');
+        return nl === -1 ? text + '\n' + line : text.slice(0, nl + 1) + line + '\n' + text.slice(nl + 1);
+    }
+    const anchor = '// ==/UserScript==';
+    const at = text.indexOf(anchor);
+    if (at !== -1) {
+        const eol = text.indexOf('\n', at);
+        const cut = eol === -1 ? text.length : eol + 1;
+        return text.slice(0, cut) + line + '\n' + text.slice(cut);
+    }
+    return line + '\n' + text;
+}
+
 function annotate(rel, data, kind) {
     const name = String(rel).replace(/\\/g, '/');
     const note = noteFor(name, kind);
     const lower = name.toLowerCase();
-    const text = data.toString('utf8');
 
-    if (lower.endsWith('.bat')) return data;
+    if (lower.endsWith('.bat')) return data;            // GBK，备注写源文件里
 
-    if (lower === '.gitignore') {
-        return Buffer.from('# 【备注】' + note + '\n' + text, 'utf8');
-    }
-
-    if (lower.endsWith('.js')) {
-        const line = '// 【备注】' + note;
-        const anchor = '// ==/UserScript==';
-        const at = text.indexOf(anchor);
-        if (at !== -1) {
-            const eol = text.indexOf('\n', at);
-            const cut = eol === -1 ? text.length : eol + 1;
-            return Buffer.from(text.slice(0, cut) + line + '\n' + text.slice(cut), 'utf8');
-        }
-        return Buffer.from(line + '\n' + text, 'utf8');
-    }
-
-    if (lower.endsWith('.txt')) {
-        const header = '【备注】' + note + '\n' + '─'.repeat(60) + '\n';
-        return Buffer.from(header + text, 'utf8');
-    }
-
-    if (lower.endsWith('.md')) {
-        return Buffer.from('> 【备注】' + note + '\n\n' + text, 'utf8');
-    }
-
-    return data;                                    // json / gitignore / 二进制等不加注释，靠「文件说明.txt」
+    const text = stripInjectedNote(name, data.toString('utf8'));
+    if (lower.endsWith('.js')) return Buffer.from(insertJsNote('// 【备注】' + note, text), 'utf8');
+    if (lower.endsWith('.txt')) return Buffer.from('【备注】' + note + '\n' + '─'.repeat(60) + '\n' + text, 'utf8');
+    if (lower.endsWith('.md')) return Buffer.from('> 【备注】' + note + '\n\n' + text, 'utf8');
+    if (lower === '.gitignore') return Buffer.from('# 【备注】' + note + '\n' + text, 'utf8');
+    return data;                                        // json / 图片等加不了注释，靠「文件说明.txt」
 }
 
 function humanSize(bytes) {
