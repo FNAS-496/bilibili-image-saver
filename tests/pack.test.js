@@ -21,9 +21,11 @@ const { execFileSync } = require('child_process');
 const { writeZip, listZip, verifyZip, ZIP_FLAGS_UTF8 } = require('../pack/zip.js');
 const { noteFor, annotate } = require('../pack/notes.js');
 const pack = require('../pack/pack.js');
+const publish = require('../pack/publish.js');
 
 const ROOT = path.join(__dirname, '..');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bili-pack-test-'));
+const sha256 = buf => crypto.createHash('sha256').update(buf).digest('hex');
 let passed = 0;
 const check = (name, fn) => {
     try {
@@ -398,6 +400,72 @@ check('从源码包构建，产物里不会跟着跑出打包备注', () => {
     assert.ok(generated.includes('// ==UserScript=='), '生成物不像用户脚本');
     execFileSync(process.execPath, ['--check', path.join(dir, 'bilibili-save.user.js')], { stdio: 'ignore' });
     assert.ok(fs.existsSync(path.join(dir, '便携版', 'bilibili-save.user.js')), '便携版产物没生成');
+});
+
+check('Release 说明不会漏出打包备注（从源码包发布时也一样）', () => {
+    const f = path.join(TMP, 'release-notes.md');
+    fs.writeFileSync(f, annotate('pack/release-notes.md',
+        Buffer.from('## 🐾 Bilibili-Plus v@@VERSION@@\n\n@@ASSET_TABLE@@\n', 'utf8'), 'source'));
+    const body = pack.releaseBody([envResult], f);
+    assert.ok(!body.includes('【备注】'), '打包备注漏进了 Release 说明');
+    assert.ok(body.includes('Bilibili-Plus v' + pack.VERSION), '版本号没替换');
+    assert.ok(body.includes(path.basename(envResult.zipPath)), '附件表没生成');
+});
+
+check('「文件说明.txt」不会把用户指向包里没有的 README.md', () => {
+    const hint = t => t.includes('README.md 里的「开发 / 构建」');
+    const envNotes = envResult.items.find(i => i.to === '文件说明.txt').data.toString('utf8');
+    const srcNotes = buildOnce(specOf('source')).items.find(i => i.to === '文件说明.txt').data.toString('utf8');
+    const envHasReadme = envResult.items.some(i => i.to === 'README.md');
+    assert.strictEqual(hint(envNotes), envHasReadme, '环境版的文件说明和包里有没有 README.md 不一致');
+    assert.ok(!hint(envNotes), '环境版没有 README.md，却让人去看它');
+    assert.ok(hint(srcNotes), '源码版带了 README.md，应该指向它');
+    assert.ok(envNotes.includes('项目主页'), '没有 README 时应给出项目主页作为替代');
+});
+
+check('产出的 zip 与运行机器的时区无关（同一份源码，UTC 与 Asia/Shanghai 字节一致）', () => {
+    const dirs = [];
+    for (const tz of ['UTC', 'Asia/Shanghai']) {
+        const dir = fs.mkdtempSync(path.join(TMP, 'tz-' + tz.replace('/', '-') + '-'));
+        execFileSync(process.execPath, [path.join(ROOT, 'pack', 'pack.js'), '--no-build', '--only', 'env', '--out', dir], {
+            cwd: ROOT, env: { ...process.env, TZ: tz }, stdio: 'ignore'
+        });
+        const zip = fs.readdirSync(dir).find(f => f.endsWith('.zip'));
+        dirs.push(path.join(dir, zip));
+    }
+    assert.strictEqual(sha256(fs.readFileSync(dirs[0])), sha256(fs.readFileSync(dirs[1])),
+        '换个时区打出来的包就不一样了（DOS 时间戳没走 UTC）');
+});
+
+check('zip 时间戳：1970 年的文件也不会写出非法 DOS 日期（年份下限 1980）', () => {
+    const f = path.join(TMP, 'epoch.zip');
+    const r = writeZip(f, [{ name: 'old.txt', data: Buffer.from('x'), mtime: new Date(0) }]);
+    assert.ok(r.bytes > 0);
+    const e = listZip(f)[0];
+    const buf = fs.readFileSync(f);
+    const year = 1980 + ((buf.readUInt16LE(e.offset + 12) >> 9) & 0x7f);
+    assert.strictEqual(year, 1980, 'DOS 年份下限应该是 1980，实际 ' + year);
+    verifyZip(f);
+});
+
+check('附件清理：局部发布不会误删同一个 Release 上的其它包', () => {
+    const existing = [
+        { name: 'Bilibili-Plus_v0.9.32_env.zip', id: 1 },
+        { name: 'Bilibili-Plus_v0.9.32_full.zip', id: 2 },
+        { name: 'Bilibili-Plus_v0.9.32_portable.zip', id: 3 },
+        { name: 'notes.txt', id: 4 }
+    ];
+    const partial = publish.planAssetCleanup(existing, ['Bilibili-Plus_v0.9.32_env.zip'], { pruneStale: false });
+    assert.deepStrictEqual(partial.map(x => [x.asset.name, x.action]), [
+        ['Bilibili-Plus_v0.9.32_env.zip', 'replace'],
+        ['Bilibili-Plus_v0.9.32_full.zip', 'keep'],
+        ['Bilibili-Plus_v0.9.32_portable.zip', 'keep'],
+        ['notes.txt', 'keep']
+    ]);
+
+    const full = publish.planAssetCleanup(existing, ['Bilibili-Plus_v0.9.32_env.zip'], { pruneStale: true });
+    assert.strictEqual(full.find(x => x.asset.id === 2).action, 'prune', '完整发布时应清掉改名/改版旧包');
+    assert.strictEqual(full.find(x => x.asset.id === 4).action, 'keep', '不认识的附件永远别动');
 });
 
 check('源码版：带上源码、构建与打包工具，不带生成物', () => {

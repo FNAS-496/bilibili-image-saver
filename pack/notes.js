@@ -125,6 +125,7 @@ function humanSize(bytes) {
 function fileNotesText({ version, edition, items }) {
     const bar = '='.repeat(60);
     const line = '─'.repeat(60);
+    const hasReadme = items.some(i => String(i.name).replace(/\\/g, '/').toLowerCase() === 'readme.md');
     const out = [];
     out.push(bar);
     out.push('  Bilibili-Plus v' + version + ' · ' + edition + ' · 文件说明');
@@ -136,7 +137,9 @@ function fileNotesText({ version, edition, items }) {
     out.push('  【三条须知】');
     out.push('   1. 写着「生成物」的文件别手改，下次构建会被覆盖；');
     out.push('   2. 写着「本地数据」的目录是你下载的内容，可以放心删；');
-    out.push('   3. 想改功能、重新打包，看 README.md 里的「开发 / 构建」。');
+    out.push(hasReadme
+        ? '   3. 想改功能、重新打包，看 README.md 里的「开发 / 构建」。'
+        : '   3. 想改功能、重新打包，去项目主页看「开发 / 构建」那一节（本包不带 README.md）。');
     out.push('');
     out.push(line);
     for (const it of items) {
@@ -151,4 +154,4 @@ function fileNotesText({ version, edition, items }) {
     return out.join('\n');
 }
 
-module.exports = { noteFor, annotate, fileNotesText, humanSize, NOTES, BY_KIND };
+module.exports = { noteFor, annotate, fileNotesText, humanSize, stripInjectedNote, NOTES, BY_KIND };
