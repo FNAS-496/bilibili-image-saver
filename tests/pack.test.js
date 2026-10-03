@@ -323,11 +323,109 @@ if (PY) {
     });
 }
 
+// ── 收款码：每个包都得有（用户要的「只要有就行」）──
+const builtCache = new Map();
+const buildOnce = spec => {
+    if (!builtCache.has(spec.id)) builtCache.set(spec.id, pack.buildEdition(spec, TMP));
+    return builtCache.get(spec.id);
+};
+const qrOf = r => r.items.find(i => i.to === 'watermark/wechat_qr.jpg');
+const sha256 = buf => crypto.createHash('sha256').update(buf).digest('hex');
+
+check('四个发行包都带收款码，而且是同一张（字节一致）', () => {
+    const hashes = [];
+    for (const spec of pack.editionSpecs()) {
+        const r = buildOnce(spec);
+        if (r.skipped) continue;                       // 缺内置运行时才会跳过（full）
+        const qr = qrOf(r);
+        assert.ok(qr, spec.id + ' 里没有 watermark/wechat_qr.jpg');
+        assert.ok(qr.data.length > 1000, spec.id + ' 的收款码太小，可能是空文件');
+        hashes.push(spec.id + '=' + sha256(qr.data));
+    }
+    assert.ok(hashes.length >= 3, '至少要验证到三个包');
+    assert.strictEqual(new Set(hashes.map(h => h.split('=')[1])).size, 1, '各包收款码不是同一张：' + hashes.join(', '));
+});
+
+check('收款码解码：图片文件不在时能从「一键启动.bat」的内嵌数据段解出来', () => {
+    const fromBat = pack.findQrInBat();
+    assert.ok(fromBat, '没能从 bat 里解出收款码');
+    const qr = qrOf(envResult);
+    assert.strictEqual(sha256(fromBat), sha256(qr.data), 'bat 内嵌的收款码和图片文件不是同一张');
+});
+
+check('用户脚本内嵌的收款码与包里的收款码图片是同一张', () => {
+    const qr = qrOf(envResult);
+    const script = envResult.items.find(i => i.to === 'bilibili-save.user.js').data.toString('utf8');
+    const m = /data:image\/(?:jpeg|png);base64,([A-Za-z0-9+/=]{100,})/.exec(script);
+    assert.ok(m, '脚本里没找到内嵌的收款码 data URI');
+    assert.strictEqual(sha256(Buffer.from(m[1], 'base64')), sha256(qr.data),
+        '脚本内嵌的收款码和图片文件不是同一张（改图时要同步 src 里的 DONATE_QR）');
+});
+
+check('备注不会把 #! 挤到第二行（否则 node 直接语法错误）', () => {
+    const out = annotate('build.js', Buffer.from('#!/usr/bin/env node\nconsole.log(1);\n', 'utf8'), 'source').toString('utf8');
+    assert.ok(out.startsWith('#!/usr/bin/env node\n'), '首行必须还是 shebang');
+    assert.ok(out.includes('// 【备注】'), '备注没插进去');
+    const f = path.join(TMP, 'shebang.js');
+    fs.writeFileSync(f, out);
+    execFileSync(process.execPath, ['--check', f], { stdio: 'ignore' });   // 抛错就是失败
+});
+
+check('备注注入是幂等的（从源码包重打包不会层层叠加）', () => {
+    for (const [name, kind, body] of [
+        ['pack/zip.js', 'source', '#!/usr/bin/env node\nconsole.log(1);\n'],
+        ['使用说明.txt', 'env', '正文\n'],
+        ['README.md', 'source', '# 标题\n\n正文\n'],
+        ['.gitignore', 'source', 'node_modules/\n']
+    ]) {
+        const once = annotate(name, Buffer.from(body, 'utf8'), kind);
+        const twice = annotate(name, once, kind);
+        assert.strictEqual(twice.toString('utf8'), once.toString('utf8'), name + ' 注了两次备注');
+        assert.strictEqual((twice.toString('utf8').match(/【备注】/g) || []).length, 1, name + ' 出现了多条备注');
+    }
+});
+
+check('源码包里每个 .js 都能通过 node --check（备注没把文件改坏）', () => {
+    const r = buildOnce(specOf('source'));
+    const dir = fs.mkdtempSync(path.join(TMP, 'check-'));
+    let count = 0;
+    for (const it of r.items) {
+        if (!it.to.endsWith('.js')) continue;
+        const f = path.join(dir, ...it.to.split('/'));
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        fs.writeFileSync(f, it.data);
+        try {
+            execFileSync(process.execPath, ['--check', f], { stdio: 'ignore' });
+        } catch (e) {
+            assert.fail(it.to + ' 语法检查没过（备注插错位置了？）');
+        }
+        count++;
+    }
+    assert.ok(count >= 8, '源码包的 js 文件数不对，只查到 ' + count + ' 个');
+});
+
+check('从源码包构建，产物里不会跟着跑出打包备注', () => {
+    const r = buildOnce(specOf('source'));
+    const dir = fs.mkdtempSync(path.join(TMP, 'rebuild-'));
+    for (const it of r.items) {
+        if (!/^(build\.js|src\/)/.test(it.to)) continue;
+        const f = path.join(dir, ...it.to.split('/'));
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        fs.writeFileSync(f, it.data);
+    }
+    execFileSync(process.execPath, ['build.js'], { cwd: dir, stdio: 'ignore' });
+    const generated = fs.readFileSync(path.join(dir, 'bilibili-save.user.js'), 'utf8');
+    assert.ok(!generated.includes('// 【备注】'), '打包备注跟着构建产物跑出去了');
+    assert.ok(generated.includes('// ==UserScript=='), '生成物不像用户脚本');
+    execFileSync(process.execPath, ['--check', path.join(dir, 'bilibili-save.user.js')], { stdio: 'ignore' });
+    assert.ok(fs.existsSync(path.join(dir, '便携版', 'bilibili-save.user.js')), '便携版产物没生成');
+});
+
 check('源码版：带上源码、构建与打包工具，不带生成物', () => {
-    const r = pack.buildEdition(specOf('source'), TMP);
+    const r = buildOnce(specOf('source'));
     const names = listZip(r.zipPath).map(e => e.name.split('/').slice(1).join('/'));
     for (const want of ['src/bilibili-save.user.js', 'src/lib/browser-save.js', 'build.js', 'pack/pack.js', 'pack/zip.js',
-        'package.json', 'README.md', '.gitignore', '使用说明.txt',
+        'package.json', 'README.md', '.gitignore', '使用说明.txt', 'watermark/wechat_qr.jpg',
         '一键启动.bat', 'save_images_server.js', '便携版/使用说明.txt']) {
         assert.ok(names.includes(want), '少了 ' + want);
     }
@@ -336,7 +434,7 @@ check('源码版：带上源码、构建与打包工具，不带生成物', () =
 });
 
 check('source 版 README 备注不会破坏 Markdown 标题', () => {
-    const r = pack.buildEdition(specOf('source'), TMP);
+    const r = buildOnce(specOf('source'));
     const readme = r.items.find(i => i.to === 'README.md').data.toString('utf8');
     assert.ok(readme.startsWith('> 【备注】'));
     assert.ok(/^# /m.test(readme), 'README 的一级标题不见了');

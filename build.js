@@ -36,6 +36,11 @@ const MODES = {
     }
 };
 
+// 打包器（pack/notes.js）会往源码文件里插一行「// 【备注】…」说明它是什么。
+// 这一行只是给下载包的人看的，构建时要剥掉，否则会跟着产物跑出去。
+const PACK_NOTE_RE = /^[ \t]*\/\/ 【备注】[^\n]*\n/gm;
+const stripPackNote = text => text.replace(PACK_NOTE_RE, '');
+
 // 内联 src/lib/*.js：把标记行换成库文件内容（缩进对齐宿主）
 function inlineLibs(text) {
     const re = /^([ \t]*)\/\* @@INLINE:lib\/([\w.-]+)@@ \*\/[ \t]*$/gm;
@@ -44,7 +49,8 @@ function inlineLibs(text) {
         replaced++;
         const filePath = path.join(LIB_DIR, file);
         if (!fs.existsSync(filePath)) throw new Error('内联失败，找不到库文件：' + filePath);
-        const body = fs.readFileSync(filePath, 'utf8').replace(/\r\n/g, '\n').replace(/\s+$/, '');
+        const body = stripPackNote(fs.readFileSync(filePath, 'utf8'))
+            .replace(/\r\n/g, '\n').replace(/\s+$/, '');
         const indented = body.split('\n').map(l => (l ? indent + l : l)).join('\n');
         return indented;
     });
@@ -81,7 +87,7 @@ function main() {
         console.error('找不到源文件：' + SRC_FILE);
         process.exit(1);
     }
-    const src = fs.readFileSync(SRC_FILE, 'utf8').replace(/\r\n/g, '\n');
+    const src = stripPackNote(fs.readFileSync(SRC_FILE, 'utf8')).replace(/\r\n/g, '\n');
     const inlined = inlineLibs(src);
     const libBytes = fs.statSync(path.join(LIB_DIR, 'browser-save.js')).size;
 
