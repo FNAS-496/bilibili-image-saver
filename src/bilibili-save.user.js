@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）@@NAME_SUFFIX@@
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader@@NAME_SUFFIX_EN@@
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.32
+// @version      0.9.33
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
