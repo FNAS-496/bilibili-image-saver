@@ -16,6 +16,10 @@
 // @grant        GM_xmlhttpRequest
 // @connect      hdslb.com
 // @connect      bilibili.com
+// @connect      bilivideo.com
+// @connect      bilivideo.cn
+// @connect      akamaized.net
+// @connect      mountaintoys.cn
 // @connect      127.0.0.1
 // @noframes
 // @license      CC BY-NC-SA 4.0
@@ -328,32 +332,37 @@
     // ========================================================================
     // 五、网络抓取
     // ========================================================================
-    // 抓取文本内容（优先 GM_xmlhttpRequest，带 cookie 与超时）
+    // 抓取文本内容（优先 GM_xmlhttpRequest，带 cookie 与超时；GM 失败退回普通 fetch）
     async function fetchText(url){
+        let gmError = null;
         if(typeof GM_xmlhttpRequest === 'function'){
-            return new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url,
-                    responseType: 'text',
-                    withCredentials: true,
-                    timeout: 20000,
-                    headers: {
-                        'User-Agent': navigator.userAgent,
-                        'Referer': 'https://www.bilibili.com/',
-                        'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8'
-                    },
-                    onload: function(response){
-                        if(response.status >= 200 && response.status < 300){
-                            resolve(response.responseText);
-                        } else {
-                            reject(new Error('GM fetch failed ' + response.status + ' for ' + url));
-                        }
-                    },
-                    onerror: function(){ reject(new Error('GM fetch error for ' + url)); },
-                    ontimeout: function(){ reject(new Error('GM fetch timeout for ' + url)); }
+            try{
+                return await new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url,
+                        responseType: 'text',
+                        withCredentials: true,
+                        timeout: 20000,
+                        headers: {
+                            'User-Agent': navigator.userAgent,
+                            'Referer': 'https://www.bilibili.com/',
+                            'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8'
+                        },
+                        onload: function(response){
+                            if(response.status >= 200 && response.status < 300){
+                                resolve(response.responseText);
+                            } else {
+                                reject(new Error('GM fetch failed ' + response.status + ' for ' + url));
+                            }
+                        },
+                        onerror: function(){ reject(new Error('GM fetch error for ' + url)); },
+                        ontimeout: function(){ reject(new Error('GM fetch timeout for ' + url)); }
+                    });
                 });
-            });
+            }catch(err){
+                gmError = err;   // 比如管理器不接受某个请求头：别让整个功能就此瘫痪，退回 fetch
+            }
         }
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 20000);
@@ -361,7 +370,10 @@
             const resp = await fetch(url, { credentials: 'include', signal: controller.signal });
             if(!resp.ok) throw new Error('Fetch failed ' + resp.status + ' for ' + url);
             return await resp.text();
-        } finally {
+        }catch(err){
+            if(gmError) throw new Error('GM 通道：' + gmError.message + '；直接请求：' + err.message);
+            throw err;
+        }finally{
             clearTimeout(timer);
         }
     }
@@ -516,20 +528,80 @@
     // ========================================================================
     // 七·五、便携版保存通道（纯浏览器：零 Node、零 ffmpeg）
     // ========================================================================
-    // 取字节（裸请求即可：CDN 返回 Access-Control-Allow-Origin: *，不需要 cookie）
+    // 媒体字节请求：B 站视频 CDN（upos-*.bilivideo.com）会校验 Referer，不带就直接 403；
+    // 图片 CDN（hdslb.com）不校验，所以这个坑只有视频才会踩到。
+    // fetch 不允许手写 Referer（禁止头），因此优先用 GM_xmlhttpRequest 显式带上；
+    // 退回 fetch 时也绝不能把 Referer 抹掉（referrerPolicy 设成 no-referrer 就等于自断生路）。
+    const MEDIA_REFERER = 'https://www.bilibili.com/';
+
+    function pickContentType(headerText){
+        const m = /^content-type:\s*([^\r\n;]+)/im.exec(String(headerText || ''));
+        return m ? m[1].trim().toLowerCase() : '';
+    }
+
+    function assertMediaType(type){
+        if(type.includes('text/html') || type.includes('application/json')){
+            throw new Error('返回了 ' + type + '（可能是风控页）');
+        }
+    }
+
+    function httpStatusError(status){
+        // 403 基本都是 CDN 嫌弃 Referer 或者下载地址过期：给一句人能看懂的提示
+        return status === 403
+            ? new Error('HTTP 403（CDN 拒绝：Referer 缺失或下载地址已过期，重新打开面板获取新地址再试）')
+            : new Error('HTTP ' + status);
+    }
+
+    function toBytes(buf){
+        if(!buf) return null;
+        if(buf instanceof ArrayBuffer) return new Uint8Array(buf);
+        if(ArrayBuffer.isView(buf)) return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+        return null;
+    }
+
+    // GM 通道：能显式带 Referer，且不受 CORS 限制
+    function gmFetchBytes(url, timeoutMs){
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                responseType: 'arraybuffer',
+                timeout: timeoutMs || 30000,
+                headers: { 'Referer': MEDIA_REFERER },
+                onload: function(res){
+                    if(res.status < 200 || res.status >= 300){ reject(httpStatusError(res.status)); return; }
+                    try{ assertMediaType(pickContentType(res.responseHeaders)); }
+                    catch(e){ reject(e); return; }
+                    const bytes = toBytes(res.response);
+                    if(!bytes){ reject(new Error('响应不是二进制（responseType 未生效？）')); return; }
+                    resolve(bytes);
+                },
+                onerror: () => reject(new Error('请求失败（网络或风控）')),
+                ontimeout: () => reject(new Error('timeout'))
+            });
+        });
+    }
+
+    // 取字节：GM 优先（带 Referer），失败退回普通 fetch（浏览器会自动带上页面 Referer）
     async function fetchBytes(url, timeoutMs){
+        let gmError = null;
+        if(typeof GM_xmlhttpRequest === 'function'){
+            try{
+                return await gmFetchBytes(url, timeoutMs);
+            }catch(err){
+                gmError = err;
+            }
+        }
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), (timeoutMs || 30000));
         try{
-            const res = await fetch(url, { referrerPolicy:'no-referrer', signal: controller.signal });
-            if(!res.ok) throw new Error('HTTP ' + res.status);
-            const type = res.headers.get('content-type') || '';
-            if(type.includes('text/html') || type.includes('application/json')){
-                throw new Error('返回了 ' + type + '（可能是风控页）');
-            }
+            const res = await fetch(url, { signal: controller.signal });
+            if(!res.ok) throw httpStatusError(res.status);
+            assertMediaType((res.headers.get('content-type') || '').toLowerCase());
             return new Uint8Array(await res.arrayBuffer());
         }catch(err){
             if(err.name === 'AbortError') throw new Error('timeout');
+            if(gmError) throw new Error('GM 通道：' + gmError.message + '；直接请求：' + err.message);
             throw err;
         }finally{
             clearTimeout(timer);
@@ -590,24 +662,36 @@
     // 边下边写：响应体不整块进内存，直接流进授权目录；失败时只清掉本次自己写的半成品
     async function fetchToDir(dir, filename, url, timeoutMs, skipExisting){
         if(skipExisting && await fileExistsInDir(dir, filename)) return false;
+        const limit = timeoutMs || 30000;
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), (timeoutMs || 30000));
+        const timer = setTimeout(() => controller.abort(), limit);
         let started = false;
+        let w = null;
         try{
-            const res = await fetch(url, { referrerPolicy:'no-referrer', signal: controller.signal });
-            if(!res.ok) throw new Error('HTTP ' + res.status);
-            const type = res.headers.get('content-type') || '';
-            if(type.includes('text/html') || type.includes('application/json')){
-                throw new Error('返回了 ' + type + '（可能是风控页）');
-            }
+            // 同样不能把 Referer 抹掉（视频 CDN 校验 Referer，去掉就 403）
+            const res = await fetch(url, { signal: controller.signal });
+            if(!res.ok) throw httpStatusError(res.status);
+            assertMediaType((res.headers.get('content-type') || '').toLowerCase());
             const fh = await dir.getFileHandle(filename, { create:true });
-            const w = await fh.createWritable();
+            w = await fh.createWritable();
             started = true;                          // create:true 会截断同名文件，从这里开始这个文件才算「本次写的」
-            await res.body.pipeTo(w);
+            if(res.body && typeof res.body.pipeTo === 'function'){
+                await res.body.pipeTo(w);
+            }else{
+                await w.write(await res.arrayBuffer());
+                await w.close();
+            }
+            w = null;
             return true;
         }catch(err){
+            if(w){ try{ await w.abort(); }catch(e){} }
             if(started){ try{ await dir.removeEntry(filename); }catch(e){} }
-            if(err.name === 'AbortError') throw new Error('timeout');
+            if(err.name === 'AbortError') err = new Error('timeout');
+            // 流式 fetch 走不通（CORS / 风控 / Referer 被抹掉）就退回 GM 取字节再落盘
+            if(!started && typeof GM_xmlhttpRequest === 'function'){
+                const bytes = await fetchBytes(url, limit);
+                return (await writeBlobToDir(dir, filename, new Blob([bytes]), skipExisting)) !== false;
+            }
             throw err;
         }finally{
             clearTimeout(timer);

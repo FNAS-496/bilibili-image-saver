@@ -216,6 +216,31 @@ const runBuildChecks = () => {
         if (!fs.existsSync(p)) return;
         assert.ok(fs.readFileSync(p, 'utf8').includes("const BUILD_MODE = 'full'"));
     });
+
+    // ── 媒体请求必须带 Referer：B 站视频 CDN（upos-*.bilivideo.com）不带 Referer 一律 403 ──
+    // （曾经便携版用 referrerPolicy:'no-referrer' 把 Referer 删掉，导致视频一个都下不动）
+    // 只看代码不看注释：整行注释会先被剥掉（注意别按 '//' 硬切，URL 里也有 '//'）
+    const codeOnly = text => text.split('\n').map(l => (/^\s*\/\//.test(l) ? '' : l)).join('\n');
+    for (const [label, file] of [['便携版', portable], ['环境版', full]]) {
+        check(label + '：取媒体字节不抹掉 Referer（否则视频 CDN 403）', () => {
+            const code = codeOnly(fs.readFileSync(file, 'utf8'));
+            assert.ok(!/referrerPolicy\s*:\s*['"]no-referrer['"]/.test(code), '不能把 Referer 剥掉');
+            assert.ok(code.includes("const MEDIA_REFERER = 'https://www.bilibili.com/'"), '缺少媒体 Referer 常量');
+            assert.ok(/headers:\s*\{\s*'Referer':\s*MEDIA_REFERER\s*\}/.test(code), 'GM 通道没带 Referer');
+        });
+        check(label + '：GM 取字节失败会退回 fetch（不因一个通道坏掉就全废）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            const fn = t.slice(t.indexOf('async function fetchBytes'), t.indexOf('async function fetchBytes') + 1600);
+            assert.ok(fn.includes('await gmFetchBytes('), 'fetchBytes 没先走 GM');
+            assert.ok(fn.includes('await fetch(url, { signal: controller.signal })'), 'fetchBytes 没有 fetch 兜底');
+        });
+        check(label + '：声明了视频 CDN 的 @connect（否则 GM 到不了 CDN）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(/@connect\s+bilivideo\.com/.test(t), '缺 @connect bilivideo.com');
+            assert.ok(/@connect\s+bilivideo\.cn/.test(t), '缺 @connect bilivideo.cn');
+            assert.ok(/@connect\s+mountaintoys\.cn/.test(t), '缺 @connect mountaintoys.cn（B 站 P2P 边缘 CDN）');
+        });
+    }
 };
 
 (async () => {
