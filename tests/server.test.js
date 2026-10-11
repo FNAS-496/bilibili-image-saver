@@ -91,6 +91,16 @@ check('normalizeImageUrl：补协议 / 去缩略参数 / webp→jpg / 去 hash',
     assert.strictEqual(S.normalizeImageUrl('https://i0.hdslb.com/bfs/a.jpg#frag'), 'https://i0.hdslb.com/bfs/a.jpg');
 });
 
+// 「🔄 重下」靠 force 打通三个环节：读请求体 → 跳过查重 → 传进保存流程
+check('视频支持 force 重下（跳过查重、覆盖同名文件）', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'save_images_server.js'), 'utf8');
+    assert.ok(/const force = !!payload\.force;/.test(src), '/video/save 没读请求体里的 force');
+    assert.ok(/async function saveVideo\(item, index, job, force\)/.test(src), 'saveVideo 没有接 force 参数');
+    assert.ok(/if\(!force && fileHasContent\(outMp4\)\)/.test(src), 'force 没有跳过 mp4 查重');
+    assert.ok(/if\(!force && audioUrl && !hasFfmpeg/.test(src), 'force 没有跳过「音画分开」产物的查重');
+    assert.ok(/await saveVideo\(v, i \+ 1, job, force\)/.test(src), 'force 没传进保存流程');
+});
+
 try {
     fs.rmSync(TMP, { recursive: true, force: true });
 } catch (e) { /* 临时目录删不掉不影响结果 */ }

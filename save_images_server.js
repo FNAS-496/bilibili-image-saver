@@ -403,7 +403,8 @@ function mergeWithFfmpeg(videoPath, audioPath, outPath){
 // 四、视频保存
 // ========================================================================
 // 保存单个视频：下载流 → 有 ffmpeg 则合并，否则音画分开保存
-async function saveVideo(item, index, job){
+// force = true（用户点了「🔄 重下」）：跳过查重，重新下载并覆盖同名文件
+async function saveVideo(item, index, job, force){
     const rawTitle = String(item.title || '').trim();
     const safeTitle = sanitizeFilename(rawTitle) || `video_${index}`;
     const bvid = sanitizeFilename(String(item.bvid || '').trim());
@@ -421,14 +422,14 @@ async function saveVideo(item, index, job){
     const aOnly = assertInsideDir(VIDEO_OUT_DIR, path.join(VIDEO_OUT_DIR, base + '.audio.m4a'));
     const identity = { title: rawTitle, bvid: item.bvid || '', cid: (item.cid == null ? null : item.cid), multiPart: !!item.multiPart };
 
-    if(fileHasContent(outMp4)){
+    if(!force && fileHasContent(outMp4)){
         return Object.assign({ saved: outMp4, exists: true }, identity);
     }
 
     // 没装 ffmpeg 时产物是 .video/.audio 两个文件，它们也要参与查重，
     // 不然每次重下都会白下一遍（还会覆盖掉已经下好的）
     const hasFfmpeg = audioUrl ? await ffmpegAvailable() : false;
-    if(audioUrl && !hasFfmpeg && fileHasContent(vOnly) && fileHasContent(aOnly)){
+    if(!force && audioUrl && !hasFfmpeg && fileHasContent(vOnly) && fileHasContent(aOnly)){
         return Object.assign({ saved: vOnly, audio: aOnly, exists: true, note: '音画分开的产物已存在' }, identity);
     }
 
@@ -638,6 +639,7 @@ const server = http.createServer((req, res) => {
                 res.end(JSON.stringify({ ok:false, error:'no videos provided' }));
                 return;
             }
+            const force = !!payload.force;                     // 客户端点了「🔄 重下」：跳过查重，重下并覆盖同名文件
             const jobId = (payload.jobId && String(payload.jobId).trim()) || ('job_' + (++videoJobSeq));
             if(videoJobs.size > 20){ videoJobs.delete(videoJobs.keys().next().value); }
             const job = {
@@ -662,7 +664,7 @@ const server = http.createServer((req, res) => {
                         job.phase = 'downloading';
                         job.bytes = 0; job.bytesTotal = 0;
                         try{
-                            const result = await saveVideo(v, i + 1, job);
+                            const result = await saveVideo(v, i + 1, job, force);
                             results[i] = result;                  // 按下标落位：返回顺序必须与请求顺序一致
                             job.done++;
                             if(result.exists) console.log('Video exists (skip)', result.saved);

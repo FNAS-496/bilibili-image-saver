@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.38
+// @version      0.9.39
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -1448,7 +1448,9 @@
     }
 
     // 便携版：批量下载视频（官方 mp4 单文件直存；仅 DASH 时音画分开存并提示一次）
-    async function saveVideosInBrowser(items, ui){
+    // opts.force = true 表示「重新下载」：覆盖同名文件，也不看「已下载」记账
+    async function saveVideosInBrowser(items, ui, opts){
+        const force = !!(opts && opts.force);
         const settings = Object.assign({}, DEFAULT_SETTINGS, loadSettings());
         const wantDir = settings.portableSave === 'dir' && FSA_SUPPORTED;
         const dir = await getBrowserDirHandle(wantDir);
@@ -1570,7 +1572,7 @@
                     const aName = base + '.audio.m4a';
                     if(merged){
                         if(dir){
-                            await writeBlobToDir(dir, mName, new Blob([merged]), true);
+                            await writeBlobToDir(dir, mName, new Blob([merged]), !force);
                         }else{
                             triggerBlobDownload(new Blob([merged]), mName);
                         }
@@ -1578,8 +1580,8 @@
                     }else{
                         // 合并失败：数据已经下到内存了，照样写成文件，用户不会白下
                         if(dir){
-                            await writeBlobToDir(dir, vName, new Blob([vBytes]), true);
-                            await writeBlobToDir(dir, aName, new Blob([aBytes]), true);
+                            await writeBlobToDir(dir, vName, new Blob([vBytes]), !force);
+                            await writeBlobToDir(dir, aName, new Blob([aBytes]), !force);
                         }else{
                             triggerBlobDownload(new Blob([vBytes]), vName);
                             await sleep(500);
@@ -1593,11 +1595,11 @@
                     const aName = base + '.audio.m4a';
                     if(dir){
                         // 目录模式：边下边写，不整块进内存；已有同名文件就跳过（不覆盖用户文件）
-                        const wroteVideo = await fetchToDir(dir, vName, it.videoUrl, 600000, true, fileProgress(i, '⬇️ 视频流'));
+                        const wroteVideo = await fetchToDir(dir, vName, it.videoUrl, 600000, !force, fileProgress(i, '⬇️ 视频流'));
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
                         let wroteAudio = true;
                         try{
-                            wroteAudio = await fetchToDir(dir, aName, it.audioUrl, 600000, true, fileProgress(i, '🎵 音频流'));
+                            wroteAudio = await fetchToDir(dir, aName, it.audioUrl, 600000, !force, fileProgress(i, '🎵 音频流'));
                         }catch(e){
                             // 只清掉本次自己写的那个文件，别动用户原有的
                             if(wroteVideo !== false){ try{ await dir.removeEntry(vName); }catch(_e){} }
@@ -1621,7 +1623,7 @@
                 }else{
                     const name = base + '.' + (it.ext || 'mp4');
                     if(dir){
-                        const wrote = await fetchToDir(dir, name, it.videoUrl, 600000, true, fileProgress(i, '⬇️ 下载中'));
+                        const wrote = await fetchToDir(dir, name, it.videoUrl, 600000, !force, fileProgress(i, '⬇️ 下载中'));
                         results.push({ idx:i, bvid: it.bvid, title: it.title, saved: name, exists: wrote === false });
                     }else{
                         const bytes = await fetchBytes(it.videoUrl, 600000, fileProgress(i, '⬇️ 下载中'));
@@ -3391,7 +3393,7 @@
         //   items      : 列表项
         //   downloaded : 已下载集合，键 = videoKey(项)（BV 号；多 P 再加 #cid）
         //   checked    : 已勾选的项，存对象引用而非下标 —— 列表重绘（fillCids 会 splice 展开分P）后仍能保持勾选
-        const state = { items: [], ready: false, downloaded: new Set(), checked: new Set() };
+        const state = { items: [], ready: false, downloaded: new Set(), checked: new Set(), force: false };
         const dlBtnEl = panel.querySelector('#bili-video-dl');
 
         // 同步「下载选中」按钮上的数量提示
@@ -3414,7 +3416,11 @@
                 const q = it.quality ? (' · ' + qualityLabel(it.quality)) : '';
                 const err = it.error ? ' · <span style="color:#f00;">获取失败</span>'
                     : (it.errorMsg ? ' · <span style="color:#f00;" title="' + escapeHtml(it.errorMsg) + '">下载失败</span>' : '');
-                const done = state.downloaded.has(videoKey(it)) ? ' · <span style="color:#00a85d;">✅ 已下载</span>' : '';
+                // 已下载的项给一个「重新下载」入口：不看记账、覆盖同名文件重拿一遍
+                const done = state.downloaded.has(videoKey(it))
+                    ? ' · <span style="color:#00a85d;">✅ 已下载</span>' +
+                        ' <button class="bili-video-redl" data-i="' + i + '" title="重新下载这个视频（覆盖同名文件）" style="padding:0 6px;border:1px solid #ffa940;background:#fff;color:#fa8c16;border-radius:4px;cursor:pointer;font-size:11px;line-height:16px;">🔄 重下</button>'
+                    : '';
                 const ck = state.checked.has(it) ? ' checked' : '';
                 return '<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid #f2f2f2;cursor:pointer;">' +
                     '<input type="checkbox" class="bili-video-check" data-i="' + i + '"' + ck + ' style="flex-shrink:0;">' +
@@ -3423,6 +3429,23 @@
                     '</label>';
             }).join('');
         };
+
+        // 点「🔄 重下」：只下这一项，强制模式（覆盖同名文件），复用「下载选中」的全套流程
+        listEl.addEventListener('click', e => {
+            const btn = e.target && e.target.closest ? e.target.closest('.bili-video-redl') : null;
+            if(!btn) return;
+            e.preventDefault();                        // 列表项是 <label>，不拦一下会顺手把勾选也切了
+            e.stopPropagation();
+            const it = state.items[Number(btn.getAttribute('data-i'))];
+            if(!it) return;
+            state.checked.clear();
+            state.checked.add(it);
+            state.force = true;                        // 告诉「下载选中」：别跳过已下载
+            render();
+            refreshDlBtn();
+            const dlBtn2 = panel.querySelector('#bili-video-dl');
+            if(dlBtn2) dlBtn2.click();
+        });
 
         // ── 补齐 cid（仅当前视频/收藏夹项；合集项 cid 已知，跳过）──
         const fillCids = async () => {
@@ -3498,10 +3521,11 @@
             // 以 state.checked 为准：勾选状态由事件委托维护，不受列表重绘影响
             const picked = Array.from(state.checked).filter(it => state.items.indexOf(it) >= 0);
             if(!picked.length){ showToast('请先勾选视频'); return; }
-            // 已下载的项直接跳过（服务端也会跳过，这里省掉多余请求）
-            const skippedDone = picked.filter(it => state.downloaded.has(videoKey(it))).length;
-            const targets = picked.filter(it => !state.downloaded.has(videoKey(it)));
-            if(!targets.length){ showToast('所选视频都已经下载过了（如需重新下载，请先删除本地文件）'); return; }
+            // 已下载的默认跳过（省掉多余请求）；点列表里的「🔄 重下」则强制重下、覆盖同名文件
+            const force = !!state.force;
+            state.force = false;
+            const targets = force ? picked : picked.filter(it => !state.downloaded.has(videoKey(it)));
+            if(!targets.length){ showToast('所选视频都已经下载过了\n想重下就点列表里那个「🔄 重下」喵'); return; }
             const dlBtn = dlBtnEl || panel.querySelector('#bili-video-dl');
             const progEl = panel.querySelector('#bili-video-progress');
             const progText = panel.querySelector('#bili-video-prog-text');
@@ -3556,7 +3580,7 @@
             try{
                 // 便携版：不经过本地服务，直接由浏览器下载
                 if(IS_PORTABLE){
-                    const res = await saveVideosInBrowser(chosen, { progText: progText, progSub: progSub, progBar: progBar, progPct: progPct });
+                    const res = await saveVideosInBrowser(chosen, { progText: progText, progSub: progSub, progBar: progBar, progPct: progPct }, { force: force });
                     // 只有真正下载成功的才记账：失败的留着，下次还能重试
                     const okIdx = new Set(((res && res.results) || []).filter(r => r && r.saved && !r.error).map(r => r.idx));
                     const okItems = chosen.filter((it, i) => okIdx.has(i));
@@ -3576,7 +3600,7 @@
                     if(res && res.saved > 0) showDonatePanel({ saved: res.saved, exists: 0, failed: res.failed || 0 });
                     return;                                       // finally 里会恢复按钮状态
                 }
-                const startJson = await postJsonToPath('/video/save', { videos, jobId });
+                const startJson = await postJsonToPath('/video/save', { videos, jobId, force });
                 if(!(startJson && startJson.ok)) throw new Error((startJson && startJson.error) || '启动下载失败');
                 const activeJobId = startJson.jobId || jobId;
                 let summary = null;

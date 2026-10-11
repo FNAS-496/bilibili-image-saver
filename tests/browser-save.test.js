@@ -307,6 +307,15 @@ const runBuildChecks = () => {
             const seg2 = t.slice(at2, at2 + 900);
             assert.ok(/maxHeight:'calc\(100vh - \d+px\)'/.test(seg2), '视频面板高度没用视口算，小屏会顶出去');
         });
+        check(label + '：已下载的能重新下载（force 覆盖，不再被记账挡住）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(/bili-video-redl/.test(t), '列表里没有「重新下载」入口');
+            assert.ok(/state\.force = true/.test(t), '点「重下」没有置强制标记');
+            assert.ok(/const targets = force \? picked : picked\.filter/.test(t), '强制重下时仍会被「已下载」过滤掉');
+            assert.ok(/async function saveVideosInBrowser\(items, ui, opts\)/.test(t), 'saveVideosInBrowser 没接 force');
+            assert.ok(/, !force, fileProgress/.test(t), '目录模式落盘没按 force 覆盖同名文件');
+            assert.ok(/postJsonToPath\('\/video\/save', \{ videos, jobId, force \}\)/.test(t), '环境版没把 force 传给服务端');
+        });
         check(label + '：音画合并（合并不了必须退回分开存）', () => {
             const t = fs.readFileSync(file, 'utf8');
             assert.ok(/const wantMerge = it =>/.test(t), '缺合并判定');
