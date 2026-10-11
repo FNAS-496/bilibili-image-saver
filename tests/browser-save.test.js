@@ -260,6 +260,19 @@ const runBuildChecks = () => {
             assert.ok(t.includes("'4048&qn='"), '没有用 fnval=4048 请求 DASH');
             assert.ok(!/\bfnval='\s*\+\s*16\b|146\b(?!\d)/.test(t), '疑似还残留 fnval=16 的旧写法');
         });
+        check(label + '：未登录时补 try_look=1（实测画质上限 480P → 1080P）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(t.includes("'&try_look=1'"), '没带 try_look，未登录用户会被白白限制在 480P');
+            assert.ok(/async function detectLoggedIn\(/.test(t), '缺登录态探测，会误伤已登录用户');
+            assert.ok(/detectLoggedIn\(\)\) \? '' : '&try_look=1'/.test(t), 'try_look 不是「仅未登录才带」');
+            assert.ok(/loggedInProbe = null;/.test(t), '登录态探测结果没有失效机制');
+        });
+        check(label + '：同画质多编码时优先 avc1（不依赖 B 站返回顺序）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(/const codecRank = /.test(t), '缺编码优先级表');
+            assert.ok(/codecRank\(a\.codecs\) - codecRank\(b\.codecs\)/.test(t), 'pickStream 排序没用上编码优先级');
+            assert.ok(/indexOf\('avc1'\) === 0/.test(t), '没有把 avc1 排在最前');
+        });
     }
     check('便携版：点名更高画质时会改用 DASH，且不比单文件更差才采用', () => {
         const code = codeOnly(fs.readFileSync(portable, 'utf8'));

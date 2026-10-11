@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）（便携版·无需环境）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader (Portable)
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.34
+// @version      0.9.35
 // @author       FNAS-496 <sijiudeliu@outlook.com>
 // @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、日夜主题（默认不自动下载，需点击按钮）；便携版纯浏览器运行，无需安装任何环境）
 // @description:en Bilibili-Plus: auto-download original images from Bilibili favorites, dynamics, opus and space pages; video batch download, review mode, custom keys (needs the local server started via "一键启动.bat")
@@ -2567,11 +2567,21 @@
         { id: 32,  label: '480P 清晰' },
         { id: 16,  label: '360P 流畅' }
     ];
+    // 同一画质档会同时给多种编码（avc1 / hvc1 / av01）：优先 avc1 —— 兼容性最好，用户下完直接用播放器就能放。
+    // B 站目前返回顺序通常是 avc1 在前，但不能依赖顺序（Bilibili-Evolved 也是显式优先 AVC）
+    const codecRank = c => {
+        const s = String(c || '').toLowerCase();
+        if(s.indexOf('avc1') === 0) return 0;
+        if(s.indexOf('hvc1') === 0 || s.indexOf('hev1') === 0) return 1;
+        if(s.indexOf('av01') === 0) return 2;
+        return 3;
+    };
     // 在候选流里按目标画质挑一个：自动=最高；点名了就先要精确匹配，
     // 没有就退到「不超过它但最接近」的档位（B 站本身也会这样降级），最后兜底取最低可用
     function pickStream(list, targetQn){
         if(!Array.isArray(list) || !list.length) return null;
-        const sorted = list.slice().sort((a, b) => (b.id || 0) - (a.id || 0));
+        const sorted = list.slice().sort((a, b) =>
+            ((b.id || 0) - (a.id || 0)) || (codecRank(a.codecs) - codecRank(b.codecs)));
         if(!targetQn) return sorted[0];
         return sorted.find(x => x.id === targetQn)
             || sorted.find(x => (x.id || 0) < targetQn)
@@ -2708,6 +2718,21 @@
         return null;
     }
 
+    // 是否已登录：浏览器里读不到 HttpOnly 的 SESSDATA，问接口最靠谱（走同源带 Cookie）。
+    // 未登录时给 playurl 带 try_look=1 —— 实测能把可用画质从 480P 提到 1080P；
+    // yt-dlp / BBDown 同样是「未登录才带」（登录时带可能被当成试看），所以探测失败时按已登录处理，保守不动
+    let loggedInProbe = null;
+    async function detectLoggedIn(){
+        if(loggedInProbe !== null) return loggedInProbe;
+        try{
+            const j = JSON.parse(await fetchText('https://api.bilibili.com/x/web-interface/nav'));
+            loggedInProbe = !!(j && j.data && j.data.isLogin);
+        }catch(e){
+            loggedInProbe = true;
+        }
+        return loggedInProbe;
+    }
+
     // 解析 DASH 结果（抽出来复用：便携版要在「单文件 durl」与 DASH 之间比一下谁更清晰）
     function parseDashStream(data, target){
         const dash = data && data.dash;
@@ -2750,9 +2775,11 @@
         const target = Number(targetQn) || 0;
         const streamApi = 'https://api.bilibili.com/x/player/playurl?' + videoIdParam(id) + '&cid=' + cid +
             '&fourk=1&fnval=';
+        // 未登录时补 try_look=1（实测画质上限 480P → 1080P，两个视频都验证过）
+        const tryLook = (await detectLoggedIn()) ? '' : '&try_look=1';
         const getData = async query => {
             try{
-                const j = JSON.parse(await fetchText(streamApi + query));
+                const j = JSON.parse(await fetchText(streamApi + query + tryLook));
                 return (j && j.code === 0 && j.data) ? j.data : null;
             }catch(e){
                 return null;
@@ -2810,6 +2837,7 @@
 
     // 视频下载面板：列表 / 大小画质 / 下载进度
     function openVideoPanel(){
+        loggedInProbe = null;                          // 每次开面板重新探测登录态（用户可能中途登录/登出）
         const existing = document.getElementById('bili-video-panel');
         if(existing){ existing.remove(); }
         const panel = document.createElement('div');
