@@ -1,0 +1,10 @@
+# 二进制文件一律不做换行转换（core.autocrlf 会把它们改坏）
+*.m4s  binary
+*.mp4  binary
+*.zip  binary
+*.jpg  binary
+*.jpeg binary
+*.png  binary
+*.webp binary
+*.exe  binary
+*.dll  binary
