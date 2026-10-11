@@ -75,6 +75,12 @@ check('shouldMerge：正常体积放行，超限与非法值挡住', () => {
     assert.strictEqual(DM.shouldMerge(5000, 1000), false, '给上限时按上限判断');
 });
 
+check('合并上限不能调太大（实测内存约 2.3 倍输入，超了会把标签页搞崩）', () => {
+    assert.ok(DM.MAX_MERGE_BYTES <= 512 * 1024 * 1024,
+        '上限超过 512MB：按实测「内存 ≈ 2.32 倍输入 + 9MB」，峰值会超过 1.2GB');
+    assert.ok(DM.MAX_MERGE_BYTES >= 64 * 1024 * 1024, '上限太小，白白放弃合并能力');
+});
+
 check('合并组件可用（MP4Box 已内联 / 可 require）', () => {
     const MP4 = DM.getMP4Box();
     assert.ok(MP4, '取不到 MP4Box');

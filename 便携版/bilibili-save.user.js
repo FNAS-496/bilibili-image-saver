@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）（便携版·无需环境）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader (Portable)
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.36
+// @version      0.9.37
 // @author       FNAS-496 <sijiudeliu@outlook.com>
 // @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、日夜主题（默认不自动下载，需点击按钮）；便携版纯浏览器运行，无需安装任何环境）
 // @description:en Bilibili-Plus: auto-download original images from Bilibili favorites, dynamics, opus and space pages; video batch download, review mode, custom keys (needs the local server started via "一键启动.bat")
@@ -370,9 +370,11 @@
     })(typeof globalThis !== 'undefined' ? globalThis : this, function (root) {
         'use strict';
 
-        // 合计超过这个大小就不合并：合并要把音视频两份原始数据 + 输出同时放进内存，
-        // 峰值约 3 倍体积，再大容易把标签页搞崩（调用方会回退成音画分开保存）
-        const MAX_MERGE_BYTES = 1024 * 1024 * 1024;
+        // 合计超过这个大小就不合并：合并要把音视频两份原始数据 + 输出同时放进内存。
+        // 实测（Node，已热身 / --expose-gc）：内存 ≈ 2.32 倍输入 + 9MB 固定开销，耗时约 4.2ms/MB，
+        // 所以 512MB 输入的峰值约 1.2GB；再往上（比如 1GB）要 2.4GB，标签页容易崩，不值当。
+        // 超限的走「音画分开存」，并提示用户用环境版（服务端 ffmpeg 流式落盘，不吃内存）。
+        const MAX_MERGE_BYTES = 512 * 1024 * 1024;
 
         let cachedMP4Box = null;
 

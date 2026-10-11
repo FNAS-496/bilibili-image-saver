@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.36
+// @version      0.9.37
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -370,9 +370,11 @@
     })(typeof globalThis !== 'undefined' ? globalThis : this, function (root) {
         'use strict';
 
-        // 合计超过这个大小就不合并：合并要把音视频两份原始数据 + 输出同时放进内存，
-        // 峰值约 3 倍体积，再大容易把标签页搞崩（调用方会回退成音画分开保存）
-        const MAX_MERGE_BYTES = 1024 * 1024 * 1024;
+        // 合计超过这个大小就不合并：合并要把音视频两份原始数据 + 输出同时放进内存。
+        // 实测（Node，已热身 / --expose-gc）：内存 ≈ 2.32 倍输入 + 9MB 固定开销，耗时约 4.2ms/MB，
+        // 所以 512MB 输入的峰值约 1.2GB；再往上（比如 1GB）要 2.4GB，标签页容易崩，不值当。
+        // 超限的走「音画分开存」，并提示用户用环境版（服务端 ffmpeg 流式落盘，不吃内存）。
+        const MAX_MERGE_BYTES = 512 * 1024 * 1024;
 
         let cachedMP4Box = null;
 
