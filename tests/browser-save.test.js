@@ -228,11 +228,13 @@ const runBuildChecks = () => {
             assert.ok(code.includes("const MEDIA_REFERER = 'https://www.bilibili.com/'"), '缺少媒体 Referer 常量');
             assert.ok(/headers:\s*\{\s*'Referer':\s*MEDIA_REFERER\s*\}/.test(code), 'GM 通道没带 Referer');
         });
-        check(label + '：GM 取字节失败会退回 fetch（不因一个通道坏掉就全废）', () => {
+        check(label + '：取字节两条通道都在（fetch 优先拿进度，GM 兜底保证能下）', () => {
             const t = fs.readFileSync(file, 'utf8');
-            const fn = t.slice(t.indexOf('async function fetchBytes'), t.indexOf('async function fetchBytes') + 1600);
-            assert.ok(fn.includes('await gmFetchBytes('), 'fetchBytes 没先走 GM');
-            assert.ok(fn.includes('await fetch(url, { signal: controller.signal })'), 'fetchBytes 没有 fetch 兜底');
+            const at = t.indexOf('async function fetchBytes');
+            const fn = t.slice(at, at + 2000);
+            assert.ok(fn.includes('await fetch(url, { signal: controller.signal })'), '缺直接请求通道');
+            assert.ok(t.includes('return await gmFetchBytes(url, timeoutMs, onProgress)'), '缺 GM 兜底通道');
+            assert.ok(fn.includes('res.body.getReader()'), '直接请求通道没走流式读取，拿不到下载进度');
         });
         check(label + '：声明了视频 CDN 的 @connect（否则 GM 到不了 CDN）', () => {
             const t = fs.readFileSync(file, 'utf8');
@@ -241,7 +243,48 @@ const runBuildChecks = () => {
             assert.ok(/@connect\s+mountaintoys\.cn/.test(t), '缺 @connect mountaintoys.cn（B 站 P2P 边缘 CDN）');
         });
     }
-};
+
+    // ── 清晰度选择：便携版默认走 durl（单文件带声音，封顶 720P），
+    //    用户点名更高画质时要能改走 DASH —— 这是「只能下 720P」的修复 ──
+    for (const [label, file] of [['便携版', portable], ['环境版', full]]) {
+        check(label + '：有清晰度选择（下拉 + 档位表 + 按目标挑流）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(t.includes('id="bili-video-quality"'), '面板里没有清晰度下拉');
+            assert.ok(/const QUALITY_CHOICES = \[/.test(t), '缺 QUALITY_CHOICES 档位表');
+            assert.ok(/function pickStream\(/.test(t), '缺 pickStream（按目标画质挑流）');
+            assert.ok(/videoQuality: 0/.test(t), '设置里没有 videoQuality 默认值');
+            assert.ok(/fetchVideoStreams\(it\.bvid, it\.cid, currentQuality\(\)\)/.test(t), '取流时没把选中的清晰度传下去');
+        });
+        check(label + '：取流用 fnval=4048（含 8K/HDR 高位标志），不再是 16', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(t.includes("'4048&qn='"), '没有用 fnval=4048 请求 DASH');
+            assert.ok(!/\bfnval='\s*\+\s*16\b|146\b(?!\d)/.test(t), '疑似还残留 fnval=16 的旧写法');
+        });
+    }
+    check('便携版：点名更高画质时会改用 DASH，且不比单文件更差才采用', () => {
+        const code = codeOnly(fs.readFileSync(portable, 'utf8'));
+        assert.ok(/parseDurlStream\(/.test(code) && /parseDashStream\(/.test(code), '缺 durl / DASH 两个解析器');
+        assert.ok(/\(dashStream\.quality \|\| 0\) > \(durlStream\.quality \|\| 0\)/.test(code),
+            '没有比较 durl 与 DASH 的实际画质就切换（未登录时换 DASH 反而更差）');
+    });
+
+    // ── 下载进度条：两个版本都要在「下载过程中」持续刷新，而不是下完一个文件才跳一格 ──
+    for (const [label, file] of [['便携版', portable], ['环境版', full]]) {
+        check(label + '：下载过程中会持续刷新进度（进度条不再不动）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            if (label === '便携版') {
+                assert.ok(/const fileProgress = /.test(t), '缺 fileProgress（按字节折算整体进度）');
+                assert.ok(/lastPaintAt/.test(t), '缺节流：每个数据块都刷 DOM 会卡');
+                assert.ok(/curEstimate/.test(t), '缺预估大小兜底（服务器不给 content-length 时进度分母为 0）');
+            } else {
+                assert.ok(/const curFrac = /.test(t), '整体进度没把「当前文件已下比例」算进去');
+            }
+            assert.ok(/res\.body\.getReader\(\)/.test(t) || /reader\.read\(\)/.test(t),
+                '取字节没有走流式读取，拿不到下载进度');
+            assert.ok(/onProgress/.test(t), '没有进度回调');
+        });
+    }
+}
 
 (async () => {
     await runZipChecks();

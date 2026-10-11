@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）@@NAME_SUFFIX@@
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader@@NAME_SUFFIX_EN@@
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.33
+// @version      0.9.34
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -78,6 +78,7 @@
         // 便携版：落盘方式 'zip'（打包下载，最省心）| 'dir'（写入授权目录）
         portableSave: 'zip',
         portableVideoSave: 'single',                    // 便携版视频保存方式：single=逐个下载 zip=打包成 ZIP（自动分卷）
+        videoQuality: 0,                                // 视频清晰度（B 站画质码）：0 = 自动（最高可用）
         // 「需要本地环境」的功能：只提示一次（避免反复打扰）
         envNotice: true,
         envNoticeShown: false,
@@ -560,7 +561,7 @@
     }
 
     // GM 通道：能显式带 Referer，且不受 CORS 限制
-    function gmFetchBytes(url, timeoutMs){
+    function gmFetchBytes(url, timeoutMs, onProgress){
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
@@ -568,6 +569,12 @@
                 responseType: 'arraybuffer',
                 timeout: timeoutMs || 30000,
                 headers: { 'Referer': MEDIA_REFERER },
+                onprogress: function(res){
+                    // 有的管理器在 arraybuffer 模式下不给进度：给了就报，没给就算了
+                    if(!onProgress || !res) return;
+                    const loaded = Number(res.loaded) || (res.response && res.response.byteLength) || 0;
+                    if(loaded) onProgress(loaded, Number(res.total) || 0);
+                },
                 onload: function(res){
                     if(res.status < 200 || res.status >= 300){ reject(httpStatusError(res.status)); return; }
                     try{ assertMediaType(pickContentType(res.responseHeaders)); }
@@ -582,30 +589,53 @@
         });
     }
 
-    // 取字节：GM 优先（带 Referer），失败退回普通 fetch（浏览器会自动带上页面 Referer）
-    async function fetchBytes(url, timeoutMs){
-        let gmError = null;
-        if(typeof GM_xmlhttpRequest === 'function'){
-            try{
-                return await gmFetchBytes(url, timeoutMs);
-            }catch(err){
-                gmError = err;
-            }
-        }
+    // 取字节：优先用流式 fetch —— 它能边下边报进度（下载进度条靠这个）；
+    // 直接请求走不通（CORS / 风控 / 被扩展拦）时才退回 GM 通道。
+    async function fetchBytes(url, timeoutMs, onProgress){
+        let fetchError = null;
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), (timeoutMs || 30000));
         try{
             const res = await fetch(url, { signal: controller.signal });
             if(!res.ok) throw httpStatusError(res.status);
             assertMediaType((res.headers.get('content-type') || '').toLowerCase());
-            return new Uint8Array(await res.arrayBuffer());
+            const total = parseInt(res.headers.get('content-length') || '0', 10) || 0;
+            if(res.body && typeof res.body.getReader === 'function'){
+                const reader = res.body.getReader();
+                const chunks = [];
+                let received = 0;
+                for(;;){
+                    const { done, value } = await reader.read();
+                    if(done) break;
+                    if(value && value.length){
+                        chunks.push(value);
+                        received += value.length;
+                        if(onProgress) onProgress(received, total);
+                    }
+                }
+                const out = new Uint8Array(received);
+                let off = 0;
+                for(const c of chunks){ out.set(c, off); off += c.length; }
+                if(onProgress && !received) onProgress(0, total);   // 空响应也报一次，界面不至于一直停在 0
+                return out;
+            }
+            const buf = new Uint8Array(await res.arrayBuffer());
+            if(onProgress) onProgress(buf.length, total || buf.length);
+            return buf;
         }catch(err){
             if(err.name === 'AbortError') throw new Error('timeout');
-            if(gmError) throw new Error('GM 通道：' + gmError.message + '；直接请求：' + err.message);
-            throw err;
+            fetchError = err;
         }finally{
             clearTimeout(timer);
         }
+        if(typeof GM_xmlhttpRequest === 'function'){
+            try{
+                return await gmFetchBytes(url, timeoutMs, onProgress);
+            }catch(err){
+                throw new Error('直接请求：' + fetchError.message + '；GM 通道：' + err.message);
+            }
+        }
+        throw fetchError;
     }
 
     // 授权目录句柄（持久化在 IndexedDB，可跨会话复用）；prompt=true 时才弹选择框
@@ -660,7 +690,7 @@
     }
 
     // 边下边写：响应体不整块进内存，直接流进授权目录；失败时只清掉本次自己写的半成品
-    async function fetchToDir(dir, filename, url, timeoutMs, skipExisting){
+    async function fetchToDir(dir, filename, url, timeoutMs, skipExisting, onProgress){
         if(skipExisting && await fileExistsInDir(dir, filename)) return false;
         const limit = timeoutMs || 30000;
         const controller = new AbortController();
@@ -675,7 +705,22 @@
             const fh = await dir.getFileHandle(filename, { create:true });
             w = await fh.createWritable();
             started = true;                          // create:true 会截断同名文件，从这里开始这个文件才算「本次写的」
-            if(res.body && typeof res.body.pipeTo === 'function'){
+            if(onProgress && res.body && typeof res.body.getReader === 'function'){
+                // 要报进度就自己泵：边收边写边回调
+                const total = parseInt(res.headers.get('content-length') || '0', 10) || 0;
+                const reader = res.body.getReader();
+                let received = 0;
+                for(;;){
+                    const { done, value } = await reader.read();
+                    if(done) break;
+                    if(value && value.length){
+                        received += value.length;
+                        await w.write(value);
+                        onProgress(received, total);
+                    }
+                }
+                await w.close();
+            }else if(res.body && typeof res.body.pipeTo === 'function'){
                 await res.body.pipeTo(w);
             }else{
                 await w.write(await res.arrayBuffer());
@@ -841,8 +886,27 @@
                 showToast('❌ 视频打包失败：' + msg);
             }
         };
+        // 单个文件下载期间也要让进度条动起来：按「已下字节 / 总字节」折算整体百分比
+        // （200ms 节流，避免每个数据块都刷 DOM；服务器没给 content-length 时用预估大小兜底）
+        let lastPaintAt = 0;
+        let curEstimate = 0;
+        const fileProgress = (i, label) => (received, total) => {
+            const tot = total || curEstimate || 0;
+            const frac = tot ? Math.min(1, received / tot) : 0;
+            const now = Date.now();
+            if(frac < 1 && now - lastPaintAt < 200) return;
+            lastPaintAt = now;
+            const overall = Math.min(99, Math.round((i + frac) / items.length * 100));
+            if(ui.progBar) ui.progBar.style.width = overall + '%';
+            if(ui.progPct) ui.progPct.textContent = overall + '%';
+            if(ui.progSub){
+                ui.progSub.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · ' + label + '  ' +
+                    formatSize(received) + (tot ? (' / ' + formatSize(tot)) : '');
+            }
+        };
         for(let i = 0; i < items.length; i++){
             const it = items[i];
+            curEstimate = it.size || 0;                    // 服务器不给 content-length 时的进度分母
             const safeTitle = BS.sanitizeFilename(String(it.title || '').trim()) || ('video_' + (i + 1));
             const base = (safeTitle.length > 60 ? safeTitle.slice(0, 60) : safeTitle) + (it.bvid ? '_' + it.bvid : '')
                 + (it.multiPart && it.cid != null ? '_c' + it.cid : '');   // 多 P 分 P 必须带 cid，否则认不出是哪一 P
@@ -857,12 +921,12 @@
                     showToast('⚠️ 该视频约 ' + formatSize(it.size) + '，要先整块读进内存\n建议在「设置 → 保存位置」选择「写入授权目录」（直接流式写入文件，不占内存）');
                 }
                 if(zipMode){
-                    const vBytes = await fetchBytes(it.videoUrl, 600000);
+                    const vBytes = await fetchBytes(it.videoUrl, 600000, fileProgress(i, '⬇️ 视频流'));
                     const vName = base + (it.audioUrl ? '.video.' : '.') + (it.ext || 'mp4');
                     const r = { idx:i, bvid: it.bvid, title: it.title, saved: vName };
                     if(it.audioUrl){
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
-                        const aBytes = await fetchBytes(it.audioUrl, 600000);
+                        const aBytes = await fetchBytes(it.audioUrl, 600000, fileProgress(i, '🎵 音频流'));
                         const aName = base + '.audio.m4a';
                         pending.push({ name: vName, data: vBytes, item: r });
                         pending.push({ name: aName, data: aBytes, item: r });
@@ -880,11 +944,11 @@
                     const aName = base + '.audio.m4a';
                     if(dir){
                         // 目录模式：边下边写，不整块进内存；已有同名文件就跳过（不覆盖用户文件）
-                        const wroteVideo = await fetchToDir(dir, vName, it.videoUrl, 600000, true);
+                        const wroteVideo = await fetchToDir(dir, vName, it.videoUrl, 600000, true, fileProgress(i, '⬇️ 视频流'));
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
                         let wroteAudio = true;
                         try{
-                            wroteAudio = await fetchToDir(dir, aName, it.audioUrl, 600000, true);
+                            wroteAudio = await fetchToDir(dir, aName, it.audioUrl, 600000, true, fileProgress(i, '🎵 音频流'));
                         }catch(e){
                             // 只清掉本次自己写的那个文件，别动用户原有的
                             if(wroteVideo !== false){ try{ await dir.removeEntry(vName); }catch(_e){} }
@@ -896,9 +960,9 @@
                             continue;                      // 音画两个文件都在，不用重下
                         }
                     }else{
-                        const vBytes = await fetchBytes(it.videoUrl, 600000);
+                        const vBytes = await fetchBytes(it.videoUrl, 600000, fileProgress(i, '⬇️ 视频流'));
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
-                        const aBytes = await fetchBytes(it.audioUrl, 600000);
+                        const aBytes = await fetchBytes(it.audioUrl, 600000, fileProgress(i, '🎵 音频流'));
                         triggerBlobDownload(new Blob([vBytes]), vName);
                         await sleep(500);                      // 稍作间隔，避免浏览器连续下载节流
                         triggerBlobDownload(new Blob([aBytes]), aName);
@@ -908,10 +972,11 @@
                 }else{
                     const name = base + '.' + (it.ext || 'mp4');
                     if(dir){
-                        const wrote = await fetchToDir(dir, name, it.videoUrl, 600000, true);
+                        const wrote = await fetchToDir(dir, name, it.videoUrl, 600000, true, fileProgress(i, '⬇️ 下载中'));
                         results.push({ idx:i, bvid: it.bvid, title: it.title, saved: name, exists: wrote === false });
                     }else{
-                        triggerBlobDownload(new Blob([await fetchBytes(it.videoUrl, 600000)]), name);
+                        const bytes = await fetchBytes(it.videoUrl, 600000, fileProgress(i, '⬇️ 下载中'));
+                        triggerBlobDownload(new Blob([bytes]), name);
                         results.push({ idx:i, bvid: it.bvid, title: it.title, saved: name });
                     }
                 }
@@ -2197,6 +2262,31 @@
         const map = { 127:'8K', 126:'杜比', 125:'HDR', 120:'4K', 116:'1080P60', 112:'1080P+', 80:'1080P', 74:'720P60', 64:'720P', 32:'480P', 16:'360P', 6:'240P' };
         return map[q] || (q ? (q + 'P') : '');
     }
+    // 清晰度下拉里可选的档位（id 越大越清晰；0 = 自动）
+    const QUALITY_CHOICES = [
+        { id: 0,   label: '自动（推荐）' },
+        { id: 127, label: '8K 超高清' },
+        { id: 126, label: '杜比视界' },
+        { id: 125, label: 'HDR 真彩' },
+        { id: 120, label: '4K 超清' },
+        { id: 116, label: '1080P 60帧' },
+        { id: 112, label: '1080P 高码率' },
+        { id: 80,  label: '1080P 高清' },
+        { id: 74,  label: '720P 60帧' },
+        { id: 64,  label: '720P 高清' },
+        { id: 32,  label: '480P 清晰' },
+        { id: 16,  label: '360P 流畅' }
+    ];
+    // 在候选流里按目标画质挑一个：自动=最高；点名了就先要精确匹配，
+    // 没有就退到「不超过它但最接近」的档位（B 站本身也会这样降级），最后兜底取最低可用
+    function pickStream(list, targetQn){
+        if(!Array.isArray(list) || !list.length) return null;
+        const sorted = list.slice().sort((a, b) => (b.id || 0) - (a.id || 0));
+        if(!targetQn) return sorted[0];
+        return sorted.find(x => x.id === targetQn)
+            || sorted.find(x => (x.id || 0) < targetQn)
+            || sorted[sorted.length - 1];
+    }
     // 视频号 → 接口参数（BV… 用 bvid=，av… 必须用 aid=，拿 bvid 传 av 号接口只会报错）
     function videoIdParam(id){
         const s = String(id || '').trim();
@@ -2328,44 +2418,72 @@
         return null;
     }
 
-    // 调用 playurl 接口获取 DASH 视频/音频流地址与大小
-    async function fetchVideoStreams(id, cid){
+    // 解析 DASH 结果（抽出来复用：便携版要在「单文件 durl」与 DASH 之间比一下谁更清晰）
+    function parseDashStream(data, target){
+        const dash = data && data.dash;
+        if(!dash || !Array.isArray(dash.video) || !dash.video.length) return null;
+        const v = pickStream(dash.video, target) || dash.video[0];
+        const a = pickStream(dash.audio, 0);
+        const durSec = (data.timelength || dash.duration || 0) / 1000;
+        const vbw = v.bandwidth || 0;
+        const abw = a ? (a.bandwidth || 0) : 0;
+        const mt = v.mimeType || v.mime_type || '';
+        return {
+            videoUrl: v.baseUrl || v.base_url,
+            audioUrl: a ? (a.baseUrl || a.base_url) : null,
+            size: (durSec > 0 && vbw) ? Math.round((vbw + abw) * durSec / 8) : null,
+            quality: v.id || null,
+            ext: /mp4/i.test(mt) ? 'mp4' : 'm4s',
+            available: dash.video.map(x => x.id).filter(Boolean),
+            merged: false
+        };
+    }
+    // 解析「音视频合一的官方 mp4」结果（单文件、自带音轨，但 B 站最高只给到 720P）
+    function parseDurlStream(data){
+        const durl = (data && Array.isArray(data.durl) && data.durl.length) ? data.durl[0] : null;
+        if(!durl) return null;
+        let sum = 0;
+        data.durl.forEach(x => { sum += (x.size || 0); });
+        return {
+            videoUrl: durl.url,
+            audioUrl: null,
+            size: sum || durl.size || null,
+            quality: data.quality || null,
+            ext: /\.flv/i.test(durl.url) ? 'flv' : 'mp4',
+            merged: true
+        };
+    }
+
+    // 调用 playurl 接口获取视频/音频流地址与大小
+    // targetQn：0 = 自动（取最高可用）；>0 时尽量取该清晰度，取不到按 B 站规则降级到最接近的
+    async function fetchVideoStreams(id, cid, targetQn){
+        const target = Number(targetQn) || 0;
+        const streamApi = 'https://api.bilibili.com/x/player/playurl?' + videoIdParam(id) + '&cid=' + cid +
+            '&fourk=1&fnval=';
+        const getData = async query => {
+            try{
+                const j = JSON.parse(await fetchText(streamApi + query));
+                return (j && j.code === 0 && j.data) ? j.data : null;
+            }catch(e){
+                return null;
+            }
+        };
         try{
-            // 便携版优先取「音视频合一的官方 mp4」（durl），这样没有 ffmpeg 也能拿到带声音的完整文件
-            const streamApi = 'https://api.bilibili.com/x/player/playurl?' + videoIdParam(id) + '&cid=' + cid + '&qn=80&fourk=1&fnval=';
-            let j = JSON.parse(await fetchText(streamApi + (IS_PORTABLE ? 1 : 16)));
-            if(IS_PORTABLE && !(j && j.code === 0 && j.data && j.data.durl && j.data.durl.length)){
-                // 该视频只有 DASH：回退到音画分离（合并需要 ffmpeg，会给出一次性提示）
-                j = JSON.parse(await fetchText(streamApi + 16));
+            // 便携版没有 ffmpeg：能拿「音视频合一的官方 mp4」就优先拿它（单文件、自带音轨）。
+            // 这种格式 B 站最高只到 720P，所以用户点名更高清晰度时要去试 DASH——但必须比一比
+            // 谁真的更清晰：未登录时 DASH 可能只给 480P，反而比 durl 的 720P 差，那就别换。
+            if(IS_PORTABLE){
+                const durlStream = parseDurlStream(await getData('1&qn=' + (target || 80)));
+                if(durlStream && (!target || (durlStream.quality || 0) >= target)) return durlStream;
+                const dashStream = parseDashStream(await getData('4048&qn=' + (target || 127)), target);
+                if(dashStream && (!durlStream || (dashStream.quality || 0) > (durlStream.quality || 0))) return dashStream;
+                return durlStream || dashStream;
             }
-            if(j && j.code === 0 && j.data){
-                const data = j.data;
-                const dash = data.dash;
-                let videoUrl = null, audioUrl = null, size = null, quality = null, ext = 'mp4';
-                if(dash && dash.video && dash.video.length){
-                    const v = dash.video[0];
-                    videoUrl = v.baseUrl || v.base_url;
-                    const a = dash.audio && dash.audio[0];
-                    if(a) audioUrl = a.baseUrl || a.base_url;
-                    const durSec = (data.timelength || dash.duration || 0) / 1000;
-                    const vbw = v.bandwidth || 0;
-                    const abw = a ? (a.bandwidth || 0) : 0;
-                    if(durSec > 0 && vbw) size = Math.round((vbw + abw) * durSec / 8);
-                    quality = v.id;
-                    const mt = v.mimeType || v.mime_type || '';
-                    ext = /mp4/i.test(mt) ? 'mp4' : 'm4s';
-                } else if(data.durl && data.durl.length){
-                    videoUrl = data.durl[0].url;
-                    let sum = 0;
-                    data.durl.forEach(x => { sum += (x.size || 0); });
-                    size = sum || null;
-                    quality = data.quality;
-                    ext = /\.flv/i.test(videoUrl) ? 'flv' : 'mp4';
-                }
-                return { videoUrl, audioUrl, size, quality, ext };
-            }
+            // 环境版直接走 DASH（装了 ffmpeg 会自动合并音画），没有 DASH 的老视频再退回 durl
+            const data = await getData('4048&qn=' + (target || 127));
+            return parseDashStream(data, target) || parseDurlStream(data);
         }catch(e){
-            console.error('获取视频流失败', bvid, cid, e);
+            console.error('获取视频流失败', id, cid, e);
         }
         return null;
     }
@@ -2428,6 +2546,14 @@
             '<div style="height:6px;background:#e3e6ec;border-radius:3px;overflow:hidden;"><div id="bili-video-prog-bar" style="' + STYLE.barFill + '"></div></div>' +
             '<div id="bili-video-prog-sub" style="margin-top:5px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>' +
             '</div>' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:#555;">' +
+            '<label for="bili-video-quality" style="flex-shrink:0;">清晰度</label>' +
+            '<select id="bili-video-quality" style="flex:1;min-width:0;padding:4px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;background:#fff;color:#333;">' +
+            QUALITY_CHOICES.map(q => '<option value="' + q.id + '"' +
+                ((Number(loadSettings().videoQuality) || 0) === q.id ? ' selected' : '') + '>' + q.label + '</option>').join('') +
+            '</select>' +
+            '</div>' +
+            '<div id="bili-video-quality-hint" style="margin-top:4px;font-size:11px;color:#999;"></div>' +
             '<div style="display:flex;align-items:center;gap:10px;margin-top:10px;">' +
             '<label style="font-size:12px;color:#555;cursor:pointer;" title="只勾选尚未下载的视频，避免重复下载"><input type="checkbox" id="bili-video-all" style="vertical-align:middle;"> 全选未下载</label>' +
             '<button id="bili-video-clear" style="padding:4px 10px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:12px;color:#555;">清空</button>' +
@@ -2435,13 +2561,49 @@
             '<button id="bili-video-dl" style="' + STYLE.btnPrimary + '">下载选中</button>' +
             '<button id="bili-video-close" style="padding:6px 12px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px;">关闭</button>' +
             '</div>' +
-            (IS_PORTABLE ? ('<div style="margin-top:8px;font-size:11px;color:#fa8c16;">便携版：下载 B 站官方 mp4 单文件（≤1080P，含音轨，无需 ffmpeg）' + (loadSettings().hideEnvOnly ? '' : '；4K/HDR 与音画合并请用环境版') + '</div>') : '') +
+            (IS_PORTABLE ? ('<div style="margin-top:8px;font-size:11px;color:#fa8c16;">便携版：默认下 B 站官方 mp4 单文件（自带音轨、无需 ffmpeg），但这种格式最高只有 720P；要 1080P 以上就在上面选具体清晰度' + (loadSettings().hideEnvOnly ? '' : '（会音画分开存，合并成带声音的 mp4 需要环境版）') + '</div>') : '') +
             '<div id="bili-video-dir" style="margin-top:8px;font-size:11px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title=""></div>';
         document.body.appendChild(panel);
 
         const listEl = panel.querySelector('#bili-video-list');
         const hintEl = panel.querySelector('#bili-video-hint');
         const allEl = panel.querySelector('#bili-video-all');
+
+        // ── 清晰度选择 ──
+        const qualityEl = panel.querySelector('#bili-video-quality');
+        const qualityHintEl = panel.querySelector('#bili-video-quality-hint');
+        const currentQuality = () => (qualityEl ? (Number(qualityEl.value) || 0) : 0);
+        const refreshQualityHint = () => {
+            if(!qualityHintEl) return;
+            const q = currentQuality();
+            if(!q){
+                qualityHintEl.textContent = IS_PORTABLE
+                    ? '自动：优先下带声音的官方单文件（这种格式 B 站最高 720P）；想要更高画质请在上面选具体清晰度'
+                    : '自动：取该视频可用的最高画质（装了 ffmpeg 会自动合并音画）';
+                return;
+            }
+            qualityHintEl.textContent = IS_PORTABLE
+                ? (qualityLabel(q) + '：会音画分开存成 .video + .audio，合并成带声音的 mp4 需要环境版')
+                : (qualityLabel(q) + '：取不到这一档时自动降到最接近的档位');
+        };
+        refreshQualityHint();
+        if(qualityEl){
+            qualityEl.addEventListener('change', () => {
+                const s = loadSettings();
+                s.videoQuality = currentQuality();
+                saveSettings(s);
+                refreshQualityHint();
+                // 清晰度变了，之前按旧档位取好的流地址作废，重新取
+                state.items.forEach(it => {
+                    it.videoUrl = null; it.audioUrl = null;
+                    it.size = null; it.quality = null; it.error = false;
+                });
+                render();
+                const label = currentQuality() ? qualityLabel(currentQuality()) : '自动';
+                showToast('清晰度已切换为「' + label + '」\n正在按新清晰度重新获取地址…');
+                fetchSizes();
+            });
+        }
 
         // ── 状态 ──
         //   items      : 列表项
@@ -2527,7 +2689,7 @@
                     const i = done++;
                     const it = state.items[i];
                     if(it.cid == null || it.error || it.fromCollection){ continue; }
-                    const s = await fetchVideoStreams(it.bvid, it.cid);
+                    const s = await fetchVideoStreams(it.bvid, it.cid, currentQuality());
                     if(s && s.videoUrl){ it.videoUrl = s.videoUrl; it.audioUrl = s.audioUrl; it.size = s.size; it.quality = s.quality; it.ext = s.ext; }
                     else { it.error = true; }
                     const span = hintEl; if(span) span.textContent = '正在获取大小与画质 ' + Math.min(done, total) + '/' + total + ' ...';
@@ -2572,7 +2734,7 @@
                                 } else { it.error = true; }
                             }
                             if(it.cid != null && !it.error){
-                                const s = await fetchVideoStreams(it.bvid, it.cid);
+                                const s = await fetchVideoStreams(it.bvid, it.cid, currentQuality());
                                 if(s && s.videoUrl){ it.videoUrl = s.videoUrl; it.audioUrl = s.audioUrl; it.size = s.size; it.quality = s.quality; it.ext = s.ext; }
                                 else { it.error = true; }
                             }
@@ -2640,7 +2802,11 @@
                     if(p.ok){
                         const total = p.total || 1;
                         const doneN = p.done || 0;
-                        const overall = Math.min(99, Math.round(doneN / total * 100));
+                        // 把「当前这个文件已经下了多少」也算进总进度，否则进度条只会在下完一个文件时跳一格，
+                        // 大文件下载期间看着像卡住不动
+                        const curFrac = (p.phase === 'merging') ? 0.99
+                            : (p.bytesTotal > 0 ? Math.min(0.99, (p.bytes || 0) / p.bytesTotal) : 0);
+                        const overall = Math.min(99, Math.round((doneN + curFrac) / total * 100));
                         if(progBar) progBar.style.width = overall + '%';
                         if(progPct) progPct.textContent = overall + '%';
                         if(p.finished){ summary = p.summary; break; }
