@@ -4,6 +4,14 @@
 - **思考过程（reasoning / thinking）和回复一律用中文**。
 - 代码注释、提交信息、README 与其它文档沿用仓库现有的中文风格。
 
+## 提交署名
+- **提交只署本人**：author、committer 一律为 `FNAS-496 <sijiudeliu@outlook.com>`。
+- **不要添加 `Co-authored-by`（尤其 `Co-authored-by: Copilot <…>`）**。
+  这类 trailer 会让 GitHub 把 Copilot 记成共同作者、并出现在 Contributors 列表里，
+  已经因此重写过一次历史，别再来一次。
+- 同理，不要使用任何会把署名指向非本人的自动化（网页端编辑产生的
+  `committer: GitHub <noreply@github.com>` 也要避免）。
+
 ## 项目速览
 - 手写源码只有 `src/bilibili-save.user.js` 和 `src/lib/browser-save.js`；
   根目录的 `bilibili-save.user.js`、`便携版/bilibili-save.user.js` 是 **构建产物，不要手改**。
