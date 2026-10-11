@@ -203,6 +203,26 @@ npm start         # 跑本地保存服务（环境版）
 
 发行包是**可复现**的喵：同一个工作副本连打两次，四个 zip 字节完全一致（生成的说明文档用固定时间戳、ZIP 里的时间走 UTC，换时区也不影响）。不过条目时间戳取自文件的修改时间，所以**不同机器/不同检出**打出来的字节不保证一样——想核对有没有被改过，用「解压后逐文件比 SHA-256」而不是比 zip 本身喵。
 
+## 参考实现与致谢喵🐾
+
+取流、清晰度、进度这块，本喵是照着下面这些成熟项目学的喵。谁教会了本喵什么、对应在本项目哪儿，一条条写清楚（链接都是项目主页）：
+
+| 参考项目 | 学到的做法 | 本项目对应位置 |
+| --- | --- | --- |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | `fnval=4048`（一次把 8K / HDR / 杜比那些位标志都点上）；请求里带 `dm_*` 系列参数（B 站的风控指纹）；音频还会额外取 `dash.dolby` / `dash.flac`；`dynamic_range` 用 125/126 区分 HDR10 与杜比视界 | `fetchVideoStreams()` |
+| [BBDown](https://github.com/nilaoda/BBDown) | 没带 Cookie 时自动补 `try_look=1`——本喵「未登录也能看到 1080P」就是这招来的；画质和编码都按优先级排序再挑 | `detectLoggedIn()`、`pickStream()`、`codecRank()` |
+| [you-get](https://github.com/soimort/you-get) | 一句关键注释 `# for dash, qn does not matter`：DASH 下 `qn` 参数是无效的，必须从返回的 `dash.video[]` 里自己挑 | `pickStream()`（从数组挑，不靠 `qn`） |
+| [Bilibili-Evolved](https://github.com/the1812/Bilibili-Evolved) | 同一画质档**显式优先 AVC/H.264**（兼容性最好，取不到再退 HEVC / AV1）；另外它验证了浏览器端沿用未签名的老 playurl 接口也还能用 | `codecRank()`、`fetchVideoStreams()` |
+| [bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect) | `fnval` 位标志表、`qn` 取值与权限表等接口资料，用来核对参数含义 | 仅参数核对，非运行依赖 |
+| [bili-m4s-fetch-demo](https://github.com/Hans774882968/bili-m4s-fetch-demo) | 直接读页面里的 `window.__playinfo__` 也能拿到音视频地址，能少调一次接口；以及媒体 CDN 的跨域注意点 | 备选兜底思路（暂未用） |
+| [ffmpeg.wasm](https://github.com/ffmpegwasm/ffmpeg.wasm)、[bili-video-merger](https://github.com/ZiAzusa/bili-video-merger)、[M4S-Merger-Tools-Web](https://github.com/MaxMiksa/M4S-Merger-Tools-Web) | 纯浏览器里合并 DASH 音视频是可行的：`-c copy` 流拷贝、用 blob URL + Worker 绕开跨域（多线程版还得有 `SharedArrayBuffer`） | 候选方案（暂未用，见下） |
+
+> 说清楚喵：**ffmpeg.wasm 那条还没做**。它能让便携版也下到 1080P 带声音，代价是首次要多下载约 30MB 的 wasm、音视频合计得 ≤2GB、还依赖那个 CDN 能用——所以先摆在清单里，想好了再上。
+
+> 又及喵：`bilibili-API-collect` 因为 2026 年 1 月收到律师函，**已经永久关停了**（仓库只剩一个 README），要查同类资料可以看镜像 [bilibili-api-collect-new](https://github.com/ILoveScratch2/bilibili-api-collect-new)。
+
+也交代一下喵：**本喵没有抄它们的代码**，只是照公开的接口行为自己实现的；上面每条也不是照抄文档，都拿真实请求**实测复验**过——比如「未登录补上 `try_look=1`，画质上限从 480P 跳到 1080P」「同一画质档真实拿到的是 avc1」，对应的回归断言都在 [tests/browser-save.test.js](tests/browser-save.test.js) 里。
+
 ## 许可喵🐾
 
 [CC BY-NC-SA 4.0](LICENSE) —— 随便用随便改喵，但要留着署名、不能拿去商用、改完了也得用一样的协议开源。
