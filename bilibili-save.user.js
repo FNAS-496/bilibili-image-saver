@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.39
+// @version      0.9.40
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -1263,11 +1263,16 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = filename;
+        // download 一旦失效，浏览器就会「导航」到这个地址而不是下载它（blob 的 origin 是当前站点，
+        // 于是会跳出一个指向本站点的错误页）。所以：文件名兜底、rel/target 显式声明，
+        // 并且不要在 click 的同一个 tick 里把节点摘掉，免得下载还没被接住。
+        a.download = String(filename || '').trim() || 'bilibili-download';
+        a.rel = 'noopener';
+        a.target = '_self';
         a.style.display = 'none';
         document.body.appendChild(a);
         a.click();
-        a.remove();
+        setTimeout(() => { try{ a.remove(); }catch(e){} }, 0);
         setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
 

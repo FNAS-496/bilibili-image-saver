@@ -307,6 +307,17 @@ const runBuildChecks = () => {
             const seg2 = t.slice(at2, at2 + 900);
             assert.ok(/maxHeight:'calc\(100vh - \d+px\)'/.test(seg2), '视频面板高度没用视口算，小屏会顶出去');
         });
+        check(label + '：blob 下载只能「下载」，绝不能退化成页面导航', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            const at = t.indexOf('function triggerBlobDownload');
+            const seg = t.slice(at, at + 800);
+            assert.ok(/a\.download = String\(filename \|\| ''\)\.trim\(\) \|\| '/.test(seg),
+                'download 没有兜底文件名：为空时浏览器会改成「导航」到 blob 地址（blob 的 origin 就是当前站点）');
+            assert.ok(/a\.rel = 'noopener'/.test(seg), '缺 rel=noopener');
+            assert.ok(/a\.target = '_self'/.test(seg), '缺显式 target');
+            assert.ok(/setTimeout\(\(\) => \{ try\{ a\.remove\(\); \}/.test(seg),
+                'click 同一个 tick 就摘节点，下载可能还没被浏览器接住');
+        });
         check(label + '：已下载的能重新下载（force 覆盖，不再被记账挡住）', () => {
             const t = fs.readFileSync(file, 'utf8');
             assert.ok(/bili-video-redl/.test(t), '列表里没有「重新下载」入口');
