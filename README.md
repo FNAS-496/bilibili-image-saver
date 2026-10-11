@@ -17,7 +17,7 @@ B 站图片和视频的批量下载工具喵~ (=^･ω･^=)
 |---|---|---|
 | 要先装什么 | **什么都不用装哦** | Node.js 18+（想合并音画再装 ffmpeg 喵） |
 | 图片怎么存 | 打包成 ZIP 下载（大了会自动分卷喵），或写进你选的文件夹 | 后台直接写进任意绝对路径，静悄悄、不用点 |
-| 视频怎么存 | 默认 B 站官方 mp4 单文件（**自带音轨**、不需要 ffmpeg，但这种格式最高只有 720P 喵）；面板里选更高清晰度会改走 DASH，音画分开存 | DASH 音视频流 → 用 ffmpeg 合并成 mp4（可 4K/HDR 喵） |
+| 视频怎么存 | 默认 B 站官方 mp4 单文件（**自带音轨**、不需要 ffmpeg，但这种格式最高只有 720P 喵）；面板里选更高清晰度会改走 DASH，**并在浏览器里自动合并成一个带声音的 mp4**（内置 MP4Box 喵） | DASH 音视频流 → 用 ffmpeg 合并成 mp4（可 4K/HDR 喵） |
 | 已下载标记 | 浏览器本地记账 | 服务端扫目录 + 扫库 |
 | 图片相册页 | ❌（要本地服务喵） | ✅ `http://127.0.0.1:8765/` |
 
@@ -62,7 +62,7 @@ B 站图片和视频的批量下载工具喵~ (=^･ω･^=)
 
 **需要本地环境（Node.js + ffmpeg，也就是环境版喵）**
 
-- 🎞️ **4K / HDR / 音画合并**：DASH 音视频流用 ffmpeg 合并成带声音的 mp4（便携版默认走官方单文件 mp4，那种格式最高只有 720P；想要 1080P 以上就在下载面板里挑清晰度，会音画分开存喵）
+- 🎞️ **4K / HDR / 音画合并**：DASH 音视频流合并成带声音的 mp4。环境版交给 ffmpeg；**便携版在浏览器里就地合并**（内置 MP4Box，只重排 mp4 box、不重新编码，所以画质无损），选 1080P 及以上也能拿到一个能直接播的单文件喵
 - 🖼️ **图片相册页**：本机 `127.0.0.1:8765` 页面里慢慢翻已存的图，像翻相册一样喵
 - ⚡ **静默自动落盘**：后台写进你自定义的绝对路径，全自动、不用点喵，你只管看图就好
 
@@ -126,9 +126,12 @@ Windows 上不用折腾命令行，`一键启动.bat` 里留了一行 `set "SAVE
 ## 一些细节喵🐾
 
 - 图片会自动把 `@316w_560h` 这种缩略图后缀去掉，直接去要原图喵；webp / avif 的把地址后缀换成 `.jpg` 再要一次，能拿到 jpg 版
-- 视频走 B 站的 playurl 接口拿流，按你挑的清晰度取。装了 ffmpeg 就合并成一个带声音的 mp4，没装就音视频分开存（`.video.mp4` + `.audio.m4a`，能看，就是得自己拼喵）
-- 清晰度是「按目标取、取不到就降级」：选了 4K 但拿不到，本喵给最接近的档位而不是报错喵。**能拿到多高取决于你的账号**：未登录也能到 **1080P**（脚本会自动补上 `try_look`，实测把上限从 480P 提到 1080P）；登录后（非大会员）最高也是 1080P；4K / 1080P60 / HDR / 杜比这些得是**大会员**才行。另外便携版默认那种「官方单文件 mp4」格式更严格、最高只有 720P，所以想要 1080P 就得选具体档位（代价是音画分开，合并要环境版喵）
+- 视频走 B 站的 playurl 接口拿流，按你挑的清晰度取。音画合并两头都能干：环境版交给 ffmpeg，**便携版在浏览器里用内置的 MP4Box 直接合成一个带声音的 mp4**（只重排 mp4 box、不重新编码，画质无损）。只有「合并不了」时才退回分开存（`.video.mp4` + `.audio.m4a`，能看，就是得自己拼喵），会告诉你是为什么
+- 浏览器里合并要占内存喵：音视频两份原始数据 + 合出来的结果会同时在内存里（峰值约 3 倍），所以合计超过 **1GB** 的会自动改成分开存，免得把标签页搞崩
+- 清晰度是「按目标取、取不到就降级」：选了 4K 但拿不到，本喵给最接近的档位而不是报错喵。**能拿到多高取决于你的账号**：未登录也能到 **1080P**（脚本会自动补上 `try_look`，实测把上限从 480P 提到 1080P）；登录后（非大会员）最高也是 1080P；4K / 1080P60 / HDR / 杜比这些得是**大会员**才行。拿不到的档位本喵会直接写在面板上（比如「本视频还支持 4K 超清（需大会员），当前账号拿不到」），省得你猜喵。另外便携版默认那种「官方单文件 mp4」格式更严格、最高只有 720P，所以想要 1080P 就得选具体档位（下载后会自动合并成带声音的 mp4 喵）
 - 同一画质 B 站会给多种编码（H.264 / H.265 / AV1），本喵**优先选 H.264（avc1）**——体积大一点但哪都能放；不再依赖 B 站的返回顺序
+- 取流请求会带上 B 站的 **wbi 签名**（`w_rid` / `wts`）少踩风控喵；签名拿不到、或者带签名取不到数据，会**自动退回未签名请求**（实测不签名也能正常取流，所以这条路就算坏了也不耽误你下载）
+- 音轨默认取兼容性最好的 AAC 立体声；想在「设置 → 功能与提示」里可以开「**高音质音轨**」，优先无损 FLAC / 杜比全景声（要大会员才有，而且 FLAC 有些播放器不认，所以默认是关着的喵）
 - ffmpeg 放项目目录的 `ffmpeg\ffmpeg.exe` 也行，系统 PATH 里有也行，两处都找不到才会分开存喵
 - 下过的视频会标上「✅ 已下载」，「全选未下载」和下载的时候都会跳过，不至于白白浪费流量——一口气下几百个的时候这个挺省事喵（多 P 视频按「分 P」分别记，下过 P1 不会把 P2 也标成已下载喵）
 - 服务端那边也做了查重哦，同一个文件不会重复下；没装 ffmpeg 时音画分开存出来的两个文件同样算「已下过」
@@ -156,7 +159,7 @@ Windows 上不用折腾命令行，`一键启动.bat` 里留了一行 `set "SAVE
 **视频下下来没声音**
 
 环境版：没装 ffmpeg 喵。装上重新下一遍就行，或者直接用配套那个 `.audio.m4a`，自己拿播放器对一下也能看。
-便携版：本喵优先下官方「音视频合一」的 mp4，正常都带声音；少数只有分开的流，会存成 `.video.mp4` + `.audio.m4a` 并提示你一次，合并需要 ffmpeg，用环境版就好喵。
+便携版：本喵优先下官方「音视频合一」的 mp4，正常都带声音；选了 1080P 以上的档位会改走 DASH，**下载后会在浏览器里自动合并成一个带声音的 mp4**（内置 MP4Box，不需要 ffmpeg）。只有「合并不了」才会存成 `.video.mp4` + `.audio.m4a` 并说明原因（音视频合计超过 1GB、编码太冷门、分片异常），这种情况用环境版（有 ffmpeg）再来一遍就好喵。
 
 **便携版视频下载报错（403 / 请求失败）**
 
@@ -209,15 +212,18 @@ npm start         # 跑本地保存服务（环境版）
 
 | 参考项目 | 学到的做法 | 本项目对应位置 |
 | --- | --- | --- |
-| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | `fnval=4048`（一次把 8K / HDR / 杜比那些位标志都点上）；请求里带 `dm_*` 系列参数（B 站的风控指纹）；音频还会额外取 `dash.dolby` / `dash.flac`；`dynamic_range` 用 125/126 区分 HDR10 与杜比视界 | `fetchVideoStreams()` |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | `fnval=4048`（一次把 8K / HDR / 杜比那些位标志都点上）；音频还会额外取 `dash.dolby` / `dash.flac`；`dynamic_range` 用 125/126 区分 HDR10 与杜比视界 | `fetchVideoStreams()`、`pickAudioStream()` |
 | [BBDown](https://github.com/nilaoda/BBDown) | 没带 Cookie 时自动补 `try_look=1`——本喵「未登录也能看到 1080P」就是这招来的；画质和编码都按优先级排序再挑 | `detectLoggedIn()`、`pickStream()`、`codecRank()` |
 | [you-get](https://github.com/soimort/you-get) | 一句关键注释 `# for dash, qn does not matter`：DASH 下 `qn` 参数是无效的，必须从返回的 `dash.video[]` 里自己挑 | `pickStream()`（从数组挑，不靠 `qn`） |
 | [Bilibili-Evolved](https://github.com/the1812/Bilibili-Evolved) | 同一画质档**显式优先 AVC/H.264**（兼容性最好，取不到再退 HEVC / AV1）；另外它验证了浏览器端沿用未签名的老 playurl 接口也还能用 | `codecRank()`、`fetchVideoStreams()` |
 | [bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect) | `fnval` 位标志表、`qn` 取值与权限表等接口资料，用来核对参数含义 | 仅参数核对，非运行依赖 |
 | [bili-m4s-fetch-demo](https://github.com/Hans774882968/bili-m4s-fetch-demo) | 直接读页面里的 `window.__playinfo__` 也能拿到音视频地址，能少调一次接口；以及媒体 CDN 的跨域注意点 | 备选兜底思路（暂未用） |
-| [ffmpeg.wasm](https://github.com/ffmpegwasm/ffmpeg.wasm)、[bili-video-merger](https://github.com/ZiAzusa/bili-video-merger)、[M4S-Merger-Tools-Web](https://github.com/MaxMiksa/M4S-Merger-Tools-Web) | 纯浏览器里合并 DASH 音视频是可行的：`-c copy` 流拷贝、用 blob URL + Worker 绕开跨域（多线程版还得有 `SharedArrayBuffer`） | 候选方案（暂未用，见下） |
+| [MP4Box.js](https://github.com/gpac/mp4box.js)（BSD-3-Clause） | 浏览器里把两条 DASH 流合成一个 mp4：只重排 mp4 box、不重新编码，所以画质无损。关键细节是音轨的 `hdlr` 必须写成 `soun` —— 写成 `vide` 播放器就把音轨当视频轨，整个文件就废了 | [src/lib/dash-merge.js](src/lib/dash-merge.js) + [src/lib/mp4box.min.js](src/lib/mp4box.min.js)（**已采用**） |
+| [ffmpeg.wasm](https://github.com/ffmpegwasm/ffmpeg.wasm)、[bili-video-merger](https://github.com/ZiAzusa/bili-video-merger)、[M4S-Merger-Tools-Web](https://github.com/MaxMiksa/M4S-Merger-Tools-Web) | 纯浏览器里合并 DASH 音视频的另一条路：`-c copy` 流拷贝、用 blob URL + Worker 绕开跨域 | 评估后**没采用**：要多下载约 30MB 的 wasm，而 MP4Box 只用 180KB（见下） |
 
-> 说清楚喵：**ffmpeg.wasm 那条还没做**。它能让便携版也下到 1080P 带声音，代价是首次要多下载约 30MB 的 wasm、音视频合计得 ≤2GB、还依赖那个 CDN 能用——所以先摆在清单里，想好了再上。
+> 说清楚喵：便携版的音画合并**已经做了**，走的就是 MP4Box 这条路（只重排 mp4 box、不重新编码，画质无损）。代价摆在明面上：便携版脚本因此大了约 180KB（只有便携版内联，环境版不带），音视频合计超过 1GB 会自动改回分开存。ffmpeg.wasm 那条最终没选——能做到同样的事，但要多下载约 30MB 的 wasm，不划算喵。
+
+> 还有一条本喵**没跟**：yt-dlp 请求里那些 `dm_*` 参数。那是客户端的 canvas / WebGL 指纹，脚本里没法真实生成，塞个假值反而更容易被风控盯上，所以只做了 wbi 签名（[src/lib/wbi.js](src/lib/wbi.js)），并且签名一失败就自动退回未签名请求喵。
 
 > 又及喵：`bilibili-API-collect` 因为 2026 年 1 月收到律师函，**已经永久关停了**（仓库只剩一个 README），要查同类资料可以看镜像 [bilibili-api-collect-new](https://github.com/ILoveScratch2/bilibili-api-collect-new)。
 

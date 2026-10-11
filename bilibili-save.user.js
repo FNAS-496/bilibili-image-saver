@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.35
+// @version      0.9.36
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -351,6 +351,296 @@
         };
     });
     const BS = (typeof globalThis !== 'undefined' && globalThis.__biliBrowserSave) ? globalThis.__biliBrowserSave : null;
+    // ────────────────────────────────────────────────────────────────────────
+    // 便携版的音视频合并：把 DASH 的 video.m4s + audio.m4s 合成单个 mp4（只重排 mp4 box，
+    // 不重新编码，画质无损）。MP4Box 只在便携版内联（环境版有 ffmpeg，用不上）。
+    // 源文件是 src/lib/dash-merge.js 与 src/lib/mp4box.min.js，别在这里手改
+    // ============================================================================
+    // DASH 音视频合并：把 B 站的 video.m4s + audio.m4s 合成一个能直接播放的 mp4
+    // 便携版没有 ffmpeg，靠这个模块在浏览器里合并 —— 只重排 mp4 box、不重新编码，
+    // 所以没有画质损失，也不需要 WebCodecs 那一套。
+    // 该文件被 build.js 内联进便携版 userscript，同时可直接被 Node require 做单测，
+    // 保证「测试的代码」与「发布的代码」是同一份。
+    // 依赖 src/lib/mp4box.min.js（MP4Box.js / gpac/mp4box.js，BSD-3-Clause）
+    // ============================================================================
+    (function (root, factory) {
+        const api = factory(root);
+        if (typeof module !== 'undefined' && module.exports) module.exports = api;
+        root.__biliDashMerge = api;                         // 供浏览器内自检 / 冒烟测试
+    })(typeof globalThis !== 'undefined' ? globalThis : this, function (root) {
+        'use strict';
+
+        // 合计超过这个大小就不合并：合并要把音视频两份原始数据 + 输出同时放进内存，
+        // 峰值约 3 倍体积，再大容易把标签页搞崩（调用方会回退成音画分开保存）
+        const MAX_MERGE_BYTES = 1024 * 1024 * 1024;
+
+        let cachedMP4Box = null;
+
+        // 取 MP4Box：内联进 userscript 时它在同一作用域；Node 单测时走 require
+        function getMP4Box() {
+            if (cachedMP4Box) return cachedMP4Box;
+            if (typeof MP4BoxLib !== 'undefined' && MP4BoxLib) cachedMP4Box = MP4BoxLib;
+            else if (root && root.MP4BoxLib) cachedMP4Box = root.MP4BoxLib;
+            else if (typeof require === 'function') {
+                try { cachedMP4Box = require('./mp4box.min.js'); } catch (e) { }
+            }
+            return cachedMP4Box;
+        }
+
+        // 各种「字节」形态统一算长度（数字 / ArrayBuffer / TypedArray / Blob）
+        function byteLength(bytes) {
+            if (typeof bytes === 'number') return bytes > 0 ? bytes : 0;
+            if (!bytes) return 0;
+            if (typeof bytes.byteLength === 'number') return bytes.byteLength;
+            if (typeof bytes.size === 'number') return bytes.size;          // Blob
+            if (typeof bytes.length === 'number') return bytes.length;
+            return 0;
+        }
+
+        // 转成 ArrayBuffer（mp4box 只认 ArrayBuffer）
+        function toArrayBuffer(bytes) {
+            if (bytes instanceof ArrayBuffer) return bytes;
+            if (ArrayBuffer.isView(bytes)) {
+                return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+            }
+            return new Uint8Array(bytes).buffer;
+        }
+
+        function toArrayBufferAsync(bytes) {
+            if (typeof Blob !== 'undefined' && bytes instanceof Blob) return bytes.arrayBuffer();
+            return Promise.resolve(toArrayBuffer(bytes));
+        }
+
+        // 解析一个 DASH 分片（本质是 fMP4）：拿到轨道信息、全部样本，
+        // 以及原始 sample entry（avcC / esds 这些解码器参数就在里面，合并时要原样带过去）
+        function parseFragment(MP4Box, bytes) {
+            return new Promise(function (resolve, reject) {
+                const file = MP4Box.createFile();
+                const samples = [];
+                let info = null;
+                let failed = null;
+                file.onError = function (e) { failed = failed || ('分片解析失败：' + e); };
+                file.onReady = function (i) {
+                    if (!i || !i.tracks || !i.tracks.length) { failed = failed || '分片里没有找到轨道'; return; }
+                    info = i;
+                    const t = i.tracks[0];
+                    file.setExtractionOptions(t.id, null, { nbSamples: t.nb_samples });
+                    file.start();
+                };
+                file.onSamples = function (id, user, list) {
+                    for (let i = 0; i < list.length; i++) samples.push(list[i]);
+                };
+                toArrayBufferAsync(bytes).then(function (ab) {
+                    ab.fileStart = 0;
+                    file.appendBuffer(ab);
+                    file.flush();                                    // 样本回调是同步跑完的，下面再让出一次事件循环兜底
+                    setTimeout(function () {
+                        if (failed) { reject(new Error(failed)); return; }
+                        if (!info || !samples.length) { reject(new Error('没读到样本数据（可能不是标准 fMP4 分片）')); return; }
+                        const trak = file.moov && file.moov.traks && file.moov.traks[0];
+                        const entry = trak && trak.mdia.minf.stbl.stsd.entries[0];
+                        if (!entry) { reject(new Error('分片缺少 sample entry（解码器参数）')); return; }
+                        resolve({ track: info.tracks[0], entry: entry, samples: samples });
+                    }, 0);
+                }, reject);
+            });
+        }
+
+        // 把两条轨道写进一个新文件：音视频同一个容器，直接就能播
+        // 注意 hdlr 必须给对（vide / soun），否则播放器会把音轨当成视频轨
+        function buildMerged(MP4Box, v, a) {
+            const out = MP4Box.createFile();
+            const videoId = out.addTrack({
+                hdlr: 'vide', type: v.entry.type,
+                timescale: v.track.timescale, duration: v.track.duration,
+                width: v.track.video.width, height: v.track.video.height,
+                description_boxes: v.entry.boxes
+            });
+            const audioId = out.addTrack({
+                hdlr: 'soun', type: a.entry.type,
+                timescale: a.track.timescale, duration: a.track.duration,
+                samplerate: a.track.audio.sample_rate,
+                channel_count: a.track.audio.channel_count,
+                samplesize: a.track.audio.sample_size,
+                description_boxes: a.entry.boxes
+            });
+            if (!videoId || !audioId) {
+                throw new Error('不支持的编码组合（' + v.entry.type + ' + ' + a.entry.type + '）');
+            }
+            const copy = function (trackId, samples) {
+                for (let i = 0; i < samples.length; i++) {
+                    const s = samples[i];
+                    out.addSample(trackId, s.data, {
+                        duration: s.duration, dts: s.dts, cts: s.cts, is_sync: s.is_sync
+                    });
+                }
+            };
+            copy(videoId, v.samples);
+            copy(audioId, a.samples);
+            const stream = out.getBuffer();
+            const buf = stream && stream.buffer;
+            if (!buf || !buf.byteLength) throw new Error('合并输出为空');
+            return buf;
+        }
+
+        // 该不该尝试合并：体积超限的直接不试，省得下完了才发现白下
+        function shouldMerge(totalBytes, maxBytes) {
+            const total = byteLength(totalBytes);
+            return total > 0 && total <= (maxBytes || MAX_MERGE_BYTES);
+        }
+
+        // 合并入口：失败就抛错，由调用方回退成音画分开保存（不能把用户的数据弄丢）
+        function mergeDashStreams(videoBytes, audioBytes, maxBytes) {
+            const MP4Box = getMP4Box();
+            if (!MP4Box) return Promise.reject(new Error('合并组件未加载（请更新到最新版便携版）'));
+            const total = byteLength(videoBytes) + byteLength(audioBytes);
+            if (!shouldMerge(total, maxBytes)) {
+                return Promise.reject(new Error('音视频合计 ' + Math.round(total / 1048576) + 'MB，超出合并上限 ' +
+                    Math.round((maxBytes || MAX_MERGE_BYTES) / 1048576) + 'MB'));
+            }
+            return parseFragment(MP4Box, videoBytes).then(function (v) {
+                return parseFragment(MP4Box, audioBytes).then(function (a) {
+                    return buildMerged(MP4Box, v, a);
+                });
+            });
+        }
+
+        return {
+            MAX_MERGE_BYTES: MAX_MERGE_BYTES,
+            byteLength: byteLength,
+            getMP4Box: getMP4Box,
+            shouldMerge: shouldMerge,
+            mergeDashStreams: mergeDashStreams
+        };
+    });
+    const DM = (typeof globalThis !== 'undefined' && globalThis.__biliDashMerge) ? globalThis.__biliDashMerge : null;
+    // wbi 签名（给 playurl 算 w_rid，降风控）：纯函数，两个版本共用
+    // ============================================================================
+    // B 站 wbi 签名（w_rid / wts）
+    //
+    // 背景：playurl 这类接口从 2023 年起支持 wbi 签名。实测不签名也能正常取流
+    // （Bilibili-Evolved 同样没签），所以签名在这里只当「锦上添花」：调用方失败就
+    // 退回未签名请求，绝不影响正常取流。
+    //
+    // 顺带把「跟着请求走的 dm_* 指纹参数」排除在外：那是客户端 canvas / WebGL 指纹，
+    // 伪造值反而更容易被风控盯上，而它在 uscript 里没法真实生成，收益也无法验证。
+    //
+    // 该文件被 build.js 内联进 userscript，同时可直接被 Node require 做单测。
+    // ============================================================================
+    (function (root, factory) {
+        const api = factory();
+        if (typeof module !== 'undefined' && module.exports) module.exports = api;
+        root.__biliWbi = api;                               // 供浏览器内自检 / 冒烟测试
+    })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+        'use strict';
+
+        // 官方前端那把 64 位重排表
+        const MIXIN_KEY_ENC_TAB = [
+            46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+            27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+            37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+            22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52
+        ];
+
+        function utf8Bytes(str) {
+            if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(str);
+            const out = [];                                  // 兜底（极老环境）
+            for (let i = 0; i < str.length; i++) {
+                const c = str.charCodeAt(i);
+                if (c < 0x80) out.push(c);
+                else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63));
+                else out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+            }
+            return Uint8Array.from(out);
+        }
+
+        // MD5（RFC 1321）→ 32 位小写 hex。浏览器 crypto.subtle 是异步的，签名要同步算就用这个
+        function md5Hex(str) {
+            const bytes = utf8Bytes(String(str));
+            const len = bytes.length;
+            const padded = new Uint8Array((((len + 8) >> 6) + 1) << 6);
+            padded.set(bytes);
+            padded[len] = 0x80;                              // 补位：0x80 + 若干 0
+            const dv = new DataView(padded.buffer);
+            const bits = len * 8;
+            dv.setUint32(padded.length - 8, bits >>> 0, true);
+            dv.setUint32(padded.length - 4, Math.floor(bits / 4294967296), true);
+
+            const S = [
+                7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+                5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+                4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+                6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+            ];
+            const K = new Uint32Array(64);
+            for (let i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296);
+
+            let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+            for (let off = 0; off < padded.length; off += 64) {
+                const M = new Uint32Array(16);
+                for (let i = 0; i < 16; i++) M[i] = dv.getUint32(off + i * 4, true);
+                let A = a0, B = b0, C = c0, D = d0;
+                for (let i = 0; i < 64; i++) {
+                    let F, g;
+                    if (i < 16) { F = (B & C) | (~B & D); g = i; }
+                    else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) % 16; }
+                    else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) % 16; }
+                    else { F = C ^ (B | ~D); g = (7 * i) % 16; }
+                    F = (F + A + K[i] + M[g]) >>> 0;
+                    A = D; D = C; C = B;
+                    B = (B + (((F << S[i]) | (F >>> (32 - S[i]))) >>> 0)) >>> 0;
+                }
+                a0 = (a0 + A) >>> 0; b0 = (b0 + B) >>> 0; c0 = (c0 + C) >>> 0; d0 = (d0 + D) >>> 0;
+            }
+            const hex = n => {
+                let s = '';
+                for (let i = 0; i < 4; i++) s += ((n >>> (i * 8)) & 0xff).toString(16).padStart(2, '0');
+                return s;
+            };
+            return hex(a0) + hex(b0) + hex(c0) + hex(d0);
+        }
+
+        // img_key + sub_key 拼成 64 位后按表重排，取前 32 位
+        function getMixinKey(orig) {
+            let out = '';
+            for (let i = 0; i < MIXIN_KEY_ENC_TAB.length; i++) out += orig[MIXIN_KEY_ENC_TAB[i]] || '';
+            return out.slice(0, 32);
+        }
+
+        // 参数 → 签名 query：按 key 排序、值去掉 !'()* 、拼串、末尾接 mixinKey 再 md5 = w_rid
+        function signQuery(params, imgKey, subKey, wts) {
+            const mixin = getMixinKey(String(imgKey || '') + String(subKey || ''));
+            const stamp = String(wts || Math.round(Date.now() / 1000));
+            const all = Object.assign({}, params, { wts: stamp });
+            const query = Object.keys(all).sort().map(k => {
+                const v = String(all[k] == null ? '' : all[k]).replace(/[!'()*]/g, '');
+                return encodeURIComponent(k) + '=' + encodeURIComponent(v);
+            }).join('&');
+            return query + '&w_rid=' + md5Hex(query + mixin);
+        }
+
+        // 从 nav 接口响应里取两个 key（它们藏在图片地址的文件名里）
+        function parseWbiKeys(nav) {
+            const d = nav && nav.data;
+            if (!d) return null;
+            const pick = url => {
+                const m = String(url || '').match(/\/([^/]+)\.(?:png|jpg|jpeg|webp|gif)$/i);
+                return m ? m[1] : null;
+            };
+            const imgKey = pick(d.wbi_img && d.wbi_img.img_url);
+            const subKey = pick(d.wbi_img && d.wbi_img.sub_url);
+            return (imgKey && subKey) ? { imgKey: imgKey, subKey: subKey } : null;
+        }
+
+        return {
+            MIXIN_KEY_ENC_TAB: MIXIN_KEY_ENC_TAB,
+            md5Hex: md5Hex,
+            getMixinKey: getMixinKey,
+            signQuery: signQuery,
+            parseWbiKeys: parseWbiKeys
+        };
+    });
+    const WB = (typeof globalThis !== 'undefined' && globalThis.__biliWbi) ? globalThis.__biliWbi : null;
     // 浏览器是否支持「选择文件夹直写」（Chromium 系）
     const FSA_SUPPORTED = typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
     // 收款码：以 base64 直接内嵌（data URI），不依赖本地服务 /qr，
@@ -372,6 +662,7 @@
         portableSave: 'zip',
         portableVideoSave: 'single',                    // 便携版视频保存方式：single=逐个下载 zip=打包成 ZIP（自动分卷）
         videoQuality: 0,                                // 视频清晰度（B 站画质码）：0 = 自动（最高可用）
+        hiResAudio: false,                              // 高音质音轨：优先无损 FLAC / 杜比全景声（需大会员；FLAC 部分播放器不支持，默认关）
         // 「需要本地环境」的功能：只提示一次（避免反复打扰）
         envNotice: true,
         envNoticeShown: false,
@@ -1197,6 +1488,20 @@
                     formatSize(received) + (tot ? (' / ' + formatSize(tot)) : '');
             }
         };
+        // 便携版的音视频合并：内置 MP4Box 重排 mp4 box（不重新编码，画质无损），
+        // 把 DASH 的两条流合成一个能直接播放的 mp4。体积超限就根本不去试；
+        // 真合并失败也只退回「音画分开存」—— 宁可分开，也不能把用户下到的数据弄丢。
+        let mergeError = '';
+        const wantMerge = it => IS_PORTABLE && !!DM && !!it.audioUrl && (!it.size || DM.shouldMerge(it.size));
+        const tryMerge = async (i, it, vBytes, aBytes) => {
+            try{
+                if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🔗 合并音视频';
+                return await DM.mergeDashStreams(vBytes, aBytes);
+            }catch(e){
+                if(!mergeError) mergeError = (e && e.message) || String(e);
+                return null;
+            }
+        };
         for(let i = 0; i < items.length; i++){
             const it = items[i];
             curEstimate = it.size || 0;                    // 服务器不给 content-length 时的进度分母
@@ -1221,17 +1526,55 @@
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
                         const aBytes = await fetchBytes(it.audioUrl, 600000, fileProgress(i, '🎵 音频流'));
                         const aName = base + '.audio.m4a';
-                        pending.push({ name: vName, data: vBytes, item: r });
-                        pending.push({ name: aName, data: aBytes, item: r });
-                        pendingBytes += 76 + (vName.length + aName.length) * 2 + vBytes.length + aBytes.length;
-                        r.separate = true;
-                        mergeNotice = true;
+                        // 便携版能就地合并成一个 mp4（合并失败才退回分开存）
+                        const merged = wantMerge(it) ? await tryMerge(i, it, vBytes, aBytes) : null;
+                        if(merged){
+                            const mName = base + '.mp4';
+                            pending.push({ name: mName, data: merged, item: r });
+                            pendingBytes += 76 + mName.length * 2 + merged.byteLength;
+                        }else{
+                            pending.push({ name: vName, data: vBytes, item: r });
+                            pending.push({ name: aName, data: aBytes, item: r });
+                            pendingBytes += 76 + (vName.length + aName.length) * 2 + vBytes.length + aBytes.length;
+                            r.separate = true;
+                            mergeNotice = true;
+                        }
                     }else{
                         pending.push({ name: vName, data: vBytes, item: r });
                         pendingBytes += 76 + vName.length * 2 + vBytes.length;
                     }
                     results.push(r);
                     if(pending.length >= 0xFFFF || pendingBytes >= ZIP_BATCH_BYTES) await flushZip();
+                }else if(wantMerge(it)){
+                    // 便携版合并：两条流都得先完整进内存才能交给 MP4Box，
+                    // 体积超限的项在 wantMerge 里已被挡掉（会走下面那条流式分开存的老路）
+                    const vBytes = await fetchBytes(it.videoUrl, 600000, fileProgress(i, '⬇️ 视频流'));
+                    if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
+                    const aBytes = await fetchBytes(it.audioUrl, 600000, fileProgress(i, '🎵 音频流'));
+                    const merged = await tryMerge(i, it, vBytes, aBytes);
+                    const mName = base + '.mp4';
+                    const vName = base + '.video.' + (it.ext || 'mp4');
+                    const aName = base + '.audio.m4a';
+                    if(merged){
+                        if(dir){
+                            await writeBlobToDir(dir, mName, new Blob([merged]), true);
+                        }else{
+                            triggerBlobDownload(new Blob([merged]), mName);
+                        }
+                        results.push({ idx:i, bvid: it.bvid, title: it.title, saved: mName });
+                    }else{
+                        // 合并失败：数据已经下到内存了，照样写成文件，用户不会白下
+                        if(dir){
+                            await writeBlobToDir(dir, vName, new Blob([vBytes]), true);
+                            await writeBlobToDir(dir, aName, new Blob([aBytes]), true);
+                        }else{
+                            triggerBlobDownload(new Blob([vBytes]), vName);
+                            await sleep(500);
+                            triggerBlobDownload(new Blob([aBytes]), aName);
+                        }
+                        results.push({ idx:i, bvid: it.bvid, title: it.title, saved: vName, separate:true });
+                        mergeNotice = true;
+                    }
                 }else if(it.audioUrl){
                     const vName = base + '.video.' + (it.ext || 'mp4');
                     const aName = base + '.audio.m4a';
@@ -1292,7 +1635,10 @@
             : (dir ? ('保存位置：' + dir.name) : '保存位置：浏览器「下载」文件夹');
         showToast('视频下载完成：成功 ' + saved + ' 个' + (failed ? '，失败 ' + failed + ' 个' : '') +
             (where ? '\n' + where : ''));
-        if(mergeNotice) notifyEnvRequired('音画合并（DASH → mp4）');
+        if(mergeNotice){
+            if(mergeError) showToast('⚠️ 音画合并没成功，已分开保存\n原因：' + mergeError + '\n（环境版装了 ffmpeg 可自动合并）');
+            else notifyEnvRequired('音画合并（DASH → mp4）');
+        }
         return { ok:true, results, saved, failed };
     }
 
@@ -2296,6 +2642,9 @@
             '<button id="bili-intro-btn" style="width:100%;padding:8px 0;margin-bottom:10px;border:1px solid var(--bili-save-border);background:var(--bili-save-input-bg);color:var(--bili-save-fg);border-radius:8px;cursor:pointer;font-size:13px;">📖 功能介绍（哪些功能需要环境）</button>' +
             '<label style="' + checkLabel + ';margin-bottom:8px;"><input type="checkbox" id="bili-envnotice-input"' + (s.envNotice ? ' checked' : '') + '> 需要环境的功能「仅提示一次」</label>' +
             '<label style="' + checkLabel + ';"><input type="checkbox" id="bili-hideenv-input"' + (s.hideEnvOnly ? ' checked' : '') + '> 去除无关功能：隐藏需要本地环境的功能</label>' +
+            '<div style="' + labelStyle + ';margin:10px 0 4px;">🎵 音轨</div>' +
+            '<label style="' + checkLabel + ';margin-bottom:2px;"><input type="checkbox" id="bili-hires-input"' + (s.hiResAudio ? ' checked' : '') + '> 高音质音轨：优先无损 FLAC / 杜比全景声</label>' +
+            '<div style="' + labelStyle + ';font-size:11px;">需大会员；无损 FLAC 部分播放器不支持，默认用普通音轨</div>' +
             (IS_PORTABLE ? '<button id="bili-clear-marks" style="width:100%;margin-top:10px;padding:7px 0;border:1px solid var(--bili-save-border);background:var(--bili-save-input-bg);color:var(--bili-save-muted);border-radius:8px;cursor:pointer;font-size:12px;">🧹 清空「已下载」记录</button>' : '') +
             '</div>';
         panel.innerHTML =
@@ -2372,6 +2721,16 @@
             saveSettings(cur);
             showToast(hideEnvInput.checked ? '已隐藏需要本地环境的功能' : '已恢复显示需要本地环境的功能');
         });
+        // 音轨质量：即时生效，不用点保存（和上面「去除无关功能」一个套路）
+        const hiresInput = panel.querySelector('#bili-hires-input');
+        if(hiresInput){
+            hiresInput.addEventListener('change', () => {
+                const cur2 = loadSettings();
+                cur2.hiResAudio = hiresInput.checked;
+                saveSettings(cur2);
+                showToast(hiresInput.checked ? '已开启高音质音轨（优先无损 FLAC / 杜比全景声）' : '已切回普通音轨（兼容性最好）');
+            });
+        }
         const refreshDirInfo = async () => {
             const info = await getSaveDir();
             if(curEl) curEl.textContent = '当前 / Current: ' + ((info && info.dir) || '未连接本地服务 / server not running');
@@ -2426,6 +2785,7 @@
                     portableSave: psaveRadio ? psaveRadio.value : 'zip',
                     portableVideoSave: vsaveRadio ? vsaveRadio.value : 'single',
                     envNotice: prev.envNotice, envNoticeShown: prev.envNoticeShown, hideEnvOnly: prev.hideEnvOnly,
+                    videoQuality: prev.videoQuality, hiResAudio: prev.hiResAudio,
                     keys: Object.assign({}, DEFAULT_SETTINGS.keys, window.__biliPendingKeys || {})
                 });
                 window.__biliPendingKeys = null;
@@ -2452,6 +2812,7 @@
             const ns = { saveDir: dir, intervalMs, timeoutMs, dedupe, downloadMode, autoRun, keys,
                 portableSave: prevSettings.portableSave, portableVideoSave: prevSettings.portableVideoSave,
                 envNotice: prevSettings.envNotice,
+                videoQuality: prevSettings.videoQuality, hiResAudio: prevSettings.hiResAudio,
                 envNoticeShown: prevSettings.envNoticeShown, hideEnvOnly: prevSettings.hideEnvOnly };
             saveSettings(ns);
             window.__biliPendingKeys = null;
@@ -2721,27 +3082,57 @@
         return null;
     }
 
-    // 是否已登录：浏览器里读不到 HttpOnly 的 SESSDATA，问接口最靠谱（走同源带 Cookie）。
-    // 未登录时给 playurl 带 try_look=1 —— 实测能把可用画质从 480P 提到 1080P；
-    // yt-dlp / BBDown 同样是「未登录才带」（登录时带可能被当成试看），所以探测失败时按已登录处理，保守不动
-    let loggedInProbe = null;
-    async function detectLoggedIn(){
-        if(loggedInProbe !== null) return loggedInProbe;
+    // nav 接口一次能拿到两样东西：登录态 + wbi 签名用的两个 key，所以一次探测两用。
+    // 登录态：浏览器里读不到 HttpOnly 的 SESSDATA，问接口最靠谱（同源请求自带 Cookie）；
+    // 探测失败按「已登录」处理，保守不动 —— 未登录才带 try_look，带错可能被当成试看。
+    let navCache = null;
+    async function fetchNavInfo(){
+        if(navCache) return navCache;
         try{
             const j = JSON.parse(await fetchText('https://api.bilibili.com/x/web-interface/nav'));
-            loggedInProbe = !!(j && j.data && j.data.isLogin);
+            navCache = {
+                loggedIn: !!(j && j.data && j.data.isLogin),
+                keys: WB ? WB.parseWbiKeys(j) : null
+            };
         }catch(e){
-            loggedInProbe = true;
+            navCache = { loggedIn: true, keys: null };
         }
-        return loggedInProbe;
+        return navCache;
     }
+    const detectLoggedIn = async () => (await fetchNavInfo()).loggedIn;
+    const getWbiKeys = async () => (await fetchNavInfo()).keys;
 
+    // 音轨挑选：默认拿普通音轨里码率最高的（AAC，兼容性最好，下完直接能播）；
+    // 开了「高音质音轨」再优先无损 FLAC（30251）→ 杜比全景声（30250）→ 普通音轨
+    function pickAudioStream(dash, hiRes){
+        const normal = Array.isArray(dash.audio) ? dash.audio : [];
+        const flac = (dash.flac && Array.isArray(dash.flac.audio)) ? dash.flac.audio : [];
+        const dolby = (dash.dolby && Array.isArray(dash.dolby.audio)) ? dash.dolby.audio : [];
+        // 同类音轨里挑档位最高的：先比 id（30280=192K > 30232=132K > 30216=64K），
+        // 再拿带宽兜底 —— 实测 30232 与 30280 的 bandwidth 字段会一模一样（都是 91668），只看带宽会挑错
+        const best = list => list.slice().sort((x, y) =>
+            ((Number(y.id) || 0) - (Number(x.id) || 0)) || ((y.bandwidth || 0) - (x.bandwidth || 0)))[0] || null;
+        return hiRes
+            ? (best(flac) || best(dolby) || best(normal))
+            : (best(normal) || best(dolby) || best(flac));
+    }
+    // playurl 的 support_formats 是「这个视频声明支持哪些档位」，dash.video 才是这个账号真能拿到的。
+    // 声明了却没返回 = 拿不到（多半要大会员 / 没登录）—— 标出来，免得用户疑惑「选了 4K 怎么只给 1080P」
+    function parseBlockedQualities(data, availableIds, loggedIn){
+        const list = Array.isArray(data && data.support_formats) ? data.support_formats : [];
+        const have = Array.isArray(availableIds) ? availableIds : [];
+        return list.filter(f => f && f.quality && have.indexOf(f.quality) < 0).map(f => ({
+            id: f.quality,
+            label: f.new_description || qualityLabel(f.quality),
+            reason: (Number(f.limit_watch_reason) > 0) ? '需大会员' : (loggedIn ? '当前不可用' : '需登录')
+        }));
+    }
     // 解析 DASH 结果（抽出来复用：便携版要在「单文件 durl」与 DASH 之间比一下谁更清晰）
-    function parseDashStream(data, target){
+    function parseDashStream(data, target, hiRes, loggedIn){
         const dash = data && data.dash;
         if(!dash || !Array.isArray(dash.video) || !dash.video.length) return null;
         const v = pickStream(dash.video, target) || dash.video[0];
-        const a = pickStream(dash.audio, 0);
+        const a = pickAudioStream(dash, hiRes);
         const durSec = (data.timelength || dash.duration || 0) / 1000;
         const vbw = v.bandwidth || 0;
         const abw = a ? (a.bandwidth || 0) : 0;
@@ -2751,8 +3142,10 @@
             audioUrl: a ? (a.baseUrl || a.base_url) : null,
             size: (durSec > 0 && vbw) ? Math.round((vbw + abw) * durSec / 8) : null,
             quality: v.id || null,
+            audioQuality: a ? (a.id || null) : null,
             ext: /mp4/i.test(mt) ? 'mp4' : 'm4s',
             available: dash.video.map(x => x.id).filter(Boolean),
+            blocked: parseBlockedQualities(data, dash.video.map(x => x.id).filter(Boolean), loggedIn),
             merged: false
         };
     }
@@ -2772,36 +3165,71 @@
         };
     }
 
-    // 调用 playurl 接口获取视频/音频流地址与大小
-    // targetQn：0 = 自动（取最高可用）；>0 时尽量取该清晰度，取不到按 B 站规则降级到最接近的
-    async function fetchVideoStreams(id, cid, targetQn){
-        const target = Number(targetQn) || 0;
-        const streamApi = 'https://api.bilibili.com/x/player/playurl?' + videoIdParam(id) + '&cid=' + cid +
-            '&fourk=1&fnval=';
-        // 未登录时补 try_look=1（实测画质上限 480P → 1080P，两个视频都验证过）
-        const tryLook = (await detectLoggedIn()) ? '' : '&try_look=1';
-        const getData = async query => {
+    // 视频号 → playurl 请求参数对象（wbi 签名要按 key 排序再拼串，所以用结构化参数，别拼字符串）
+    function videoParams(id, cid){
+        const idParam = videoIdParam(id);
+        const eq = idParam.indexOf('=');
+        const p = {};
+        p[idParam.slice(0, eq)] = idParam.slice(eq + 1);
+        if(cid != null) p.cid = String(cid);
+        return p;
+    }
+    // 参数对象 → query 串（与签名用同一套编码规则）
+    const toQuery = params => Object.keys(params)
+        .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k])).join('&');
+
+    // playurl 请求：先试带 wbi 签名的（降风控）；签名拿不到、或者带签名没取到数据，
+    // 就原样退回未签名请求 —— 实测不签名也能正常取流（Bilibili-Evolved 同样不签），
+    // 所以签名只能当锦上添花，绝不能成为单点故障。
+    async function fetchPlayUrl(params){
+        const api = 'https://api.bilibili.com/x/player/playurl?';
+        const get = async q => {
             try{
-                const j = JSON.parse(await fetchText(streamApi + query + tryLook));
+                const j = JSON.parse(await fetchText(api + q));
                 return (j && j.code === 0 && j.data) ? j.data : null;
             }catch(e){
                 return null;
             }
+        };
+        const keys = await getWbiKeys();
+        if(keys && WB){
+            const signed = await get(WB.signQuery(params, keys.imgKey, keys.subKey));
+            if(signed) return signed;
+        }
+        return await get(toQuery(params));
+    }
+
+    // 调用 playurl 接口获取视频/音频流地址与大小
+    // targetQn：0 = 自动（取最高可用）；>0 时尽量取该清晰度，取不到按 B 站规则降级到最接近的
+    async function fetchVideoStreams(id, cid, targetQn){
+        const target = Number(targetQn) || 0;
+        const logged = await detectLoggedIn();
+        const hiRes = !!loadSettings().hiResAudio;
+        // fnval=4048 = 4K|HDR|杜比视界|杜比音频|8K|DASH 一起要；fnval=1 = 官方音视频合一 mp4
+        const ask = (fnval, qn) => {
+            const p = videoParams(id, cid);
+            p.fourk = '1';
+            p.fnval = String(fnval);
+            p.qn = String(qn);
+            // 未登录时补 try_look=1（实测画质上限 480P → 1080P，两个视频都验证过）
+            if(!logged) p.try_look = '1';
+            return fetchPlayUrl(p);
         };
         try{
             // 便携版没有 ffmpeg：能拿「音视频合一的官方 mp4」就优先拿它（单文件、自带音轨）。
             // 这种格式 B 站最高只到 720P，所以用户点名更高清晰度时要去试 DASH——但必须比一比
             // 谁真的更清晰：未登录时 DASH 可能只给 480P，反而比 durl 的 720P 差，那就别换。
             if(IS_PORTABLE){
-                const durlStream = parseDurlStream(await getData('1&qn=' + (target || 80)));
+                const durlStream = parseDurlStream(await ask(1, target || 80));
                 if(durlStream && (!target || (durlStream.quality || 0) >= target)) return durlStream;
-                const dashStream = parseDashStream(await getData('4048&qn=' + (target || 127)), target);
+                const dashData = await ask(4048, target || 127);
+                const dashStream = parseDashStream(dashData, target, hiRes, logged);
                 if(dashStream && (!durlStream || (dashStream.quality || 0) > (durlStream.quality || 0))) return dashStream;
                 return durlStream || dashStream;
             }
             // 环境版直接走 DASH（装了 ffmpeg 会自动合并音画），没有 DASH 的老视频再退回 durl
-            const data = await getData('4048&qn=' + (target || 127));
-            return parseDashStream(data, target) || parseDurlStream(data);
+            const data = await ask(4048, target || 127);
+            return parseDashStream(data, target, hiRes, logged) || parseDurlStream(data);
         }catch(e){
             console.error('获取视频流失败', id, cid, e);
         }
@@ -2882,7 +3310,7 @@
             '<button id="bili-video-dl" style="' + STYLE.btnPrimary + '">下载选中</button>' +
             '<button id="bili-video-close" style="padding:6px 12px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px;">关闭</button>' +
             '</div>' +
-            (IS_PORTABLE ? ('<div style="margin-top:8px;font-size:11px;color:#fa8c16;">便携版：默认下 B 站官方 mp4 单文件（自带音轨、无需 ffmpeg），但这种格式最高只有 720P；要 1080P 以上就在上面选具体清晰度' + (loadSettings().hideEnvOnly ? '' : '（会音画分开存，合并成带声音的 mp4 需要环境版）') + '</div>') : '') +
+            (IS_PORTABLE ? ('<div style="margin-top:8px;font-size:11px;color:#fa8c16;">便携版：默认下 B 站官方 mp4 单文件（自带音轨、无需 ffmpeg），但这种格式最高只有 720P；要 1080P 以上就在上面选具体清晰度（下载后会自动合并成一个带声音的 mp4，合并不了才分开存）</div>') : '') +
             '<div id="bili-video-dir" style="margin-top:8px;font-size:11px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title=""></div>';
         document.body.appendChild(panel);
 
@@ -2894,18 +3322,30 @@
         const qualityEl = panel.querySelector('#bili-video-quality');
         const qualityHintEl = panel.querySelector('#bili-video-quality-hint');
         const currentQuality = () => (qualityEl ? (Number(qualityEl.value) || 0) : 0);
+        // 「本视频支持、但当前账号拿不到」的档位提示（只让第一个拿到信息的视频说话）
+        let blockedHint = '';
+        const blockedHintText = list => {
+            const names = [];
+            list.forEach(b => {
+                const s = (b.label || qualityLabel(b.id)) + (b.reason ? '（' + b.reason + '）' : '');
+                if(names.indexOf(s) < 0) names.push(s);
+            });
+            return '｜本视频还支持 ' + names.slice(0, 3).join('、') + (names.length > 3 ? ' 等' : '') + '，当前账号拿不到';
+        };
         const refreshQualityHint = () => {
             if(!qualityHintEl) return;
             const q = currentQuality();
+            let text;
             if(!q){
-                qualityHintEl.textContent = IS_PORTABLE
+                text = IS_PORTABLE
                     ? '自动：优先下带声音的官方单文件（这种格式 B 站最高 720P）；想要更高画质请在上面选具体清晰度'
                     : '自动：取该视频可用的最高画质（装了 ffmpeg 会自动合并音画）';
-                return;
+            }else{
+                text = IS_PORTABLE
+                    ? (qualityLabel(q) + '：下载后自动合并成一个带声音的 mp4')
+                    : (qualityLabel(q) + '：取不到这一档时自动降到最接近的档位');
             }
-            qualityHintEl.textContent = IS_PORTABLE
-                ? (qualityLabel(q) + '：会音画分开存成 .video + .audio，合并成带声音的 mp4 需要环境版')
-                : (qualityLabel(q) + '：取不到这一档时自动降到最接近的档位');
+            qualityHintEl.textContent = text + blockedHint;
         };
         refreshQualityHint();
         if(qualityEl){
@@ -3000,6 +3440,16 @@
             hintEl.textContent = '共 ' + state.items.length + ' 个';
         };
 
+        // 取到的流信息落到列表项上；顺带记下「本视频支持、但当前账号拿不到」的档位用于提示
+        const applyStream = (it, s) => {
+            it.videoUrl = s.videoUrl; it.audioUrl = s.audioUrl; it.size = s.size;
+            it.quality = s.quality; it.ext = s.ext;
+            if(s.blocked && s.blocked.length && !blockedHint){
+                blockedHint = blockedHintText(s.blocked);
+                refreshQualityHint();
+            }
+        };
+
         // ── 获取大小与画质（跳过合集项，改为下载时按需获取）──
         const fetchSizes = async () => {
             hintEl.textContent = '正在获取大小与画质...';
@@ -3011,7 +3461,7 @@
                     const it = state.items[i];
                     if(it.cid == null || it.error || it.fromCollection){ continue; }
                     const s = await fetchVideoStreams(it.bvid, it.cid, currentQuality());
-                    if(s && s.videoUrl){ it.videoUrl = s.videoUrl; it.audioUrl = s.audioUrl; it.size = s.size; it.quality = s.quality; it.ext = s.ext; }
+                    if(s && s.videoUrl) applyStream(it, s);
                     else { it.error = true; }
                     const span = hintEl; if(span) span.textContent = '正在获取大小与画质 ' + Math.min(done, total) + '/' + total + ' ...';
                     render();
@@ -3056,7 +3506,7 @@
                             }
                             if(it.cid != null && !it.error){
                                 const s = await fetchVideoStreams(it.bvid, it.cid, currentQuality());
-                                if(s && s.videoUrl){ it.videoUrl = s.videoUrl; it.audioUrl = s.audioUrl; it.size = s.size; it.quality = s.quality; it.ext = s.ext; }
+                                if(s && s.videoUrl) applyStream(it, s);
                                 else { it.error = true; }
                             }
                         }catch(e){ it.error = true; }

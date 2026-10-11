@@ -25,7 +25,14 @@ const NOTES = {
     'build.js': '构建脚本：把 src/ 下的源码生成「环境版」和「便携版」两份用户脚本（npm run build）。',
     'src/bilibili-save.user.js': '用户脚本的唯一手写源码。要加功能、改功能就改它，改完跑 npm run build 重新生成两份产物；直接改生成物会被下次构建覆盖。',
     'src/lib/browser-save.js': '便携版内核源码：文件名转义、ZIP 打包与分批、下载记账（IndexedDB）。构建时会被内联进用户脚本，所以别放 Node 专用代码进来。',
-    'tests/browser-save.test.js': '便携版内核的单测（npm test）。ZIP 结构的期望值由独立的 Python 实现算出，属于跨语言比对，不是自己验自己。',
+    'src/lib/dash-merge.js': '便携版的音视频合并源码：用 MP4Box 把 DASH 的两条流（video.m4s + audio.m4s）重排成一个能直接播放的 mp4，不重新编码、无画质损失。构建时内联进便携版用户脚本，Node 单测直接 require 同一份文件（保证「测的代码」和「发的代码」是同一份）。',
+    'src/lib/mp4box.min.js': '第三方库 MP4Box.js（github.com/gpac/mp4box.js，BSD-3-Clause）的 esbuild 打包产物，只用它的 mp4 解析/封装能力做音视频合并。只内联进便携版；环境版不带它（环境版交给 ffmpeg 合并）。别手改，要升级就重新打包一份。',
+    'src/lib/wbi.js': 'B 站 wbi 签名源码（w_rid / wts，内含手写 MD5）：给 playurl 请求加签名以降低风控概率；拿不到两个 key、或带签名取不到数据，会自动退回未签名请求（实测不签名也能正常取流，签名只是锦上添花）。构建时内联进两个版本，Node 单测直接 require 同一份文件。',
+    'tests/browser-save.test.js': '便携版内核的单测（npm test）。ZIP 结构的期望值由独立的 Python 实现算出，属于跨语言比对，不是自己验自己；另含取流/清晰度/合并等回归守卫。',
+    'tests/dash-merge.test.js': '音视频合并的单测（npm test）：拿 tests/fixtures 里的真实 fMP4 分片合并后读回，确认音视频两条轨都在、编码与样本数不变、超限与坏输入会被明确拒绝。',
+    'tests/wbi.test.js': 'wbi 签名的单测（npm test）：MD5 用 RFC 1321 标准向量 + Node 自带 crypto 双重对照，签名串按接口规则逐条断言。',
+    'tests/fixtures/video.m4s': '测试用的极小 fMP4 视频分片（ffmpeg 生成的黑帧，约 2KB），只给合并单测用；里面没有任何真实视频内容。',
+    'tests/fixtures/audio.m4s': '测试用的极小 fMP4 音频分片（ffmpeg 生成的正弦波，约 3KB），只给合并单测用。',
     'tests/pack.test.js': '打包工具链的单测：ZIP 写入器结构/CRC、备注注入、发行包清单是否齐全。',
     'pack/pack.js': '打包脚本：构建 + 把源码、脚本、运行时按版本装进不同的 zip（npm run pack）。',
     'pack/publish.js': '发布脚本：把 发行版/*.zip 传到 GitHub Release（npm run release）。',
@@ -43,7 +50,7 @@ const BY_KIND = {
     'bilibili-save.user.js': {
         env: '「环境版」浏览器脚本：装进 Tampermonkey 后负责页面功能（原图提取、审查模式、视频面板、已下载标记），下载与落盘交给同目录的 save_images_server.js。有 @updateURL，装好后会自动更新。生成物，别手改。',
         full: '「环境版」浏览器脚本：装进 Tampermonkey 后负责页面功能（原图提取、审查模式、视频面板、已下载标记），下载与落盘交给同目录的 save_images_server.js。有 @updateURL，装好后会自动更新。生成物，别手改。',
-        portable: '「便携版」浏览器脚本：一切都在浏览器里跑——图片打包成 ZIP、视频直接下载，不需要 Node / ffmpeg，也不连本地服务。不做自动更新（免得被换成需要环境的环境版）。生成物，别手改。'
+        portable: '「便携版」浏览器脚本：一切都在浏览器里跑——图片打包成 ZIP、视频直接下载，高画质（1080P 及以上）会自动把音视频合并成一个 mp4（内置 MP4Box，不需要 ffmpeg），也不连本地服务。不做自动更新（免得被换成需要环境的环境版）。生成物，别手改。'
     },
     '使用说明.txt': {
         env: '本包的使用说明：怎么装、怎么用、文件存哪、常见问题。第一次拿到这个包先看它。',

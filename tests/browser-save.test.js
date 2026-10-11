@@ -257,15 +257,50 @@ const runBuildChecks = () => {
         });
         check(label + '：取流用 fnval=4048（含 8K/HDR 高位标志），不再是 16', () => {
             const t = fs.readFileSync(file, 'utf8');
-            assert.ok(t.includes("'4048&qn='"), '没有用 fnval=4048 请求 DASH');
+            assert.ok(/await ask\(4048, /.test(t), '没有用 fnval=4048 请求 DASH');
+            assert.ok(/p\.fnval = String\(fnval\)/.test(t), 'fnval 没进请求参数');
             assert.ok(!/\bfnval='\s*\+\s*16\b|146\b(?!\d)/.test(t), '疑似还残留 fnval=16 的旧写法');
         });
         check(label + '：未登录时补 try_look=1（实测画质上限 480P → 1080P）', () => {
             const t = fs.readFileSync(file, 'utf8');
-            assert.ok(t.includes("'&try_look=1'"), '没带 try_look，未登录用户会被白白限制在 480P');
-            assert.ok(/async function detectLoggedIn\(/.test(t), '缺登录态探测，会误伤已登录用户');
-            assert.ok(/detectLoggedIn\(\)\) \? '' : '&try_look=1'/.test(t), 'try_look 不是「仅未登录才带」');
-            assert.ok(/loggedInProbe = null;/.test(t), '登录态探测结果没有失效机制');
+            assert.ok(/if\(!logged\) p\.try_look = '1'/.test(t), '没带 try_look，未登录用户会被白白限制在 480P');
+            assert.ok(/const detectLoggedIn = /.test(t), '缺登录态探测，会误伤已登录用户');
+            assert.ok(/navCache = null;/.test(t), '登录态探测结果没有失效机制');
+        });
+        check(label + '：playurl 带 wbi 签名，但必须有未签名回退（签名不能成为单点故障）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(/WB\.signQuery\(params, keys\.imgKey, keys\.subKey\)/.test(t), '没有用 wbi 签名');
+            assert.ok(/const keys = await getWbiKeys\(\);/.test(t), '没取签名用的 key');
+            assert.ok(/return await get\(toQuery\(params\)\);/.test(t), '没有未签名回退：签名一失效就完全取不到流');
+        });
+        check(label + '：标注「本视频支持、但当前账号拿不到」的档位', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(/function parseBlockedQualities\(/.test(t), '缺档位标注逻辑');
+            assert.ok(t.includes('需大会员'), '没标出「需大会员」');
+            assert.ok(/f\.limit_watch_reason/.test(t), '没用接口给的 limit_watch_reason');
+        });
+        check(label + '：高音质音轨是可选项，默认仍走普通音轨（兼容性优先）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(/hiResAudio: false/.test(t), '默认值应为 false —— 无损 FLAC 很多播放器不支持');
+            assert.ok(/function pickAudioStream\(/.test(t), '缺音轨挑选');
+            assert.ok(/best\(normal\) \|\| best\(dolby\) \|\| best\(flac\)/.test(t), '默认没优先普通音轨');
+            assert.ok(/best\(flac\) \|\| best\(dolby\) \|\| best\(normal\)/.test(t), '开了高音质没优先无损 FLAC');
+            assert.ok(/\(Number\(y\.id\) \|\| 0\) - \(Number\(x\.id\) \|\| 0\)/.test(t),
+                '同类音轨没按 id 档位挑（实测 30232/30280 带宽字段相同，只看带宽会挑错）');
+        });
+        check(label + '：音画合并（合并不了必须退回分开存）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(/const wantMerge = it =>/.test(t), '缺合并判定');
+            assert.ok(/DM\.mergeDashStreams\(vBytes, aBytes\)/.test(t), '没调用合并');
+            assert.ok(/mergeNotice = true;/.test(t), '合并失败没有回退提示');
+            assert.ok(/DM\.shouldMerge\(it\.size\)/.test(t), '没做体积上限判断（大文件会把标签页撑爆）');
+            if (label === '便携版') {
+                assert.ok(t.includes('MP4BoxLib'), '便携版没内联 MP4Box，合不了音画');
+                assert.ok(t.includes('__biliDashMerge'), '便携版没内联 dash-merge');
+            } else {
+                assert.ok(!t.includes('BoxRegistry'), '环境版不该带上 MP4Box（白白多几百 KB）');
+            }
+            assert.ok(t.includes('__biliWbi'), '缺 wbi 签名模块');
         });
         check(label + '：同画质多编码时优先 avc1（不依赖 B 站返回顺序）', () => {
             const t = fs.readFileSync(file, 'utf8');

@@ -42,17 +42,20 @@ const PACK_NOTE_RE = /^[ \t]*\/\/ 【备注】[^\n]*\n/gm;
 const stripPackNote = text => text.replace(PACK_NOTE_RE, '');
 
 // 内联 src/lib/*.js：把标记行换成库文件内容（缩进对齐宿主）
-function inlineLibs(text) {
-    const re = /^([ \t]*)\/\* @@INLINE:lib\/([\w.-]+)@@ \*\/[ \t]*$/gm;
+//   /* @@INLINE:lib/x.js@@ */            所有模式都内联
+//   /* @@INLINE-PORTABLE:lib/x.js@@ */   只内联进便携版（其它模式整行删掉）
+function inlineLibs(text, mode) {
+    const re = /^([ \t]*)\/\* @@INLINE(-PORTABLE)?:lib\/([\w.-]+)@@ \*\/[ \t]*\n/gm;
     let replaced = 0;
-    const out = text.replace(re, (m, indent, file) => {
+    const out = text.replace(re, (m, indent, portableOnly, file) => {
+        if (portableOnly && mode !== 'portable') return '';         // 该模式用不上 → 整行删掉
         replaced++;
         const filePath = path.join(LIB_DIR, file);
         if (!fs.existsSync(filePath)) throw new Error('内联失败，找不到库文件：' + filePath);
         const body = stripPackNote(fs.readFileSync(filePath, 'utf8'))
             .replace(/\r\n/g, '\n').replace(/\s+$/, '');
         const indented = body.split('\n').map(l => (l ? indent + l : l)).join('\n');
-        return indented;
+        return indented + '\n';
     });
     // 一个标记都没匹配到 = 标记被改坏/删掉，直接中止，别把没内联的残次品发出去
     if (!replaced) throw new Error('源文件中未找到任何 /* @@INLINE:lib/...@@ */ 内联标记');
@@ -88,12 +91,12 @@ function main() {
         process.exit(1);
     }
     const src = stripPackNote(fs.readFileSync(SRC_FILE, 'utf8')).replace(/\r\n/g, '\n');
-    const inlined = inlineLibs(src);
-    const libBytes = fs.statSync(path.join(LIB_DIR, 'browser-save.js')).size;
+    const libFiles = fs.readdirSync(LIB_DIR).filter(f => f.endsWith('.js'));
+    const libBytes = libFiles.reduce((n, f) => n + fs.statSync(path.join(LIB_DIR, f)).size, 0);
 
     const results = [];
     for (const [mode, cfg] of Object.entries(MODES)) {
-        const out = applyMode(inlined, mode, cfg);
+        const out = applyMode(inlineLibs(src, mode), mode, cfg);    // 内联按模式区分（如 MP4Box 只进便携版）
         fs.mkdirSync(path.dirname(cfg.out), { recursive: true });
         fs.writeFileSync(cfg.out, out);
         results.push({ mode, file: path.relative(ROOT, cfg.out), bytes: Buffer.byteLength(out) });
@@ -116,7 +119,7 @@ function main() {
         }
     }
 
-    console.log('源文件      : src/bilibili-save.user.js + src/lib/browser-save.js (' + libBytes + ' B)');
+    console.log('源文件      : src/bilibili-save.user.js + src/lib/*.js (' + libBytes + ' B)');
     for (const r of results) {
         console.log(('生成[' + r.mode + ']').padEnd(16) + r.file.padEnd(42) + r.bytes + ' B');
     }
