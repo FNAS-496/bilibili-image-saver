@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）（便携版·无需环境）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader (Portable)
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.37
+// @version      0.9.38
 // @author       FNAS-496 <sijiudeliu@outlook.com>
 // @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、日夜主题（默认不自动下载，需点击按钮）；便携版纯浏览器运行，无需安装任何环境）
 // @description:en Bilibili-Plus: auto-download original images from Bilibili favorites, dynamics, opus and space pages; video batch download, review mode, custom keys (needs the local server started via "一键启动.bat")
@@ -1132,6 +1132,17 @@
         }
     }
 
+    // 网络层错误翻成人话：失败时必须让用户知道是「被插件拦了」「CDN 不可达」还是「地址过期」，
+    // 否则界面上只有一个「失败 1 个」，跟点了没反应没区别
+    function friendlyNetError(err){
+        const msg = (err && err.message) || String(err == null ? '' : err);
+        if(/^timeout$/i.test(msg) || /abort/i.test(msg)) return '下载超时（网络太慢或 CDN 不可达），可以直接重试';
+        if(/Failed to fetch|NetworkError|load failed|ERR_BLOCKED|ERR_FAILED|net::/i.test(msg)){
+            return '请求被中断或被拦截：广告/隐私插件可能挡了视频 CDN，也可能是网络策略限制或该 CDN 不可达（换个网络或关掉拦截插件再试）';
+        }
+        return msg || '未知错误';
+    }
+
     function httpStatusError(status){
         // 403 基本都是 CDN 嫌弃 Referer 或者下载地址过期：给一句人能看懂的提示
         return status === 403
@@ -1619,7 +1630,9 @@
                     }
                 }
             }catch(err){
-                results.push({ idx:i, bvid: it.bvid, title: it.title, error: err.message || String(err) });
+                const why = friendlyNetError(err);
+                it.errorMsg = why;                          // 列表项上也留一份，方便看是哪一项、为什么
+                results.push({ idx:i, bvid: it.bvid, title: it.title, error: why });
             }
         }
         if(zipMode) await flushZip();
@@ -1628,14 +1641,17 @@
         const saved = results.filter(r => r.saved && !r.error).length;
         const failed = results.filter(r => r.error).length;
         const separate = results.filter(r => r.separate).length;
+        const firstFail = results.find(r => r.error);      // 把「为什么失败」直接摆出来，别让用户对着一个数字猜
         if(ui.progText) ui.progText.textContent = failed ? '⚠️ 部分完成' : '✅ 下载完成';
         if(ui.progSub) ui.progSub.textContent = '成功 ' + saved + ' 个'
             + (failed ? '，失败 ' + failed + ' 个' : '')
-            + (separate ? '，音画分开保存 ' + separate + ' 个' : '');
+            + (separate ? '，音画分开保存 ' + separate + ' 个' : '')
+            + (firstFail ? '　原因：' + String(firstFail.error).slice(0, 80) : '');
         const where = zipMode
             ? (zipPart ? ('已打包 ' + zipPart + ' 个 ZIP' + (dir ? ('，保存到：' + dir.name) : '（浏览器「下载」文件夹）')) : '')
             : (dir ? ('保存位置：' + dir.name) : '保存位置：浏览器「下载」文件夹');
         showToast('视频下载完成：成功 ' + saved + ' 个' + (failed ? '，失败 ' + failed + ' 个' : '') +
+            (firstFail ? '\n失败原因：' + String(firstFail.error).slice(0, 140) : '') +
             (where ? '\n' + where : ''));
         if(mergeNotice){
             if(mergeError) showToast('⚠️ 音画合并没成功，已分开保存\n原因：' + mergeError + '\n（环境版装了 ffmpeg 可自动合并）');
@@ -2608,7 +2624,9 @@
         Object.assign(panel.style, {
             position:'fixed', right:'20px', bottom:'150px', zIndex:999999,
             background:'var(--bili-save-bg)', color:'var(--bili-save-fg)', padding:'0', borderRadius:'14px',
-            width:'380px', boxShadow:'0 10px 36px rgba(0,0,0,0.32)', fontSize:'13px', border:'1px solid var(--bili-save-border)', overflow:'hidden'
+            width:'380px', maxWidth:'calc(100vw - 40px)', maxHeight:'calc(100vh - 190px)',
+            boxShadow:'0 10px 36px rgba(0,0,0,0.32)', fontSize:'13px', border:'1px solid var(--bili-save-border)',
+            overflowX:'hidden', overflowY:'auto'      // 内容再长也留得住：面板最高到视口顶下来 20px，超出就滚动
         });
         const s = loadSettings();
         const inputStyle = 'width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--bili-save-border);border-radius:8px;font-size:13px;margin-bottom:4px;background:var(--bili-save-input-bg);color:var(--bili-save-fg);outline:none;';
@@ -3270,7 +3288,7 @@
 
     // 视频下载面板：列表 / 大小画质 / 下载进度
     function openVideoPanel(){
-        loggedInProbe = null;                          // 每次开面板重新探测登录态（用户可能中途登录/登出）
+        navCache = null;                               // 每次开面板重新探测登录态（用户可能中途登录/登出）
         const existing = document.getElementById('bili-video-panel');
         if(existing){ existing.remove(); }
         const panel = document.createElement('div');
@@ -3279,7 +3297,8 @@
         Object.assign(panel.style, {
             position:'fixed', right:'20px', bottom:'180px', zIndex:999999,
             background:'#fff', color:'#222', padding:'16px', borderRadius:'12px',
-            width:'440px', maxHeight:'70vh', display:'flex', flexDirection:'column',
+            width:'440px', maxWidth:'calc(100vw - 40px)', maxHeight:'calc(100vh - 200px)',
+            display:'flex', flexDirection:'column',
             boxShadow:'0 8px 28px rgba(0,0,0,0.3)', fontSize:'13px'
         });
         panel.innerHTML =
@@ -3393,7 +3412,8 @@
                 const dur = it.duration ? (' · ' + formatDuration(it.duration)) : '';
                 const size = it.size ? (' · ' + formatSize(it.size)) : '';
                 const q = it.quality ? (' · ' + qualityLabel(it.quality)) : '';
-                const err = it.error ? ' · <span style="color:#f00;">获取失败</span>' : '';
+                const err = it.error ? ' · <span style="color:#f00;">获取失败</span>'
+                    : (it.errorMsg ? ' · <span style="color:#f00;" title="' + escapeHtml(it.errorMsg) + '">下载失败</span>' : '');
                 const done = state.downloaded.has(videoKey(it)) ? ' · <span style="color:#00a85d;">✅ 已下载</span>' : '';
                 const ck = state.checked.has(it) ? ' checked' : '';
                 return '<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid #f2f2f2;cursor:pointer;">' +

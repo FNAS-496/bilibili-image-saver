@@ -266,6 +266,8 @@ const runBuildChecks = () => {
             assert.ok(/if\(!logged\) p\.try_look = '1'/.test(t), '没带 try_look，未登录用户会被白白限制在 480P');
             assert.ok(/const detectLoggedIn = /.test(t), '缺登录态探测，会误伤已登录用户');
             assert.ok(/navCache = null;/.test(t), '登录态探测结果没有失效机制');
+            // 严格模式下引用未声明变量会直接抛错、整块功能点不动（改名时漏改一个引用就是这样炸的）
+            assert.ok(!/loggedInProbe/.test(t), '残留了已改名的 loggedInProbe：严格模式下会 ReferenceError，按钮点了没反应');
         });
         check(label + '：playurl 带 wbi 签名，但必须有未签名回退（签名不能成为单点故障）', () => {
             const t = fs.readFileSync(file, 'utf8');
@@ -287,6 +289,23 @@ const runBuildChecks = () => {
             assert.ok(/best\(flac\) \|\| best\(dolby\) \|\| best\(normal\)/.test(t), '开了高音质没优先无损 FLAC');
             assert.ok(/\(Number\(y\.id\) \|\| 0\) - \(Number\(x\.id\) \|\| 0\)/.test(t),
                 '同类音轨没按 id 档位挑（实测 30232/30280 带宽字段相同，只看带宽会挑错）');
+        });
+        check(label + '：下载失败必须说明原因（不能只丢一个「失败 N 个」）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(/function friendlyNetError\(/.test(t), '没有把网络错误翻成人话，用户只会看到 Failed to fetch');
+            assert.ok(/const firstFail = results\.find\(r => r\.error\)/.test(t), '失败原因没显示出来');
+            assert.ok(/it\.errorMsg = why/.test(t), '失败项没记录原因');
+            assert.ok(/下载失败/.test(t), '列表项没标出哪一项下载失败');
+        });
+        check(label + '：面板不能超出视口（内容长了要滚动）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            const at = t.indexOf("panel.id = 'bili-save-settings'");
+            const seg = t.slice(at, at + 900);
+            assert.ok(/maxHeight:'calc\(100vh - \d+px\)'/.test(seg), '设置面板没有高度上限，内容一长就顶出屏幕');
+            assert.ok(/overflowY:'auto'/.test(seg), '设置面板不会滚动，超出屏幕的按钮点不到');
+            const at2 = t.indexOf("panel.id = 'bili-video-panel'");
+            const seg2 = t.slice(at2, at2 + 900);
+            assert.ok(/maxHeight:'calc\(100vh - \d+px\)'/.test(seg2), '视频面板高度没用视口算，小屏会顶出去');
         });
         check(label + '：音画合并（合并不了必须退回分开存）', () => {
             const t = fs.readFileSync(file, 'utf8');
