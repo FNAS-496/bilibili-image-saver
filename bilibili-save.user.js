@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.40
+// @version      0.9.41
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -1453,6 +1453,19 @@
     }
 
     // 便携版：批量下载视频（官方 mp4 单文件直存；仅 DASH 时音画分开存并提示一次）
+    // 依次尝试候选地址：B 站给同一个流会返回多条 CDN 地址（baseUrl + backupUrl），
+    // 实测经常第一条节点连不上、后面的才通。所以前一个失败就换下一个，别一次失败就判死刑。
+    async function tryUrls(urls, fn){
+        const list = (Array.isArray(urls) ? urls : []).filter(Boolean);
+        if(!list.length) throw new Error('没有可用的下载地址');
+        let lastErr = null;
+        for(let i = 0; i < list.length; i++){
+            try{ return await fn(list[i], i); }
+            catch(e){ lastErr = e; }
+        }
+        throw lastErr;
+    }
+
     // opts.force = true 表示「重新下载」：覆盖同名文件，也不看「已下载」记账
     async function saveVideosInBrowser(items, ui, opts){
         const force = !!(opts && opts.force);
@@ -1539,12 +1552,12 @@
                     showToast('⚠️ 该视频约 ' + formatSize(it.size) + '，要先整块读进内存\n建议在「设置 → 保存位置」选择「写入授权目录」（直接流式写入文件，不占内存）');
                 }
                 if(zipMode){
-                    const vBytes = await fetchBytes(it.videoUrl, 600000, fileProgress(i, '⬇️ 视频流'));
+                    const vBytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, 600000, fileProgress(i, '⬇️ 视频流')));
                     const vName = base + (it.audioUrl ? '.video.' : '.') + (it.ext || 'mp4');
                     const r = { idx:i, bvid: it.bvid, title: it.title, saved: vName };
                     if(it.audioUrl){
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
-                        const aBytes = await fetchBytes(it.audioUrl, 600000, fileProgress(i, '🎵 音频流'));
+                        const aBytes = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchBytes(u, 600000, fileProgress(i, '🎵 音频流')));
                         const aName = base + '.audio.m4a';
                         // 便携版能就地合并成一个 mp4（合并失败才退回分开存）
                         const merged = wantMerge(it) ? await tryMerge(i, it, vBytes, aBytes) : null;
@@ -1568,9 +1581,9 @@
                 }else if(wantMerge(it)){
                     // 便携版合并：两条流都得先完整进内存才能交给 MP4Box，
                     // 体积超限的项在 wantMerge 里已被挡掉（会走下面那条流式分开存的老路）
-                    const vBytes = await fetchBytes(it.videoUrl, 600000, fileProgress(i, '⬇️ 视频流'));
+                    const vBytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, 600000, fileProgress(i, '⬇️ 视频流')));
                     if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
-                    const aBytes = await fetchBytes(it.audioUrl, 600000, fileProgress(i, '🎵 音频流'));
+                    const aBytes = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchBytes(u, 600000, fileProgress(i, '🎵 音频流')));
                     const merged = await tryMerge(i, it, vBytes, aBytes);
                     const mName = base + '.mp4';
                     const vName = base + '.video.' + (it.ext || 'mp4');
@@ -1600,11 +1613,11 @@
                     const aName = base + '.audio.m4a';
                     if(dir){
                         // 目录模式：边下边写，不整块进内存；已有同名文件就跳过（不覆盖用户文件）
-                        const wroteVideo = await fetchToDir(dir, vName, it.videoUrl, 600000, !force, fileProgress(i, '⬇️ 视频流'));
+                        const wroteVideo = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchToDir(dir, vName, u, 600000, !force, fileProgress(i, '⬇️ 视频流')));
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
                         let wroteAudio = true;
                         try{
-                            wroteAudio = await fetchToDir(dir, aName, it.audioUrl, 600000, !force, fileProgress(i, '🎵 音频流'));
+                            wroteAudio = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchToDir(dir, aName, u, 600000, !force, fileProgress(i, '🎵 音频流')));
                         }catch(e){
                             // 只清掉本次自己写的那个文件，别动用户原有的
                             if(wroteVideo !== false){ try{ await dir.removeEntry(vName); }catch(_e){} }
@@ -1616,9 +1629,9 @@
                             continue;                      // 音画两个文件都在，不用重下
                         }
                     }else{
-                        const vBytes = await fetchBytes(it.videoUrl, 600000, fileProgress(i, '⬇️ 视频流'));
+                        const vBytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, 600000, fileProgress(i, '⬇️ 视频流')));
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
-                        const aBytes = await fetchBytes(it.audioUrl, 600000, fileProgress(i, '🎵 音频流'));
+                        const aBytes = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchBytes(u, 600000, fileProgress(i, '🎵 音频流')));
                         triggerBlobDownload(new Blob([vBytes]), vName);
                         await sleep(500);                      // 稍作间隔，避免浏览器连续下载节流
                         triggerBlobDownload(new Blob([aBytes]), aName);
@@ -1628,10 +1641,10 @@
                 }else{
                     const name = base + '.' + (it.ext || 'mp4');
                     if(dir){
-                        const wrote = await fetchToDir(dir, name, it.videoUrl, 600000, !force, fileProgress(i, '⬇️ 下载中'));
+                        const wrote = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchToDir(dir, name, u, 600000, !force, fileProgress(i, '⬇️ 下载中')));
                         results.push({ idx:i, bvid: it.bvid, title: it.title, saved: name, exists: wrote === false });
                     }else{
-                        const bytes = await fetchBytes(it.videoUrl, 600000, fileProgress(i, '⬇️ 下载中'));
+                        const bytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, 600000, fileProgress(i, '⬇️ 下载中')));
                         triggerBlobDownload(new Blob([bytes]), name);
                         results.push({ idx:i, bvid: it.bvid, title: it.title, saved: name });
                     }
@@ -3164,9 +3177,23 @@
         const vbw = v.bandwidth || 0;
         const abw = a ? (a.bandwidth || 0) : 0;
         const mt = v.mimeType || v.mime_type || '';
+        // B 站会给多条地址（baseUrl + backupUrl，常分布在 mcdn / mountaintoys / bilivideo 等不同节点）。
+        // 实测中经常第一条节点连不上、后面的才通 —— 所以全都留着，下载时按顺序重试
+        const urlList = (item, primary) => {
+            if(!item) return [];
+            const list = [];
+            const push = u => { const s = String(u || '').trim(); if(s && list.indexOf(s) < 0) list.push(s); };
+            push(primary);
+            (item.backupUrl || item.backup_url || []).forEach(push);
+            return list;
+        };
+        const vUrls = urlList(v, v.baseUrl || v.base_url);
+        const aUrls = urlList(a, a ? (a.baseUrl || a.base_url) : null);
         return {
-            videoUrl: v.baseUrl || v.base_url,
-            audioUrl: a ? (a.baseUrl || a.base_url) : null,
+            videoUrl: vUrls[0] || null,
+            videoUrls: vUrls,
+            audioUrl: aUrls[0] || null,
+            audioUrls: aUrls,
             size: (durSec > 0 && vbw) ? Math.round((vbw + abw) * durSec / 8) : null,
             quality: v.id || null,
             audioQuality: a ? (a.id || null) : null,
@@ -3182,9 +3209,16 @@
         if(!durl) return null;
         let sum = 0;
         data.durl.forEach(x => { sum += (x.size || 0); });
+        // 单文件同样有多条备用地址
+        const urls = [];
+        const push = u => { const s = String(u || '').trim(); if(s && urls.indexOf(s) < 0) urls.push(s); };
+        push(durl.url);
+        (durl.backup_url || durl.backupUrl || []).forEach(push);
         return {
-            videoUrl: durl.url,
+            videoUrl: urls[0] || null,
+            videoUrls: urls,
             audioUrl: null,
+            audioUrls: [],
             size: sum || durl.size || null,
             quality: data.quality || null,
             ext: /\.flv/i.test(durl.url) ? 'flv' : 'mp4',
@@ -3385,7 +3419,8 @@
                 // 清晰度变了，之前按旧档位取好的流地址作废，重新取
                 state.items.forEach(it => {
                     it.videoUrl = null; it.audioUrl = null;
-                    it.size = null; it.quality = null; it.error = false;
+                    it.videoUrls = []; it.audioUrls = [];
+                    it.size = null; it.quality = null; it.error = false; it.errorMsg = null;
                 });
                 render();
                 const label = currentQuality() ? qualityLabel(currentQuality()) : '自动';
@@ -3492,7 +3527,10 @@
 
         // 取到的流信息落到列表项上；顺带记下「本视频支持、但当前账号拿不到」的档位用于提示
         const applyStream = (it, s) => {
-            it.videoUrl = s.videoUrl; it.audioUrl = s.audioUrl; it.size = s.size;
+            it.videoUrl = s.videoUrl; it.audioUrl = s.audioUrl;
+            it.videoUrls = s.videoUrls || (s.videoUrl ? [s.videoUrl] : []);
+            it.audioUrls = s.audioUrls || (s.audioUrl ? [s.audioUrl] : []);
+            it.size = s.size;
             it.quality = s.quality; it.ext = s.ext;
             if(s.blocked && s.blocked.length && !blockedHint){
                 blockedHint = blockedHintText(s.blocked);
@@ -3576,7 +3614,8 @@
             if(progEl) progEl.style.display = 'block';
             dlBtn.textContent = '下载中…';
             const videos = chosen.map(it => ({
-                title: it.title, videoUrl: it.videoUrl, audioUrl: it.audioUrl, ext: it.ext,
+                title: it.title, videoUrl: it.videoUrl, audioUrl: it.audioUrl,
+                videoUrls: it.videoUrls || [], audioUrls: it.audioUrls || [], ext: it.ext,
                 bvid: it.bvid, cid: it.cid, multiPart: !!it.multiPart
             }));
             const jobId = 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);

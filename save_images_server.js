@@ -437,6 +437,31 @@ async function saveVideo(item, index, job, force){
     if(!videoUrl){
         throw new Error('no video url');
     }
+    // B 站对同一个流会给多条 CDN 地址（baseUrl + backupUrl）。实测常出现第一个节点连不上、
+    // 后面的才通，所以逐条尝试，别因为一条坏节点就整个失败。
+    const asUrlList = (primary, extra) => {
+        const list = [];
+        const push = u => { const s = String(u || '').trim(); if(s && list.indexOf(s) < 0) list.push(s); };
+        push(primary);
+        (Array.isArray(extra) ? extra : []).forEach(push);
+        return list;
+    };
+    const videoUrls = asUrlList(videoUrl, item.videoUrls);
+    const audioUrls = audioUrl ? asUrlList(audioUrl, item.audioUrls) : [];
+    // 依次试候选地址直到有一条成功；全都失败就把最后一个错误抛出去
+    const downloadAny = async (urls, dest, phase, message) => {
+        let lastErr = null;
+        for(const u of urls){
+            try{
+                await downloadVideoToFile(u, dest, null, (received, total) => setJob(phase, message, received, total));
+                return u;
+            }catch(e){
+                lastErr = e;
+                try{ if(fs.existsSync(dest)) fs.unlinkSync(dest); }catch(_e){}   // 半成品别留给下一次尝试
+            }
+        }
+        throw lastErr || new Error('no usable url');
+    };
 
     const tmpVideo = assertInsideDir(VIDEO_OUT_DIR, path.join(VIDEO_OUT_DIR, `.tmp_${Date.now()}_${index}_v.${ext}`));
     const tmpAudio = assertInsideDir(VIDEO_OUT_DIR, path.join(VIDEO_OUT_DIR, `.tmp_${Date.now()}_${index}_a.m4a`));
@@ -445,10 +470,10 @@ async function saveVideo(item, index, job, force){
     };
     try{
         setJob('downloading-video', '下载视频流');
-        await downloadVideoToFile(videoUrl, tmpVideo, null, (received, total) => setJob('downloading-video', '下载视频流', received, total));
-        if(audioUrl){
+        await downloadAny(videoUrls, tmpVideo, 'downloading-video', '下载视频流');
+        if(audioUrls.length){
             setJob('downloading-audio', '下载音频流');
-            await downloadVideoToFile(audioUrl, tmpAudio, null, (received, total) => setJob('downloading-audio', '下载音频流', received, total));
+            await downloadAny(audioUrls, tmpAudio, 'downloading-audio', '下载音频流');
             if(hasFfmpeg){
                 setJob('merging', 'ffmpeg 合并音画');
                 await mergeWithFfmpeg(tmpVideo, tmpAudio, outMp4);

@@ -307,6 +307,16 @@ const runBuildChecks = () => {
             const seg2 = t.slice(at2, at2 + 900);
             assert.ok(/maxHeight:'calc\(100vh - \d+px\)'/.test(seg2), '视频面板高度没用视口算，小屏会顶出去');
         });
+        check(label + '：一条 CDN 地址失败要自动换备用地址（B 站给 baseUrl + backupUrl）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(/backupUrl \|\| item\.backup_url/.test(t), '解析时没保留 backupUrl（实测常有首个节点不通）');
+            assert.ok(/async function tryUrls\(urls, fn\)/.test(t), '缺「依次尝试候选地址」的辅助函数');
+            assert.ok(/videoUrls: vUrls/.test(t) && /audioUrls: aUrls/.test(t), 'DASH 结果没带地址列表');
+            assert.ok(/\(durl\.backup_url \|\| durl\.backupUrl \|\| \[\]\)/.test(t), '单文件 durl 没保留备用地址');
+            const uses = (t.match(/tryUrls\(it\.(video|audio)Urls \|\| \[/g) || []).length;
+            assert.ok(uses >= 6, '下载路径还有没用备用地址的（当前只有 ' + uses + ' 处）');
+            assert.ok(/it\.videoUrls = s\.videoUrls/.test(t), 'applyStream 没保存地址列表');
+        });
         check(label + '：blob 下载只能「下载」，绝不能退化成页面导航', () => {
             const t = fs.readFileSync(file, 'utf8');
             const at = t.indexOf('function triggerBlobDownload');

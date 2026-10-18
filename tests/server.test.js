@@ -91,9 +91,18 @@ check('normalizeImageUrl：补协议 / 去缩略参数 / webp→jpg / 去 hash',
     assert.strictEqual(S.normalizeImageUrl('https://i0.hdslb.com/bfs/a.jpg#frag'), 'https://i0.hdslb.com/bfs/a.jpg');
 });
 
-// 「🔄 重下」靠 force 打通三个环节：读请求体 → 跳过查重 → 传进保存流程
-check('视频支持 force 重下（跳过查重、覆盖同名文件）', () => {
+check('视频下载会逐条尝试备用 CDN 地址', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'save_images_server.js'), 'utf8');
+    assert.ok(/const asUrlList = \(primary, extra\)/.test(src), '没有把 baseUrl 与 backupUrl 合成列表');
+    assert.ok(/const videoUrls = asUrlList\(videoUrl, item\.videoUrls\)/.test(src), '视频地址列表没接上');
+    assert.ok(/const audioUrls = audioUrl \? asUrlList\(audioUrl, item\.audioUrls\)/.test(src), '音频地址列表没接上');
+    assert.ok(/const downloadAny = async \(urls, dest, phase, message\)/.test(src), '缺「逐个地址重试」的实现');
+    assert.ok(/await downloadAny\(videoUrls, tmpVideo/.test(src), '视频没用重试逻辑');
+    assert.ok(/await downloadAny\(audioUrls, tmpAudio/.test(src), '音频没用重试逻辑');
+});
+
+// 「🔄 重下」靠 force 打通三个环节：读请求体 → 跳过查重 → 传进保存流程
+check('视频支持 force 重下（跳过查重、覆盖同名文件）', () => {    const src = fs.readFileSync(path.join(__dirname, '..', 'save_images_server.js'), 'utf8');
     assert.ok(/const force = !!payload\.force;/.test(src), '/video/save 没读请求体里的 force');
     assert.ok(/async function saveVideo\(item, index, job, force\)/.test(src), 'saveVideo 没有接 force 参数');
     assert.ok(/if\(!force && fileHasContent\(outMp4\)\)/.test(src), 'force 没有跳过 mp4 查重');
