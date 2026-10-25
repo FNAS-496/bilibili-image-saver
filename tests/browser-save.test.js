@@ -300,12 +300,14 @@ const runBuildChecks = () => {
         check(label + '：面板不能超出视口（内容长了要滚动）', () => {
             const t = fs.readFileSync(file, 'utf8');
             const at = t.indexOf("panel.id = 'bili-save-settings'");
-            const seg = t.slice(at, at + 900);
-            assert.ok(/maxHeight:'calc\(100vh - \d+px\)'/.test(seg), '设置面板没有高度上限，内容一长就顶出屏幕');
-            assert.ok(/overflowY:'auto'/.test(seg), '设置面板不会滚动，超出屏幕的按钮点不到');
+            // 这个函数比较长（几个卡片是变量拼出来的），范围给宽一点
+            const seg = t.slice(at, at + 12000);
+            assert.ok(/max-height:calc\(100vh - \d+px\)/.test(seg), '设置面板没有高度上限，内容一长就顶出屏幕');
+            assert.ok(/<div class="bp-scroll">/.test(seg), '设置面板不会滚动，超出屏幕的按钮点不到');
             const at2 = t.indexOf("panel.id = 'bili-video-panel'");
-            const seg2 = t.slice(at2, at2 + 900);
-            assert.ok(/maxHeight:'calc\(100vh - \d+px\)'/.test(seg2), '视频面板高度没用视口算，小屏会顶出去');
+            const seg2 = t.slice(at2, at2 + 1800);
+            assert.ok(/max-height:calc\(100vh - \d+px\)/.test(seg2), '视频面板高度没用视口算，小屏会顶出去');
+            assert.ok(/bp-scroll/.test(seg2), '视频列表不会滚动');
         });
         check(label + '：一条 CDN 地址失败要自动换备用地址（B 站给 baseUrl + backupUrl）', () => {
             const t = fs.readFileSync(file, 'utf8');

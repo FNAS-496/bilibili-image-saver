@@ -25,6 +25,7 @@ const NOTES = {
     'build.js': '构建脚本：把 src/ 下的源码生成「环境版」和「便携版」两份用户脚本（npm run build）。',
     'src/bilibili-save.user.js': '用户脚本的唯一手写源码。要加功能、改功能就改它，改完跑 npm run build 重新生成两份产物；直接改生成物会被下次构建覆盖。',
     'src/lib/browser-save.js': '便携版内核源码：文件名转义、ZIP 打包与分批、下载记账（IndexedDB）。构建时会被内联进用户脚本，所以别放 Node 专用代码进来。',
+    'src/lib/theme.js': '面板视觉系统源码：设计 token（语义化颜色/间距/字号/圆角/阴影）+ 组件样式表 + 四套主题（跟随系统 / 云白 / 夜空 / 樱花）。构建时内联进两个版本的脚本，换主题只改 <html data-bp-theme>，不重写 DOM。想改配色就改这里的色板，不要再去各面板里改 inline style。',
     'src/lib/dash-merge.js': '便携版的音视频合并源码：用 MP4Box 把 DASH 的两条流（video.m4s + audio.m4s）重排成一个能直接播放的 mp4，不重新编码、无画质损失。构建时内联进便携版用户脚本，Node 单测直接 require 同一份文件（保证「测的代码」和「发的代码」是同一份）。',
     'src/lib/mp4box.min.js': '第三方库 MP4Box.js（github.com/gpac/mp4box.js，BSD-3-Clause）的 esbuild 打包产物，只用它的 mp4 解析/封装能力做音视频合并。只内联进便携版；环境版不带它（环境版交给 ffmpeg 合并）。别手改，要升级就重新打包一份。',
     'src/lib/wbi.js': 'B 站 wbi 签名源码（w_rid / wts，内含手写 MD5）：给 playurl 请求加签名以降低风控概率；拿不到两个 key、或带签名取不到数据，会自动退回未签名请求（实测不签名也能正常取流，签名只是锦上添花）。构建时内联进两个版本，Node 单测直接 require 同一份文件。',

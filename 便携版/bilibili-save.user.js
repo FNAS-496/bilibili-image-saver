@@ -2,9 +2,9 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）（便携版·无需环境）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader (Portable)
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.42
+// @version      0.10.0
 // @author       FNAS-496 <sijiudeliu@outlook.com>
-// @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、日夜主题（默认不自动下载，需点击按钮）；便携版纯浏览器运行，无需安装任何环境）
+// @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、四套主题（跟随系统/云白/夜空/樱花）（默认不自动下载，需点击按钮）；便携版纯浏览器运行，无需安装任何环境）
 // @description:en Bilibili-Plus: auto-download original images from Bilibili favorites, dynamics, opus and space pages; video batch download, review mode, custom keys (needs the local server started via "一键启动.bat")
 // @homepageURL  https://github.com/FNAS-496/bilibili-image-saver
 // @supportURL   https://github.com/FNAS-496/bilibili-image-saver/issues
@@ -48,11 +48,493 @@
     const MAX_CHILD_PAGES = 200;                                   
     const CHILD_CONCURRENCY = 6;
     const MAX_COLLECTION_PAGES = 200;                               // 合集分页安全上限（防止接口 total 异常时失控，正常合集都能拉全）
-    // 跨面板复用的样式片段（调整配色 / 进度条外观时只需改这里）
-    const STYLE = {
-        barFill: 'height:100%;width:0%;background:linear-gradient(90deg,#00a1d6,#00b3e6);border-radius:3px;transition:width .3s;',
-        btnPrimary: 'padding:6px 16px;border:none;background:#00a1d6;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;'
-    };
+    // ────────────────────────────────────────────────────────────────────────
+    // 面板视觉系统：设计 token + 组件样式。所有面板共用这一套，换主题只改 html 上的
+    // data-bp-theme，不再逐个重写 inline style。源文件是 src/lib/theme.js，别在这里手改
+    // ============================================================================
+    // 面板视觉系统：设计 token + 组件样式
+    //
+    // 设计参考（公开资料，非抄代码）：
+    //   · Vercel Geist 的颜色系统 —— 颜色按「用途」分档而不是按色相：
+    //     background / hover-background / active-background、default/hover/active border、
+    //     secondary-text / primary-text。本文件沿用这个思路命名 token，
+    //     所以换主题只需要换一组值，组件样式一行都不用改。
+    //   · Geist 排版 —— label（单行，紧凑）与 copy（多行，行高更大）两类分开；
+    //     字号只保留 11/12/13/15/17 五档，避免现在 11~18 混杂。
+    //   · Refactoring UI 的层次技巧 —— 用「背景色 + 边框 + 阴影」三层区分面板，
+    //     而不是到处画重边框；文字层次靠 颜色 > 字重 > 字号。
+    //
+    // 该文件被 build.js 内联进 userscript，同时可直接被 Node require 做单测。
+    // ============================================================================
+    (function (root, factory) {
+        const api = factory();
+        if (typeof module !== 'undefined' && module.exports) module.exports = api;
+        root.__biliTheme = api;                        // 供浏览器内自检 / 冒烟测试
+    })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+        'use strict';
+
+        // 「auto」跟随系统明暗；其余三套是固定配色
+        const THEMES = ['auto', 'cloud', 'midnight', 'sakura'];
+        const DEFAULT_THEME = 'auto';
+
+        const THEME_LABELS = {
+            auto: '跟随系统',
+            cloud: '云白',
+            midnight: '夜空',
+            sakura: '樱花'
+        };
+
+        // 语义色板。键名固定，值按主题换 —— 组件只看语义，不认具体颜色。
+        const PALETTES = {
+            cloud: {
+                surface: '#ffffff',
+                surface2: '#f7f8fa',
+                subtle: '#f2f3f5',
+                hover: '#e9ebef',
+                border: '#e5e7eb',
+                borderStrong: '#d4d7dd',
+                inputBg: '#ffffff',
+                text: '#18191c',
+                text2: '#61666d',
+                text3: '#9499a0',
+                accent: '#00a1d6',
+                accentHover: '#00b3e6',
+                accentWeak: 'rgba(0,161,214,.16)',
+                accentGlow: 'rgba(0,161,214,.35)',
+                danger: '#f04a5a',
+                success: '#00a85d',
+                warn: '#f59e0b',
+                overlay: 'rgba(20,22,26,.55)',
+                toastBg: 'rgba(22,24,28,.92)',
+                toastFg: '#f2f3f5',
+                // 「抬起一层」的表面：用在分段控件的选中项等场景。
+                // 浅色主题靠白底 + 阴影抬起，深色主题必须用更亮的灰，否则选中项看起来是凹进去的
+                elevated: '#ffffff',
+                shadow: '0 12px 40px rgba(16,20,28,.16), 0 2px 8px rgba(16,20,28,.08)'
+            },
+            midnight: {
+                surface: '#1b1d23',
+                surface2: '#22252c',
+                subtle: '#24272f',
+                hover: '#2d313a',
+                border: '#333844',
+                borderStrong: '#444a58',
+                inputBg: '#20232a',
+                text: '#e9eaee',
+                text2: '#a6abb7',
+                text3: '#71767f',
+                accent: '#00b3e6',
+                accentHover: '#2ec5f0',
+                accentWeak: 'rgba(0,179,230,.20)',
+                accentGlow: 'rgba(0,179,230,.32)',
+                danger: '#ff6b7d',
+                success: '#2fd07a',
+                warn: '#fbbf24',
+                overlay: 'rgba(0,0,0,.66)',
+                toastBg: 'rgba(38,41,49,.96)',
+                toastFg: '#eef0f4',
+                elevated: '#31353f',
+                shadow: '0 12px 40px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.35)'
+            },
+            sakura: {
+                surface: '#fffdfd',
+                surface2: '#fff6f9',
+                subtle: '#fff1f5',
+                hover: '#ffe4ec',
+                border: '#f7dde6',
+                borderStrong: '#eec9d7',
+                inputBg: '#ffffff',
+                text: '#2a1a21',
+                text2: '#7b5a68',
+                text3: '#a98b98',
+                accent: '#fb7299',
+                accentHover: '#ff8bad',
+                accentWeak: 'rgba(251,114,153,.16)',
+                accentGlow: 'rgba(251,114,153,.32)',
+                danger: '#e5484d',
+                success: '#2f9e63',
+                warn: '#d98324',
+                overlay: 'rgba(40,20,30,.5)',
+                toastBg: 'rgba(46,28,36,.93)',
+                toastFg: '#fff0f5',
+                elevated: '#ffffff',
+                shadow: '0 12px 40px rgba(190,90,125,.18), 0 2px 8px rgba(190,90,125,.10)'
+            }
+        };
+
+        // 旧版本只存了 light / dark 两个值，升级后按最接近的主题接住
+        const LEGACY = { light: 'cloud', dark: 'midnight' };
+
+        function normalizeTheme(name) {
+            const raw = String(name == null ? '' : name).trim();
+            if (THEMES.indexOf(raw) >= 0) return raw;
+            if (LEGACY[raw]) return LEGACY[raw];
+            return DEFAULT_THEME;
+        }
+
+        // auto = 跟随系统：浅色用 cloud，深色用 midnight
+        function resolveTheme(name, prefersDark) {
+            const t = normalizeTheme(name);
+            if (t !== 'auto') return t;
+            return prefersDark ? 'midnight' : 'cloud';
+        }
+
+        function tokensFor(name) {
+            return PALETTES[resolveTheme(name, false)];
+        }
+
+        const VARS = {
+            surface: '--bp-surface',
+            surface2: '--bp-surface-2',
+            subtle: '--bp-subtle',
+            hover: '--bp-hover',
+            border: '--bp-border',
+            borderStrong: '--bp-border-strong',
+            inputBg: '--bp-input-bg',
+            text: '--bp-text',
+            text2: '--bp-text-2',
+            text3: '--bp-text-3',
+            accent: '--bp-accent',
+            accentHover: '--bp-accent-hover',
+            accentWeak: '--bp-accent-weak',
+            accentGlow: '--bp-accent-glow',
+            danger: '--bp-danger',
+            success: '--bp-success',
+            warn: '--bp-warn',
+            overlay: '--bp-overlay',
+            toastBg: '--bp-toast-bg',
+            toastFg: '--bp-toast-fg',
+            elevated: '--bp-elevated',
+            shadow: '--bp-shadow-panel'
+        };
+
+        function paletteCss(p) {
+            return Object.keys(VARS).map(k => '    ' + VARS[k] + ': ' + p[k] + ';').join('\n');
+        }
+
+        // 完整样式表：token + 组件。注入一次即可，之后换主题只改 html 上的 data-bp-theme。
+        function buildCss() {
+            return [
+                '/* ===== 尺寸 / 排版阶梯（与主题无关） ===== */',
+                ':root{',
+                '    --bp-space-1: 4px; --bp-space-2: 8px; --bp-space-3: 12px;',
+                '    --bp-space-4: 16px; --bp-space-5: 20px; --bp-space-6: 24px; --bp-space-8: 32px;',
+                '    --bp-radius-sm: 6px; --bp-radius-md: 10px; --bp-radius-lg: 14px;',
+                '    --bp-radius-xl: 18px; --bp-radius-full: 999px;',
+                '    --bp-fs-xs: 11px; --bp-fs-sm: 12px; --bp-fs-md: 13px; --bp-fs-lg: 15px; --bp-fs-xl: 17px;',
+                '    --bp-fw-normal: 400; --bp-fw-medium: 500; --bp-fw-bold: 600;',
+                '    --bp-ease: cubic-bezier(.2,.8,.2,1); --bp-dur: 180ms;',
+                '    --bp-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;',
+                '    --bp-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;',
+                '    --bp-z-fab: 2147483000; --bp-z-panel: 2147483100;',
+                '    --bp-z-toast: 2147483200; --bp-z-overlay: 2147483300;',
+                '}',
+                '',
+                '/* ===== 主题：颜色 token ===== */',
+                ':root, :root[data-bp-theme="cloud"]{',
+                paletteCss(PALETTES.cloud),
+                '}',
+                ':root[data-bp-theme="sakura"]{',
+                paletteCss(PALETTES.sakura),
+                '}',
+                ':root[data-bp-theme="midnight"], :root[data-bp-theme="auto"]{',
+                paletteCss(PALETTES.cloud),
+                '}',
+                '@media (prefers-color-scheme: dark){',
+                '    :root[data-bp-theme="auto"]{',
+                paletteCss(PALETTES.midnight),
+                '    }',
+                '}',
+                ':root[data-bp-theme="midnight"]{',
+                paletteCss(PALETTES.midnight),
+                '}',
+                '',
+                '/* ===== 动画 ===== */',
+                '@keyframes bp-pop{from{opacity:0;transform:translateY(8px) scale(.985);}to{opacity:1;transform:none;}}',
+                '@keyframes bp-slide-in{from{opacity:0;transform:translateX(10px);}to{opacity:1;transform:none;}}',
+                '@keyframes bp-fade{from{opacity:0;}to{opacity:1;}}',
+                '',
+                '/* ===== 基础容器 ===== */',
+                '.bp-panel{',
+                '    position:fixed; display:flex; flex-direction:column; box-sizing:border-box;',
+                '    background:var(--bp-surface); color:var(--bp-text);',
+                '    border:1px solid var(--bp-border); border-radius:var(--bp-radius-xl);',
+                '    box-shadow:var(--bp-shadow-panel);',
+                '    font-family:var(--bp-font); font-size:var(--bp-fs-md); line-height:1.6;',
+                '    overflow:hidden; z-index:var(--bp-z-panel);',
+                '    animation:bp-pop var(--bp-dur) var(--bp-ease);',
+                '}',
+                '.bp-panel *{box-sizing:border-box;}',
+                '.bp-panel button, .bp-panel input, .bp-panel select, .bp-panel textarea{font-family:inherit;}',
+                '/* 正文区必须能收缩：否则内容一长就把底部的操作区顶掉（面板是 flex column） */',
+                '.bp-panel > .bp-scroll{flex:1;min-height:0;}',
+                '',
+                '/* ===== 面板头 ===== */',
+                '.bp-head{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bp-border);flex-shrink:0;}',
+                '.bp-head__icon{font-size:16px;line-height:1;}',
+                '.bp-head__title{flex:1;min-width:0;font-size:var(--bp-fs-lg);font-weight:var(--bp-fw-bold);',
+                '    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+                '.bp-head__meta{font-size:var(--bp-fs-xs);color:var(--bp-text-3);flex-shrink:0;}',
+                '.bp-close{width:28px;height:28px;flex-shrink:0;display:grid;place-items:center;',
+                '    border:none;border-radius:var(--bp-radius-full);background:var(--bp-hover);',
+                '    color:var(--bp-text-2);font-size:14px;line-height:1;cursor:pointer;',
+                '    transition:background var(--bp-dur),color var(--bp-dur);}',
+                '.bp-close:hover{background:var(--bp-border);color:var(--bp-text);}',
+                '',
+                '/* ===== 分组 ===== */',
+                '.bp-section{padding:14px 16px;border-bottom:1px solid var(--bp-border);}',
+                '.bp-section:last-child{border-bottom:none;}',
+                '.bp-section__title{display:flex;align-items:center;gap:6px;margin-bottom:10px;',
+                '    font-size:var(--bp-fs-sm);font-weight:var(--bp-fw-bold);color:var(--bp-text-2);letter-spacing:.02em;}',
+                '',
+                '/* ===== 文字 ===== */',
+                '.bp-label{display:block;margin-bottom:6px;font-size:var(--bp-fs-sm);color:var(--bp-text-2);}',
+                '.bp-hint{font-size:var(--bp-fs-xs);color:var(--bp-text-3);line-height:1.6;}',
+                '.bp-strong{font-weight:var(--bp-fw-bold);color:var(--bp-text);}',
+                '.bp-muted{color:var(--bp-text-3);}',
+                '.bp-code{font-family:var(--bp-mono);font-size:var(--bp-fs-xs);background:var(--bp-subtle);',
+                '    padding:1px 5px;border-radius:var(--bp-radius-sm);}',
+                '.bp-link{color:var(--bp-accent);text-decoration:none;font-size:var(--bp-fs-sm);}',
+                '.bp-link:hover{text-decoration:underline;}',
+                '.bp-feat{display:flex;gap:8px;line-height:1.75;font-size:var(--bp-fs-sm);color:var(--bp-text-2);}',
+                '.bp-feat b{color:var(--bp-text);}',
+                '',
+                '/* ===== 按钮 ===== */',
+                '.bp-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;',
+                '    padding:8px 14px;border:1px solid var(--bp-border);border-radius:var(--bp-radius-md);',
+                '    background:var(--bp-surface-2);color:var(--bp-text);font-size:var(--bp-fs-md);',
+                '    font-weight:var(--bp-fw-medium);line-height:1.2;cursor:pointer;white-space:nowrap;',
+                '    transition:background var(--bp-dur),border-color var(--bp-dur),transform var(--bp-dur),box-shadow var(--bp-dur);}',
+                '.bp-btn:hover{background:var(--bp-hover);border-color:var(--bp-border-strong);}',
+                '.bp-btn:active{transform:scale(.98);}',
+                '.bp-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;}',
+                '.bp-btn--primary{background:var(--bp-accent);border-color:transparent;color:#fff;}',
+                '.bp-btn--primary:hover{background:var(--bp-accent-hover);border-color:transparent;box-shadow:0 4px 14px var(--bp-accent-glow);}',
+                '.bp-btn--ghost{background:transparent;border-color:var(--bp-border);}',
+                '.bp-btn--ghost:hover{background:var(--bp-hover);}',
+                '.bp-btn--danger{background:transparent;border-color:var(--bp-danger);color:var(--bp-danger);}',
+                '.bp-btn--danger:hover{background:var(--bp-hover);}',
+                '.bp-btn--sm{padding:5px 10px;font-size:var(--bp-fs-sm);border-radius:var(--bp-radius-sm);}',
+                '.bp-btn--block{width:100%;}',
+                '.bp-btn--accent-ghost{background:transparent;border-color:var(--bp-accent);color:var(--bp-accent);text-decoration:none;}',
+                '.bp-btn--accent-ghost:hover{background:var(--bp-accent-weak);}',
+                '',
+                '/* ===== 表单 ===== */',
+                '.bp-input,.bp-select{width:100%;padding:8px 10px;border:1px solid var(--bp-border);',
+                '    border-radius:var(--bp-radius-md);background:var(--bp-input-bg);color:var(--bp-text);',
+                '    font-size:var(--bp-fs-md);outline:none;',
+                '    transition:border-color var(--bp-dur),box-shadow var(--bp-dur);}',
+                '.bp-input:focus,.bp-select:focus{border-color:var(--bp-accent);box-shadow:0 0 0 3px var(--bp-accent-weak);}',
+                '.bp-input::placeholder{color:var(--bp-text-3);}',
+                '.bp-check{display:flex;align-items:center;gap:8px;font-size:var(--bp-fs-sm);',
+                '    color:var(--bp-text);cursor:pointer;line-height:1.5;}',
+                '.bp-check input{width:15px;height:15px;margin:0;flex-shrink:0;accent-color:var(--bp-accent);cursor:pointer;}',
+                '',
+                '/* ===== 分段控件（主题选择那种） ===== */',
+                '.bp-seg{display:flex;gap:4px;padding:4px;background:var(--bp-subtle);',
+                '    border:1px solid var(--bp-border);border-radius:var(--bp-radius-md);}',
+                '.bp-seg__item{flex:1;padding:6px 10px;border:none;border-radius:calc(var(--bp-radius-md) - 3px);',
+                '    background:transparent;color:var(--bp-text-2);font-size:var(--bp-fs-sm);cursor:pointer;',
+                '    white-space:nowrap;transition:background var(--bp-dur),color var(--bp-dur),box-shadow var(--bp-dur);}',
+                '.bp-seg__item:hover{color:var(--bp-text);}',
+                '.bp-seg__item[aria-pressed="true"]{background:var(--bp-elevated);color:var(--bp-accent);',
+                '    font-weight:var(--bp-fw-bold);box-shadow:0 1px 3px rgba(0,0,0,.10);}',
+                '',
+                '/* ===== 进度条 ===== */',
+                '.bp-progress{height:6px;border-radius:var(--bp-radius-full);background:var(--bp-hover);overflow:hidden;}',
+                '.bp-progress__bar{height:100%;width:0;border-radius:inherit;',
+                '    background:linear-gradient(90deg,var(--bp-accent),var(--bp-accent-hover));',
+                '    transition:width .25s var(--bp-ease);}',
+                '',
+                '/* ===== 键帽 ===== */',
+                '.bp-kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px;',
+                '    padding:2px 7px;border:1px solid var(--bp-border);border-radius:var(--bp-radius-sm);',
+                '    background:var(--bp-surface);color:var(--bp-text-2);font-family:var(--bp-mono);',
+                '    font-size:var(--bp-fs-xs);font-weight:var(--bp-fw-bold);line-height:1.6;}',
+                '.bp-kbd--accent{border-color:var(--bp-accent);color:var(--bp-accent);}',
+                '',
+                '/* ===== 滚动区 ===== */',
+                '.bp-scroll{overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;',
+                '    scrollbar-color:var(--bp-border-strong) transparent;}',
+                '.bp-scroll::-webkit-scrollbar{width:8px;height:8px;}',
+                '.bp-scroll::-webkit-scrollbar-thumb{background:var(--bp-border-strong);border-radius:var(--bp-radius-full);}',
+                '.bp-scroll::-webkit-scrollbar-track{background:transparent;}',
+                '',
+                '/* ===== 列表项（视频 / 图片清单） ===== */',
+                '.bp-item{display:flex;align-items:center;gap:8px;padding:8px 10px;',
+                '    border-radius:var(--bp-radius-md);cursor:pointer;transition:background var(--bp-dur);}',
+                '.bp-item:hover{background:var(--bp-hover);}',
+                '.bp-item input[type="checkbox"]{width:15px;height:15px;margin:0;flex-shrink:0;',
+                '    accent-color:var(--bp-accent);cursor:pointer;}',
+                '.bp-item__title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+                '    font-size:var(--bp-fs-md);color:var(--bp-text);}',
+                '.bp-item__meta{flex-shrink:0;display:flex;align-items:center;gap:6px;',
+                '    font-size:var(--bp-fs-xs);color:var(--bp-text-3);}',
+                '',
+                '/* ===== 底部操作区 ===== */',
+                '.bp-foot{display:flex;align-items:center;gap:8px;padding:12px 16px;flex-shrink:0;',
+                '    border-top:1px solid var(--bp-border);background:var(--bp-surface-2);}',
+                '.bp-foot__spacer{flex:1;}',
+                '',
+                '/* ===== 进度卡片 ===== */',
+                '.bp-prog{padding:10px 12px;border:1px solid var(--bp-border);',
+                '    border-radius:var(--bp-radius-md);background:var(--bp-surface-2);}',
+                '.bp-prog__top{display:flex;align-items:center;justify-content:space-between;gap:8px;',
+                '    margin-bottom:6px;font-size:var(--bp-fs-sm);color:var(--bp-text-2);}',
+                '.bp-prog__text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+                '.bp-prog__pct{flex-shrink:0;color:var(--bp-accent);font-weight:var(--bp-fw-bold);}',
+                '.bp-prog__sub{margin-top:6px;font-size:var(--bp-fs-xs);color:var(--bp-text-3);',
+                '    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+                '',
+                '/* ===== 徽标 / 空状态 ===== */',
+                '.bp-badge{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;',
+                '    border-radius:var(--bp-radius-full);background:var(--bp-subtle);',
+                '    color:var(--bp-text-2);font-size:var(--bp-fs-xs);line-height:1.7;}',
+                '.bp-badge--ok{color:var(--bp-success);}',
+                '.bp-badge--accent{color:var(--bp-accent);}',
+                '.bp-badge--warn{color:var(--bp-warn);}',
+                '.bp-badge--danger{color:var(--bp-danger);}',
+                '.bp-empty{padding:28px 16px;text-align:center;font-size:var(--bp-fs-sm);color:var(--bp-text-3);}',
+                '',
+                '/* ===== 收款码 / 提示条 / 图片放大 ===== */',
+                '.bp-qr{width:132px;height:132px;flex-shrink:0;object-fit:contain;cursor:zoom-in;',
+                '    border:1px solid var(--bp-border);border-radius:var(--bp-radius-md);background:var(--bp-subtle);}',
+                '.bp-tipbox{margin-top:12px;padding:8px 10px;border-radius:var(--bp-radius-md);',
+                '    background:var(--bp-accent-weak);color:var(--bp-text);font-size:var(--bp-fs-sm);text-align:center;line-height:1.6;}',
+                '.bp-lightbox{display:flex;align-items:center;justify-content:center;cursor:zoom-out;}',
+                '.bp-lightbox__img{max-width:min(520px,92vw);max-height:92vh;background:#fff;padding:14px;',
+                '    border-radius:var(--bp-radius-lg);box-shadow:0 8px 40px rgba(0,0,0,.5);}',
+                '',
+                '/* ===== 悬浮按钮组 ===== */',
+                '.bp-fab-wrap{position:fixed;right:20px;bottom:20px;z-index:var(--bp-z-fab);',
+                '    display:flex;flex-direction:column;align-items:flex-end;gap:10px;',
+                '    font-family:var(--bp-font);}',
+                '.bp-fab__menu{display:flex;flex-direction:column;align-items:flex-end;gap:8px;}',
+                '.bp-fab__menu[hidden]{display:none;}',
+                '.bp-fab__item{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;',
+                '    border:1px solid var(--bp-border);border-radius:var(--bp-radius-full);',
+                '    background:var(--bp-surface);color:var(--bp-text);font-size:var(--bp-fs-md);',
+                '    font-weight:var(--bp-fw-medium);line-height:1.2;cursor:pointer;white-space:nowrap;',
+                '    box-shadow:0 2px 10px rgba(0,0,0,.12);',
+                '    transition:background var(--bp-dur),border-color var(--bp-dur),transform var(--bp-dur);}',
+                '.bp-fab__item:hover{background:var(--bp-hover);border-color:var(--bp-border-strong);transform:translateX(-2px);}',
+                '.bp-fab__item:disabled{opacity:.55;cursor:not-allowed;transform:none;}',
+                '.bp-fab__item[data-tone="accent"]{border-color:var(--bp-accent);color:var(--bp-accent);}',
+                '.bp-fab__item[data-tone="pink"]{border-color:#fb7299;color:#fb7299;}',
+                '.bp-fab__item[data-tone="amber"]{border-color:var(--bp-warn);color:var(--bp-warn);}',
+                '.bp-fab{display:inline-flex;align-items:center;gap:8px;padding:11px 18px;border:none;',
+                '    border-radius:var(--bp-radius-full);background:linear-gradient(135deg,var(--bp-accent),var(--bp-accent-hover));',
+                '    color:#fff;font-size:var(--bp-fs-lg);font-weight:var(--bp-fw-bold);letter-spacing:.02em;',
+                '    cursor:pointer;box-shadow:0 6px 20px var(--bp-accent-glow);',
+                '    transition:transform var(--bp-dur),box-shadow var(--bp-dur),background var(--bp-dur);}',
+                '.bp-fab:hover{transform:translateY(-1px);box-shadow:0 8px 26px var(--bp-accent-glow);}',
+                '.bp-fab:active{transform:scale(.97);}',
+                '.bp-fab__dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.85;}',
+                '',
+                '/* ===== 状态浮窗 / 提示 ===== */',
+                '/* 位置用变量控制：悬浮菜单展开时（html.bp-fab-open）整体上移，',
+                '   免得提示被弹出的按钮压住（两者都在右下角） */',
+                ':root{--bp-toast-bottom:88px;}',
+                ':root.bp-fab-open{--bp-toast-bottom:280px;}',
+                '.bp-toast{position:fixed;right:20px;bottom:var(--bp-toast-bottom);z-index:var(--bp-z-toast);',
+                '    max-width:360px;min-width:190px;padding:10px 14px;border-radius:var(--bp-radius-lg);',
+                '    background:var(--bp-toast-bg);color:var(--bp-toast-fg);',
+                '    border:1px solid rgba(255,255,255,.08);box-shadow:0 10px 32px rgba(0,0,0,.35);',
+                '    font-family:var(--bp-font);font-size:var(--bp-fs-md);line-height:1.65;',
+                '    white-space:pre-line;animation:bp-pop var(--bp-dur) var(--bp-ease);',
+                '    transition:bottom var(--bp-dur) var(--bp-ease);}',
+                '.bp-toast__stop{margin-left:10px;padding:2px 10px;border:none;border-radius:var(--bp-radius-sm);',
+                '    background:var(--bp-danger);color:#fff;font-size:var(--bp-fs-sm);cursor:pointer;}',
+                '',
+                '/* ===== 全屏遮罩（审查模式 / 收款码放大） ===== */',
+                '.bp-overlay{position:fixed;inset:0;z-index:var(--bp-z-overlay);background:var(--bp-overlay);',
+                '    animation:bp-fade var(--bp-dur) var(--bp-ease);}',
+                '',
+                '/* ===== 审查模式：全屏三栏 ===== */',
+                '.bp-review{position:fixed;inset:0;z-index:var(--bp-z-overlay);display:flex;align-items:stretch;',
+                '    background:var(--bp-surface);color:var(--bp-text);font-family:var(--bp-font);',
+                '    font-size:var(--bp-fs-md);line-height:1.6;animation:bp-fade var(--bp-dur) var(--bp-ease);}',
+                '.bp-review *{box-sizing:border-box;}',
+                '.bp-review button,.bp-review input{font-family:inherit;}',
+                '.bp-review__side{width:232px;flex-shrink:0;padding:16px 14px;overflow-y:auto;',
+                '    display:flex;flex-direction:column;background:var(--bp-surface-2);',
+                '    scrollbar-width:thin;scrollbar-color:var(--bp-border-strong) transparent;}',
+                '.bp-review__side--left{border-right:1px solid var(--bp-border);}',
+                '.bp-review__side--right{border-left:1px solid var(--bp-border);width:240px;}',
+                '.bp-review__center{flex:1;min-width:0;display:flex;flex-direction:column;position:relative;overflow:hidden;}',
+                '.bp-review__badge{position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:3;',
+                '    padding:5px 16px;border-radius:var(--bp-radius-full);background:var(--bp-surface);',
+                '    border:1px solid var(--bp-border);box-shadow:0 1px 6px rgba(0,0,0,.10);',
+                '    font-size:var(--bp-fs-sm);color:var(--bp-text-2);white-space:nowrap;}',
+                '.bp-review__full{position:absolute;top:12px;right:14px;z-index:3;}',
+                '.bp-review__frame{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;',
+                '    margin:48px 16px 16px;border-radius:var(--bp-radius-lg);background:var(--bp-subtle);overflow:hidden;}',
+                '.bp-review__frame img{max-width:100%;max-height:100%;object-fit:contain;display:block;',
+                '    border-radius:var(--bp-radius-sm);box-shadow:0 2px 16px rgba(0,0,0,.18);}',
+                '.bp-review.is-full .bp-review__frame{margin:16px;}',
+                '.bp-krow{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;',
+                '    background:var(--bp-surface);border:1px solid var(--bp-border);border-radius:var(--bp-radius-md);',
+                '    margin-bottom:6px;font-size:var(--bp-fs-sm);cursor:pointer;',
+                '    transition:border-color var(--bp-dur),background var(--bp-dur);}',
+                '.bp-krow:hover{border-color:var(--bp-accent);}',
+                '.bp-krow__label{flex:1;min-width:0;text-align:left;white-space:nowrap;',
+                '    overflow:hidden;text-overflow:ellipsis;color:var(--bp-text);}',
+                '.bp-review__progress{margin-top:auto;padding:10px 12px;background:var(--bp-surface);',
+                '    border:1px solid var(--bp-border);border-radius:var(--bp-radius-md);font-size:var(--bp-fs-sm);}',
+                '.bp-review__upname{font-weight:var(--bp-fw-bold);font-size:var(--bp-fs-md);',
+                '    word-break:break-all;color:var(--bp-text);}',
+                '.bp-review__uptext{line-height:1.75;font-size:var(--bp-fs-sm);color:var(--bp-text-2);',
+                '    white-space:pre-wrap;word-break:break-word;margin-bottom:12px;padding:8px 10px;',
+                '    background:var(--bp-subtle);border-radius:var(--bp-radius-md);}',
+                '@media (max-width:760px){',
+                '    .bp-review__side{width:150px;padding:10px;}',
+                '    .bp-review__side--right{width:150px;}',
+                '    .bp-review__frame{margin:44px 10px 10px;}',
+                '}',
+                '',
+                '/* ===== 焦点可见（键盘可达性） ===== */',
+                '.bp-panel :focus-visible,.bp-fab-wrap :focus-visible,.bp-toast :focus-visible{',
+                '    outline:2px solid var(--bp-accent);outline-offset:2px;}',
+                '',
+                '/* ===== 窄屏：面板改成贴底全宽 ===== */',
+                '@media (max-width:560px){',
+                '    .bp-panel{left:12px !important;right:12px !important;width:auto !important;',
+                '        max-width:none !important;bottom:12px !important;',
+                '        max-height:calc(100vh - 24px) !important;}',
+                '    .bp-toast{left:12px;right:12px;max-width:none;}',
+                '}',
+                '',
+                '/* ===== 尊重「减少动态效果」系统设置 ===== */',
+                '@media (prefers-reduced-motion: reduce){',
+                '    .bp-panel,.bp-toast,.bp-overlay,.bp-fab__item{animation:none !important;}',
+                '    .bp-btn,.bp-fab,.bp-progress__bar{transition:none !important;}',
+                '}'
+            ].join('\n');
+        }
+
+        return {
+            THEMES,
+            DEFAULT_THEME,
+            THEME_LABELS,
+            PALETTES,
+            VARS,
+            normalizeTheme,
+            resolveTheme,
+            tokensFor,
+            buildCss
+        };
+    });
+    const TH = (typeof globalThis !== 'undefined' && globalThis.__biliTheme) ? globalThis.__biliTheme : null;
+
+    // 样式表只注入一次（同名 id 复用），主题切换不重建 DOM
+    function injectUiCss(){
+        if(!TH) return;
+        if(document.getElementById('bili-plus-ui-css')) return;
+        const el = document.createElement('style');
+        el.id = 'bili-plus-ui-css';
+        el.textContent = TH.buildCss();
+        (document.head || document.documentElement).appendChild(el);
+    }
     // ────────────────────────────────────────────────────────────────────────
     // 便携版核心：浏览器内取图 → 打 ZIP / 直写授权目录（由 build.js 内联，
     // 源文件是 src/lib/browser-save.js，别在这里手改）
@@ -691,9 +1173,9 @@
     function saveSettings(s){
         try{ localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); }catch(e){}
     }
-    // 读取主题（light / dark）
+    // 读取主题（auto / cloud / midnight / sakura；旧版本存的是 light / dark，读的时候兼容）
     function loadTheme(){
-        try{ return localStorage.getItem(THEME_KEY) || 'light'; }catch(e){ return 'light'; }
+        try{ return localStorage.getItem(THEME_KEY) || 'auto'; }catch(e){ return 'auto'; }
     }
     // 保存主题
     function saveTheme(t){
@@ -709,15 +1191,12 @@
         return new Promise(r => setTimeout(r, ms));
     }
 
-    // 把主题写入 CSS 变量，供各面板复用
+    // 应用主题：注入一次样式表 + 在 <html> 上打标记，之后纯 CSS 生效（不需要刷新页面）
     function applyTheme(theme){
-        const dark = theme === 'dark';
-        const root = document.documentElement;
-        root.style.setProperty('--bili-save-bg', dark ? '#1f1f1f' : '#ffffff');
-        root.style.setProperty('--bili-save-fg', dark ? '#e6e6e6' : '#222222');
-        root.style.setProperty('--bili-save-muted', dark ? '#999999' : '#888888');
-        root.style.setProperty('--bili-save-border', dark ? '#3a3a3a' : '#e0e0e0');
-        root.style.setProperty('--bili-save-input-bg', dark ? '#2a2a2a' : '#ffffff');
+        injectUiCss();
+        const t = TH ? TH.normalizeTheme(theme) : 'auto';
+        document.documentElement.setAttribute('data-bp-theme', t);
+        return t;
     }
 
     // ========================================================================
@@ -1027,13 +1506,8 @@
         if(statusEl && statusEl.isConnected) return statusEl;
         statusEl = document.createElement('div');
         statusEl.id = 'bili-save-status';
-        Object.assign(statusEl.style, {
-            position: 'fixed', right: '20px', bottom: '70px', zIndex: 999999,
-            background: 'rgba(0,0,0,0.78)', color: '#fff', padding: '10px 14px',
-            borderRadius: '8px', fontSize: '13px', lineHeight: '1.6',
-            maxWidth: '360px', minWidth: '190px', display: 'none',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.3)', whiteSpace: 'pre-line'
-        });
+        statusEl.className = 'bp-toast';
+        statusEl.style.display = 'none';
         document.body.appendChild(statusEl);
         return statusEl;
     }
@@ -1062,11 +1536,7 @@
         if(stopHandler){
             const btn = document.createElement('button');
             btn.textContent = '停止';
-            Object.assign(btn.style, {
-                marginLeft: '10px', background: '#ff4d4f', color: '#fff',
-                border: 'none', borderRadius: '4px', padding: '2px 10px',
-                cursor: 'pointer', fontSize: '12px'
-            });
+            btn.className = 'bp-toast__stop';
             btn.addEventListener('click', stopHandler);
             el.appendChild(btn);
         }
@@ -1738,33 +2208,33 @@
         if(old) old.remove();
         const panel = document.createElement('div');
         panel.id = 'bili-env-notice';
-        Object.assign(panel.style, {
-            position:'fixed', right:'20px', bottom:'150px', zIndex:'1000000',
-            background:'var(--bili-save-bg)', color:'var(--bili-save-fg)', width:'390px',
-            maxWidth:'calc(100vw - 40px)', padding:'16px', borderRadius:'14px',
-            boxShadow:'0 10px 36px rgba(0,0,0,0.32)', border:'1px solid var(--bili-save-border)',
-            fontSize:'13px', lineHeight:'1.7'
-        });
+        panel.className = 'bp-panel';
+        panel.style.cssText = 'right:20px;bottom:88px;width:390px;max-height:calc(100vh - 120px);';
         panel.innerHTML =
-            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
-            '<span style="font-size:18px;">🔌</span>' +
-            '<b style="font-size:15px;color:#00a1d6;flex:1;">这个功能需要本地环境</b>' +
+            '<div class="bp-head">' +
+            '<span class="bp-head__icon">🔌</span>' +
+            '<span class="bp-head__title">这个功能需要本地环境</span>' +
+            '<button class="bp-close" id="bili-env-x" aria-label="关闭">✕</button>' +
             '</div>' +
-            '<div>便携版无需任何环境即可保存图片和视频；但「' + escapeHtml(reason) + '」需要本地环境支持：</div>' +
-            '<div style="margin:8px 0;color:var(--bili-save-muted);font-size:12px;">① Node.js（≥18）　② ffmpeg（音画合并）</div>' +
-            '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;">' +
-            '<a href="' + ENV_LINKS.node + '" target="_blank" rel="noopener" style="color:#00a1d6;">下载 Node.js</a>' +
-            '<a href="' + ENV_LINKS.ffmpeg + '" target="_blank" rel="noopener" style="color:#00a1d6;">下载 ffmpeg</a>' +
-            '<a href="' + ENV_LINKS.pkg + '" target="_blank" rel="noopener" style="color:#00a1d6;">环境版（已内置运行环境）</a>' +
+            '<div class="bp-scroll"><div class="bp-section">' +
+            '<div class="bp-feat" style="color:var(--bp-text);">便携版无需任何环境即可保存图片和视频；但「' + escapeHtml(reason) + '」需要本地环境支持：</div>' +
+            '<div class="bp-hint" style="margin:8px 0 10px;">① Node.js（≥18）　② ffmpeg（音画合并）</div>' +
+            '<div style="display:flex;flex-wrap:wrap;gap:12px;">' +
+            '<a class="bp-link" href="' + ENV_LINKS.node + '" target="_blank" rel="noopener">下载 Node.js</a>' +
+            '<a class="bp-link" href="' + ENV_LINKS.ffmpeg + '" target="_blank" rel="noopener">下载 ffmpeg</a>' +
+            '<a class="bp-link" href="' + ENV_LINKS.pkg + '" target="_blank" rel="noopener">环境版（已内置运行环境）</a>' +
             '</div>' +
-            '<div style="color:var(--bili-save-muted);font-size:12px;margin-bottom:10px;">此提示只出现一次，可在「设置 → 功能与提示」里重新打开。</div>' +
-            '<div style="display:flex;gap:8px;">' +
-            '<button id="bili-env-intro" style="flex:1;padding:7px 0;border:1px solid var(--bili-save-border);background:var(--bili-save-input-bg);color:var(--bili-save-fg);border-radius:8px;cursor:pointer;font-size:12px;">功能介绍</button>' +
-            '<button id="bili-env-hide" style="flex:1.2;padding:7px 0;border:1px solid #ffd700;background:#fff8e1;color:#8a6d00;border-radius:8px;cursor:pointer;font-size:12px;">隐藏这些功能</button>' +
-            '<button id="bili-env-ok" style="' + STYLE.btnPrimary + '">知道了</button>' +
+            '<div class="bp-tipbox">此提示只出现一次，可在「设置 → 功能与提示」里重新打开。</div>' +
+            '</div></div>' +
+            '<div class="bp-foot">' +
+            '<button id="bili-env-intro" class="bp-btn bp-btn--sm">功能介绍</button>' +
+            '<button id="bili-env-hide" class="bp-btn bp-btn--sm">隐藏这些功能</button>' +
+            '<span class="bp-foot__spacer"></span>' +
+            '<button id="bili-env-ok" class="bp-btn bp-btn--primary">知道了</button>' +
             '</div>';
         document.body.appendChild(panel);
         panel.querySelector('#bili-env-ok').addEventListener('click', () => panel.remove());
+        panel.querySelector('#bili-env-x').addEventListener('click', () => panel.remove());
         panel.querySelector('#bili-env-intro').addEventListener('click', () => openFeatureIntroPanel());
         panel.querySelector('#bili-env-hide').addEventListener('click', () => {
             const cur = loadSettings();
@@ -1781,49 +2251,47 @@
         const existing = document.getElementById('bili-intro-panel');
         if(existing){ existing.remove(); }
         const s = loadSettings();
-        const card = 'padding:12px 16px;border-bottom:1px solid var(--bili-save-border);';
-        const li = 'display:flex;gap:8px;line-height:1.7;font-size:12px;';
+        injectUiCss();
+        const feat = (icon, html) => '<div class="bp-feat" style="margin-bottom:6px;"><span>' + icon + '</span><span>' + html + '</span></div>';
         const panel = document.createElement('div');
         panel.id = 'bili-intro-panel';
-        Object.assign(panel.style, {
-            position:'fixed', right:'20px', bottom:'120px', zIndex:'1000000',
-            background:'var(--bili-save-bg)', color:'var(--bili-save-fg)', width:'430px',
-            maxWidth:'calc(100vw - 40px)', maxHeight:'76vh', overflow:'auto',
-            borderRadius:'14px', boxShadow:'0 10px 36px rgba(0,0,0,0.32)',
-            border:'1px solid var(--bili-save-border)', fontSize:'13px'
-        });
+        panel.className = 'bp-panel';
+        panel.style.cssText = 'right:20px;bottom:88px;width:430px;max-height:calc(100vh - 120px);';
         panel.innerHTML =
-            '<div style="display:flex;align-items:center;gap:8px;padding:14px 16px;background:linear-gradient(135deg,#00a1d6,#00b3e6);color:#fff;">' +
-            '<span style="font-size:18px;">🧩</span>' +
-            '<b style="font-size:15px;flex:1;">功能介绍</b>' +
-            '<span style="font-size:11px;opacity:.9;">' + (IS_PORTABLE ? '便携版 · 无需环境' : '环境版') + '</span>' +
-            '<button id="bili-intro-x" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:26px;height:26px;border-radius:50%;cursor:pointer;font-size:14px;line-height:1;">✕</button>' +
+            '<div class="bp-head">' +
+            '<span class="bp-head__icon">🧩</span>' +
+            '<span class="bp-head__title">功能介绍</span>' +
+            '<span class="bp-head__meta">' + (IS_PORTABLE ? '便携版 · 无需环境' : '环境版') + '</span>' +
+            '<button class="bp-close" id="bili-intro-x" aria-label="关闭">✕</button>' +
             '</div>' +
-            '<div style="' + card + '">' +
-            '<div style="font-weight:bold;color:#00a1d6;margin-bottom:8px;">✅ 开箱即用（无需任何环境）</div>' +
-            '<div style="' + li + '"><span>🖼️</span><span><b>原图批量保存</b>：收藏夹 / 动态 / 作品页自动提取原图并保存</span></div>' +
-            '<div style="' + li + '"><span>🔍</span><span><b>审查模式</b>：逐张确认后再存，键位可自定义</span></div>' +
-            '<div style="' + li + '"><span>🎬</span><span><b>视频下载</b>：B 站官方 mp4 单文件（含音轨，最高 1080P），无需 ffmpeg</span></div>' +
-            '<div style="' + li + '"><span>🗂️</span><span><b>已下载标记</b>：本地记账，重复下载自动跳过</span></div>' +
-            '<div style="' + li + '"><span>🔥</span><span><b>页面增强</b>：只看大图、点赞/关注/收藏状态、日夜主题</span></div>' +
+            '<div class="bp-scroll">' +
+            '<div class="bp-section">' +
+            '<div class="bp-section__title">✅ 开箱即用（无需任何环境）</div>' +
+            feat('🖼️', '<b>原图批量保存</b>：收藏夹 / 动态 / 作品页自动提取原图并保存') +
+            feat('🔍', '<b>审查模式</b>：逐张确认后再存，键位可自定义') +
+            feat('🎬', '<b>视频下载</b>：B 站官方 mp4 单文件（含音轨，最高 1080P），无需 ffmpeg') +
+            feat('🗂️', '<b>已下载标记</b>：本地记账，重复下载自动跳过') +
+            feat('🔥', '<b>页面增强</b>：只看大图、点赞/关注/收藏状态、多套主题') +
             '</div>' +
-            '<div style="' + card + '">' +
-            '<div style="font-weight:bold;color:#fa8c16;margin-bottom:8px;">🔌 需要本地环境（Node.js + ffmpeg）</div>' +
-            '<div style="' + li + '"><span>🎞️</span><span><b>4K/HDR 与音画合并</b>：DASH 流合并成带声音的 mp4</span></div>' +
-            '<div style="' + li + '"><span>🖼️</span><span><b>图片相册页</b>：本机 127.0.0.1 页面里浏览已存图片</span></div>' +
-            '<div style="' + li + '"><span>⚡</span><span><b>静默自动落盘</b>：后台直接写入自定义绝对路径，无需点击</span></div>' +
-            '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;">' +
-            '<a href="' + ENV_LINKS.node + '" target="_blank" rel="noopener" style="color:#00a1d6;">Node.js</a>' +
-            '<a href="' + ENV_LINKS.ffmpeg + '" target="_blank" rel="noopener" style="color:#00a1d6;">ffmpeg</a>' +
-            '<a href="' + ENV_LINKS.pkg + '" target="_blank" rel="noopener" style="color:#00a1d6;">项目主页 / 环境版</a>' +
+            '<div class="bp-section">' +
+            '<div class="bp-section__title">🔌 需要本地环境（Node.js + ffmpeg）</div>' +
+            feat('🎞️', '<b>4K/HDR 与音画合并</b>：DASH 流合并成带声音的 mp4') +
+            feat('🖼️', '<b>图片相册页</b>：本机 127.0.0.1 页面里浏览已存图片') +
+            feat('⚡', '<b>静默自动落盘</b>：后台直接写入自定义绝对路径，无需点击') +
+            '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;">' +
+            '<a class="bp-link" href="' + ENV_LINKS.node + '" target="_blank" rel="noopener">Node.js</a>' +
+            '<a class="bp-link" href="' + ENV_LINKS.ffmpeg + '" target="_blank" rel="noopener">ffmpeg</a>' +
+            '<a class="bp-link" href="' + ENV_LINKS.pkg + '" target="_blank" rel="noopener">项目主页 / 环境版</a>' +
             '</div>' +
             '</div>' +
-            '<div style="padding:12px 16px;">' +
-            '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-bottom:8px;">' +
-            '<input type="checkbox" id="bili-intro-notice"' + (s.envNotice ? ' checked' : '') + '> 需要环境的功能「仅提示一次」</label>' +
-            '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-bottom:10px;">' +
-            '<input type="checkbox" id="bili-intro-hide"' + (s.hideEnvOnly ? ' checked' : '') + '> 去除无关功能：隐藏所有需要本地环境的功能</label>' +
-            '<button id="bili-intro-ok" style="' + STYLE.btnPrimary + ';width:100%;">知道了</button>' +
+            '<div class="bp-section">' +
+            '<label class="bp-check" style="margin-bottom:10px;"><input type="checkbox" id="bili-intro-notice"' + (s.envNotice ? ' checked' : '') + '> 需要环境的功能「仅提示一次」</label>' +
+            '<label class="bp-check"><input type="checkbox" id="bili-intro-hide"' + (s.hideEnvOnly ? ' checked' : '') + '> 去除无关功能：隐藏所有需要本地环境的功能</label>' +
+            '</div>' +
+            '</div>' +
+            '<div class="bp-foot">' +
+            '<span class="bp-foot__spacer"></span>' +
+            '<button id="bili-intro-ok" class="bp-btn bp-btn--primary">知道了</button>' +
             '</div>';
         document.body.appendChild(panel);
         const close = () => panel.remove();
@@ -1944,39 +2412,42 @@
     function showDonatePanel(stats, title){
         const existing = document.getElementById('bili-donate-panel');
         if(existing) existing.remove();
+        injectUiCss();
         const panel = document.createElement('div');
         panel.id = 'bili-donate-panel';
-        Object.assign(panel.style, {
-            position:'fixed', right:'20px', bottom:'180px', zIndex:999999,
-            background:'#fff', color:'#222', padding:'16px', borderRadius:'12px',
-            width:'370px', maxWidth:'calc(100vw - 40px)', boxSizing:'border-box',
-            boxShadow:'0 8px 28px rgba(0,0,0,0.3)', fontSize:'13px'
-        });
+        panel.className = 'bp-panel';
+        panel.style.cssText = 'right:20px;bottom:88px;width:370px;max-height:calc(100vh - 120px);';
         const statText = stats
-            ? `<span style="margin-left:auto;color:#888;font-size:12px;">新增 ${stats.saved} · 已存在 ${stats.exists} · 失败 ${stats.failed}</span>`
+            ? '<span class="bp-head__meta">新增 ' + stats.saved + ' · 已存在 ' + stats.exists + ' · 失败 ' + stats.failed + '</span>'
             : '';
         panel.innerHTML =
-            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">' +
-            '<span style="font-size:18px;">' + (stats ? '✅' : '☕') + '</span>' +
-            '<b style="font-size:15px;color:#00a1d6;">' + (title || (stats ? '下载成功！' : '感谢使用 Bilibili-Plus！')) + '</b>' + statText +
+            '<div class="bp-head">' +
+            '<span class="bp-head__icon">' + (stats ? '✅' : '☕') + '</span>' +
+            '<span class="bp-head__title">' + escapeHtml(title || (stats ? '下载成功！' : '感谢使用 Bilibili-Plus！')) + '</span>' +
+            statText +
+            '<button class="bp-close" id="bili-donate-x" aria-label="关闭">✕</button>' +
             '</div>' +
+            '<div class="bp-scroll">' +
+            '<div class="bp-section">' +
             '<div style="display:flex;gap:14px;align-items:flex-start;">' +
-            '<img id="bili-donate-qr" src="' + DONATE_QR + '" alt="收款码（点击放大）" title="点击放大收款码" style="width:150px;height:150px;border:1px solid #eee;border-radius:8px;flex-shrink:0;background:#f7f7f7;cursor:zoom-in;">' +
-            '<div style="line-height:1.8;">' +
-            '<div><b>似玖得六（FNAS）</b></div>' +
-            '<div style="color:#555;word-break:break-all;">GitHub: github.com/FNAS-496/bilibili-image-saver</div>' +
-            '<div style="color:#555;">邮箱: sijiudeliu@outlook.com</div>' +
+            '<img id="bili-donate-qr" class="bp-qr" src="' + DONATE_QR + '" alt="收款码（点击放大）" title="点击放大收款码">' +
+            '<div style="line-height:1.9;min-width:0;">' +
+            '<div class="bp-strong">似玖得六（FNAS）</div>' +
+            '<div class="bp-hint" style="word-break:break-all;">GitHub: github.com/FNAS-496/bilibili-image-saver</div>' +
+            '<div class="bp-hint">邮箱: sijiudeliu@outlook.com</div>' +
             '</div>' +
             '</div>' +
-            '<div style="margin-top:10px;background:#fff8e1;border:1px solid #ffd700;color:#8a6d00;border-radius:8px;padding:8px 10px;text-align:center;">' +
-            '觉得好用的话就打赏一杯咖啡钱吧 ☕<span style="color:#b00;">（点击收款码可放大）</span>' +
+            '<div class="bp-tipbox">觉得好用的话就打赏一杯咖啡钱吧 ☕<br><span class="bp-hint">（点击收款码可放大）</span></div>' +
             '</div>' +
-            '<div style="margin-top:12px;text-align:right;">' +
-            '<a id="bili-donate-view" href="http://127.0.0.1:8765/" target="_blank" rel="noopener" style="margin-right:8px;padding:6px 16px;border:1px solid #00a1d6;color:#00a1d6;border-radius:6px;text-decoration:none;font-size:13px;display:inline-block;">查看图片</a>' +
-            '<button id="bili-donate-close" style="' + STYLE.btnPrimary + '">知道了</button>' +
+            '</div>' +
+            '<div class="bp-foot">' +
+            '<a id="bili-donate-view" class="bp-btn bp-btn--accent-ghost" href="http://127.0.0.1:8765/" target="_blank" rel="noopener">查看图片</a>' +
+            '<span class="bp-foot__spacer"></span>' +
+            '<button id="bili-donate-close" class="bp-btn bp-btn--primary">知道了</button>' +
             '</div>';
         document.body.appendChild(panel);
         panel.querySelector('#bili-donate-close').addEventListener('click', () => panel.remove());
+        panel.querySelector('#bili-donate-x').addEventListener('click', () => panel.remove());
         // 便携版没有本地服务：「查看图片」（相册页）属于需要环境的功能
         const donateViewLink = panel.querySelector('#bili-donate-view');
         if(donateViewLink && IS_PORTABLE){
@@ -1992,17 +2463,11 @@
         panel.querySelector('#bili-donate-qr').addEventListener('click', () => {
             const overlay = document.createElement('div');
             overlay.id = 'bili-donate-lightbox';
-            Object.assign(overlay.style, {
-                position:'fixed', inset:'0', zIndex:9999999, background:'rgba(0,0,0,0.78)',
-                display:'flex', alignItems:'center', justifyContent:'center', cursor:'zoom-out'
-            });
+            overlay.className = 'bp-overlay bp-lightbox';
             const big = document.createElement('img');
             big.src = DONATE_QR;
             big.alt = '收款码';
-            Object.assign(big.style, {
-                maxWidth:'min(520px, 92vw)', maxHeight:'92vh', background:'#fff',
-                padding:'14px', borderRadius:'14px', boxShadow:'0 8px 40px rgba(0,0,0,0.5)'
-            });
+            big.className = 'bp-lightbox__img';
             overlay.appendChild(big);
             const close = () => {
                 overlay.remove();
@@ -2122,96 +2587,90 @@
     // ========================================================================
     // 十、审查模式
     // ========================================================================
+    // 键位显示名（ArrowRight → →）：设置面板和审查模式共用
+    const KEY_DISPLAY = { ArrowDown:'↓', ArrowUp:'↑', ArrowLeft:'←', ArrowRight:'→', Escape:'Esc', Space:'空格', Enter:'回车' };
+    const keyName = k => KEY_DISPLAY[k] || k;
+
     // 审查模式面板：左键位 / 中预览 / 右 UP 信息，三栏布局
     function openReviewPanel(urls, onDone){
         const existing = document.getElementById('bili-review-panel');
         if(existing) existing.remove();
-        const dark = (loadTheme() === 'dark');
+        injectUiCss();
         const s = Object.assign({}, DEFAULT_SETTINGS, loadSettings());
         const keys = Object.assign({}, DEFAULT_SETTINGS.keys, s.keys || {});
         const panel = document.createElement('div');
-        // ── 面板容器与主题样式 ──
+        // ── 面板容器 ──
         panel.id = 'bili-review-panel';
-        Object.assign(panel.style, {
-            position:'fixed', inset:'0', zIndex:9999998,
-            background: dark ? 'rgba(24,26,32,0.97)' : 'rgba(248,249,252,0.97)',
-            display:'flex', alignItems:'stretch', overflow:'auto',
-            color: dark ? '#e6e6e6' : '#1f2330', fontSize:'14px'
-        });
-        // ── UP 信息与通用样式常量 ──
+        panel.className = 'bp-review';
+        // ── UP 信息 ──
         const upInfo = extractUpInfo();
         const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-        const keyName = k => ({ ArrowDown:'↓', ArrowUp:'↑', ArrowLeft:'←', ArrowRight:'→', Escape:'Esc', Space:'空格', Enter:'回车' }[k] || k);
-        const borderC = dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
-        const mutedC = dark ? '#9aa0ae' : '#6b7280';
-        const subBg = dark ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.65)';
-        const btnGhost = 'width:100%;padding:9px 0;border:1px solid ' + (dark ? '#4a4e5c' : '#d0d4dd') + ';background:transparent;color:' + (dark ? '#e6e6e6' : '#2a2f3a') + ';border-radius:9px;cursor:pointer;font-size:13px;margin-bottom:8px;transition:all .15s;';
-        const keyItemC = 'display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:8px 12px;background:' + (dark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.75)') + ';border:1px solid ' + borderC + ';border-radius:10px;font-size:13px;box-sizing:border-box;box-shadow:0 1px 4px rgba(0,0,0,0.04);margin-bottom:8px;';
-        const keycapC = 'display:inline-flex;align-items:center;justify-content:center;min-width:52px;box-sizing:border-box;padding:6px 10px;border-radius:6px;font-size:13px;font-weight:bold;line-height:normal;';
-        const keyLabelC = 'display:block;flex:1;text-align:left;line-height:normal;white-space:nowrap;color:' + (dark ? '#e6e6e6' : '#333') + ';';
         const keyRow = (label, k, which) => {
             if(!which){
-                return '<div style="' + keyItemC + '">' +
-                '<span style="' + keyLabelC + '">' + label + '</span>' +
-                '<kbd style="' + keycapC + 'background:' + (dark ? 'rgba(255,255,255,0.06)' : '#fff') + ';border:1px solid ' + borderC + ';color:' + mutedC + ';">' + k + '</kbd>' +
+                return '<div class="bp-krow">' +
+                '<span class="bp-krow__label">' + label + '</span>' +
+                '<kbd class="bp-kbd">' + k + '</kbd>' +
                 '</div>';
             }
-            return '<div class="bili-review-key" data-key="' + which + '" style="' + keyItemC + 'cursor:pointer;transition:background .15s;" title="点击后按任意键自定义">' +
-            '<span style="' + keyLabelC + '">' + label + '</span>' +
-            '<kbd class="bili-review-keycap" style="' + keycapC + 'background:' + (dark ? 'rgba(255,255,255,0.06)' : '#fff') + ';border:1px solid #00a1d6;color:#00a1d6;">' + k + '</kbd>' +
+            return '<div class="bp-krow bili-review-key" data-key="' + which + '" title="点击后按任意键自定义">' +
+            '<span class="bp-krow__label">' + label + '</span>' +
+            '<kbd class="bp-kbd bp-kbd--accent bili-review-keycap">' + k + '</kbd>' +
             '</div>';
         };
         panel.innerHTML =
             // ── 左栏：键位设置 + 审查说明 + 下载进度（置底）──
-            '<div id="bili-review-left" style="width:220px;flex-shrink:0;padding:18px 16px;border-right:1px solid ' + borderC + ';overflow:auto;display:flex;flex-direction:column;background:' + subBg + ';">' +
-            '<div style="display:flex;align-items:center;gap:6px;font-weight:bold;font-size:14px;margin-bottom:12px;color:#00a1d6;letter-spacing:.3px;">' +
-            '<b>键位设置</b>' +
-            '<span style="flex:1;"></span>' +
-            '<button id="bili-review-key-reset" style="font-size:11px;font-weight:normal;color:' + mutedC + ';background:transparent;border:1px solid ' + borderC + ';border-radius:6px;padding:2px 9px;cursor:pointer;transition:all .15s;">恢复默认</button>' +
+            '<div id="bili-review-left" class="bp-review__side bp-review__side--left">' +
+            '<div class="bp-section__title" style="margin-bottom:10px;">' +
+            '<span>键位设置</span><span style="flex:1;"></span>' +
+            '<button id="bili-review-key-reset" class="bp-btn bp-btn--sm">恢复默认</button>' +
             '</div>' +
-            '<div style="font-size:11px;line-height:1.5;color:' + mutedC + ';margin:-2px 0 10px;padding:6px 8px;background:' + (dark ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.6)') + ';border:1px solid ' + borderC + ';border-radius:8px;">点击卡片后按任意键即可自定义</div>' +
-            '<div style="display:flex;flex-direction:column;gap:8px;">' +
+            '<div class="bp-hint" style="margin-bottom:10px;padding:6px 8px;background:var(--bp-subtle);border-radius:var(--bp-radius-md);">点击卡片后按任意键即可自定义</div>' +
             keyRow('下载当前图', keyName(keys.download), 'download') +
             keyRow('下一张', keyName(keys.next), 'next') +
             keyRow('上一张', keyName(keys.prev), 'prev') +
             keyRow('退出审查', keyName(keys.exit), 'exit') +
-            '</div>' +
-            '<div style="margin-top:12px;padding:12px 12px 10px;border-top:1px solid ' + borderC + ';font-size:12px;color:' + mutedC + ';line-height:1.9;">' +
-            '<div style="font-weight:bold;color:' + (dark ? '#e6e6e6' : '#333') + ';margin-bottom:4px;">📋 审查模式说明</div>' +
+            '<div class="bp-hint" style="margin-top:14px;line-height:1.9;">' +
+            '<div class="bp-strong" style="margin-bottom:4px;">📋 审查模式说明</div>' +
             '<div>· 单张预览，满意后再下载</div>' +
-            '<div>· 按 <kbd id="bili-review-mode-dl-key" style="display:inline-block;min-width:26px;text-align:center;padding:1px 7px;border-radius:5px;background:' + (dark ? 'rgba(255,255,255,0.06)' : '#fff') + ';border:1px solid ' + borderC + ';color:#00a1d6;font-weight:bold;font-size:11px;">' + keyName(keys.download) + '</kbd> 保存当前这张</div>' +
+            '<div>· 按 <kbd class="bp-kbd" id="bili-review-mode-dl-key">' + keyName(keys.download) + '</kbd> 保存当前这张</div>' +
             '<div>· 已下载的图标记 ✅</div>' +
             '<div>· 「全部下载」一键保存全部</div>' +
             '</div>' +
-            '<div style="margin-top:auto;padding:10px 12px;background:' + (dark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.8)') + ';border:1px solid ' + borderC + ';border-radius:9px;font-size:12px;color:' + mutedC + ';">' +
-            '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span>下载进度</span><span><b id="bili-review-dl-count" style="color:#00a1d6;">0</b> / ' + urls.length + '</span></div>' +
-            '<div style="height:6px;background:' + (dark ? '#2c3038' : '#e3e6ec') + ';border-radius:3px;overflow:hidden;"><div id="bili-review-bar" style="' + STYLE.barFill + '"></div></div>' +
+            '<div class="bp-review__progress">' +
+            '<div style="display:flex;justify-content:space-between;margin-bottom:6px;">' +
+            '<span>下载进度</span><span><b id="bili-review-dl-count" style="color:var(--bp-accent);">0</b> / ' + urls.length + '</span>' +
+            '</div>' +
+            '<div class="bp-progress"><div class="bp-progress__bar" id="bili-review-bar"></div></div>' +
             '</div>' +
             '</div>' +
             // ── 中栏：页码胶囊 + 只看大图 + 图片预览 ──
-            '<div id="bili-review-center" style="flex:1;display:flex;flex-direction:column;min-width:320px;position:relative;overflow:hidden;">' +
-            '<div id="bili-review-progress" style="position:absolute;top:14px;left:50%;transform:translateX(-50%);color:' + mutedC + ';font-size:13px;background:' + (dark ? 'rgba(24,26,32,0.75)' : 'rgba(255,255,255,0.8)') + ';padding:5px 16px;border-radius:20px;z-index:3;box-shadow:0 1px 6px rgba(0,0,0,0.12);white-space:nowrap;"></div>' +
-            '<button id="bili-review-full" style="position:absolute;top:12px;right:14px;z-index:3;padding:5px 11px;border:1px solid ' + (dark ? '#4a4e5c' : '#d0d4dd') + ';background:' + (dark ? 'rgba(40,42,50,0.92)' : 'rgba(255,255,255,0.92)') + ';color:' + (dark ? '#e6e6e6' : '#2a2f3a') + ';border-radius:20px;cursor:pointer;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,0.18);">🔍 只看大图</button>' +
-            '<div style="flex:1;display:flex;align-items:center;justify-content:center;min-height:0;margin:48px 14px 14px;background:' + (dark ? '#0d0e12' : '#eef0f5') + ';border-radius:12px;box-shadow:0 4px 30px rgba(0,0,0,0.18);overflow:hidden;position:relative;" id="bili-review-frame">' +
-            '<img id="bili-review-img" src="" alt="预览" style="max-width:100%;max-height:100%;object-fit:contain;display:block;margin:auto;box-shadow:0 2px 12px rgba(0,0,0,0.2);border-radius:4px;">' +
+            '<div id="bili-review-center" class="bp-review__center">' +
+            '<div id="bili-review-progress" class="bp-review__badge"></div>' +
+            '<button id="bili-review-full" class="bp-btn bp-btn--sm bp-review__full">🔍 只看大图</button>' +
+            '<div id="bili-review-frame" class="bp-review__frame">' +
+            '<img id="bili-review-img" src="" alt="预览">' +
             '</div>' +
             '</div>' +
             // ── 右栏：UP 信息 + 点赞/收藏/关注/全部下载/退出 ──
-            '<div id="bili-review-right" style="width:220px;flex-shrink:0;padding:16px 14px;border-left:1px solid ' + borderC + ';overflow:auto;background:' + subBg + ';">' +
+            '<div id="bili-review-right" class="bp-review__side bp-review__side--right">' +
             '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">' +
-            (upInfo.upAvatar ? '<img src="' + esc(upInfo.upAvatar) + '" style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:1px solid ' + borderC + ';flex-shrink:0;" referrerpolicy="no-referrer">' : '<div style="width:36px;height:36px;border-radius:50%;background:' + (dark ? '#3a3f4d' : '#e2e6ee') + ';display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;">👤</div>') +
+            (upInfo.upAvatar
+                ? '<img src="' + esc(upInfo.upAvatar) + '" style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:1px solid var(--bp-border);flex-shrink:0;" referrerpolicy="no-referrer">'
+                : '<div style="width:36px;height:36px;border-radius:50%;background:var(--bp-hover);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;">👤</div>') +
             '<div style="min-width:0;">' +
-            '<div style="font-weight:bold;font-size:14px;color:' + (dark ? '#e6e6e6' : '#1f2330') + ';word-break:break-all;">' + esc(upInfo.upName) + '</div>' +
-            '<div style="font-size:10px;color:' + mutedC + ';margin-top:2px;">UP主 · ' + (upInfo.upText ? '动态文案见下方' : '') + '</div>' +
+            '<div class="bp-review__upname">' + esc(upInfo.upName) + '</div>' +
+            '<div class="bp-hint">UP主' + (upInfo.upText ? ' · 动态文案见下方' : '') + '</div>' +
             '</div>' +
             '</div>' +
-            (upInfo.upText ? '<div style="line-height:1.7;font-size:12px;color:' + (dark ? '#c6cad4' : '#4b5563') + ';white-space:pre-wrap;word-break:break-word;margin-bottom:12px;padding:8px 10px;background:' + (dark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)') + ';border-radius:8px;">' + esc(upInfo.upText) + '</div>' : '<div style="font-size:11px;color:' + mutedC + ';margin-bottom:12px;">（未获取到动态文案）</div>') +
-            '<div style="margin-top:4px;padding-top:10px;border-top:1px solid ' + borderC + ';">' +
-            '<button id="bili-review-like" style="' + btnGhost + 'border-color:#fb7299;color:#fb7299;">👍 点赞</button>' +
-            '<button id="bili-review-fav" style="' + btnGhost + 'border-color:#ffa940;color:#ffa940;">☆ 收藏</button>' +
-            '<button id="bili-review-follow" style="' + btnGhost + 'border-color:#00a1d6;color:#00a1d6;">＋ 关注</button>' +
-            '<button id="bili-review-dl-all" style="width:100%;padding:9px 0;border:none;background:linear-gradient(135deg,#00a1d6,#00b3e6);color:#fff;border-radius:9px;cursor:pointer;font-size:13px;margin-bottom:8px;box-shadow:0 2px 8px rgba(0,161,214,0.3);">全部下载</button>' +
-            '<button id="bili-review-close" style="' + btnGhost + 'margin-bottom:0;">退出审查</button>' +
+            (upInfo.upText
+                ? '<div class="bp-review__uptext">' + esc(upInfo.upText) + '</div>'
+                : '<div class="bp-hint" style="margin-bottom:12px;">（未获取到动态文案）</div>') +
+            '<div style="margin-top:4px;padding-top:10px;border-top:1px solid var(--bp-border);">' +
+            '<button id="bili-review-like" class="bp-btn bp-btn--block" style="border-color:#fb7299;color:#fb7299;margin-bottom:8px;">👍 点赞</button>' +
+            '<button id="bili-review-fav" class="bp-btn bp-btn--block" style="border-color:#ffa940;color:#ffa940;margin-bottom:8px;">☆ 收藏</button>' +
+            '<button id="bili-review-follow" class="bp-btn bp-btn--block" style="border-color:var(--bp-accent);color:var(--bp-accent);margin-bottom:8px;">＋ 关注</button>' +
+            '<button id="bili-review-dl-all" class="bp-btn bp-btn--primary bp-btn--block" style="margin-bottom:8px;">全部下载</button>' +
+            '<button id="bili-review-close" class="bp-btn bp-btn--ghost bp-btn--block">退出审查</button>' +
             '</div>' +
             '</div>';
         document.body.appendChild(panel);
@@ -2262,8 +2721,7 @@
             leftEl.style.display = fullMode ? 'none' : '';
             rightEl.style.display = fullMode ? 'none' : '';
             fullBtn.textContent = fullMode ? '🗂️ 恢复侧栏' : '🔍 只看大图';
-            const frame = document.getElementById('bili-review-frame');
-            if(frame){ frame.style.margin = fullMode ? '14px' : '48px 14px 14px'; }
+            panel.classList.toggle('is-full', fullMode);
         };
 
         // ── 下载当前这一张 ──
@@ -2421,21 +2879,17 @@
             if(likeBtn){
                 const on = !!(likeHit && likeHit.active);
                 likeBtn.textContent = on ? '❤️ 已点赞' : '👍 点赞';
-                likeBtn.style.borderColor = on ? '#fb7299' : '#fb7299';
-                likeBtn.style.background = on ? (dark ? 'rgba(251,114,153,0.18)' : 'rgba(251,114,153,0.12)') : 'transparent';
-                likeBtn.style.color = on ? '#fb7299' : '#fb7299';
+                likeBtn.style.background = on ? 'rgba(251,114,153,.16)' : 'transparent';
             }
             if(favBtn){
                 const on = !!(favHit && favHit.active);
                 favBtn.textContent = on ? '★ 已收藏' : '☆ 收藏';
-                favBtn.style.background = on ? (dark ? 'rgba(255,169,64,0.18)' : 'rgba(255,169,64,0.12)') : 'transparent';
-                favBtn.style.color = on ? '#ffa940' : '#ffa940';
+                favBtn.style.background = on ? 'rgba(255,169,64,.16)' : 'transparent';
             }
             if(followBtn){
                 const on = !!(followHit && followHit.active);
                 followBtn.textContent = on ? '✔ 已关注' : '＋ 关注';
-                followBtn.style.background = on ? (dark ? 'rgba(0,161,214,0.18)' : 'rgba(0,161,214,0.1)') : 'transparent';
-                followBtn.style.color = on ? '#00a1d6' : '#00a1d6';
+                followBtn.style.background = on ? 'rgba(0,161,214,.16)' : 'transparent';
             }
         }
 
@@ -2680,109 +3134,134 @@
     function openSettingsPanel(){
         const existing = document.getElementById('bili-save-settings');
         if(existing){ existing.style.display = 'block'; return; }
+        injectUiCss();
         const panel = document.createElement('div');
         panel.id = 'bili-save-settings';
-        Object.assign(panel.style, {
-            position:'fixed', right:'20px', bottom:'150px', zIndex:999999,
-            background:'var(--bili-save-bg)', color:'var(--bili-save-fg)', padding:'0', borderRadius:'14px',
-            width:'380px', maxWidth:'calc(100vw - 40px)', maxHeight:'calc(100vh - 190px)',
-            boxShadow:'0 10px 36px rgba(0,0,0,0.32)', fontSize:'13px', border:'1px solid var(--bili-save-border)',
-            overflowX:'hidden', overflowY:'auto'      // 内容再长也留得住：面板最高到视口顶下来 20px，超出就滚动
-        });
+        panel.className = 'bp-panel';
+        panel.style.cssText = 'right:20px;bottom:88px;width:400px;max-height:calc(100vh - 120px);';
+
         const s = loadSettings();
-        const inputStyle = 'width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--bili-save-border);border-radius:8px;font-size:13px;margin-bottom:4px;background:var(--bili-save-input-bg);color:var(--bili-save-fg);outline:none;';
-        const labelStyle = 'font-size:12px;color:var(--bili-save-muted);margin-bottom:4px;';
-        const cardStyle = 'padding:12px 16px;border-bottom:1px solid var(--bili-save-border);';
-        const groupTitle = 'display:flex;align-items:center;gap:6px;font-weight:bold;font-size:13px;color:#00a1d6;margin-bottom:8px;';
-        const checkLabel = 'font-size:12px;color:var(--bili-save-fg);cursor:pointer;display:flex;align-items:center;gap:5px;';
-        const radioLabel = 'flex:1;display:flex;align-items:center;gap:6px;cursor:pointer;border:1px solid var(--bili-save-border);border-radius:8px;padding:8px 10px;font-size:12px;background:var(--bili-save-input-bg);';
-        const keyBtnStyle = 'padding:7px 4px;border:1px solid var(--bili-save-border);background:var(--bili-save-input-bg);color:var(--bili-save-fg);border-radius:8px;cursor:pointer;font-size:12px;';
+        const curTheme = themeState.current;
+        const themeSeg = TH ? TH.THEMES.map(t =>
+            '<button class="bp-seg__item bp-theme-opt" data-theme="' + t + '" aria-pressed="' + (t === curTheme ? 'true' : 'false') + '">' +
+            (THEME_ICON[t] || '') + ' ' + (THEME_SHORT[t] || t) + '</button>').join('') : '';
+
+        // 外观：四套主题，点了立刻生效并落盘（不用点「保存设置」）
+        const themeCard =
+            '<div class="bp-section">' +
+            '<div class="bp-section__title">🎨 外观</div>' +
+            '<div class="bp-seg" role="group" aria-label="主题">' + themeSeg + '</div>' +
+            '<div class="bp-hint" style="margin-top:8px;">跟随系统 = 按系统明暗自动切换；换主题即时生效，无需刷新页面</div>' +
+            '</div>';
+
         // 便携版：保存位置改由「打包 ZIP / 写入浏览器授权目录」决定，不需要绝对路径输入框
         const portableDirCard =
-            '<div style="' + cardStyle + '">' +
-            '<div style="' + groupTitle + '">📁 保存位置（便携版）</div>' +
-            '<div style="' + labelStyle + '">' + (FSA_SUPPORTED
+            '<div class="bp-section">' +
+            '<div class="bp-section__title">📁 保存位置（便携版）</div>' +
+            '<div class="bp-hint" style="margin-bottom:8px;">' + (FSA_SUPPORTED
                 ? '推荐「打包 ZIP」：一次点击一个文件，不会弹「多个文件」下载授权'
                 : '当前浏览器（Firefox/Safari）不支持选择文件夹，将打包成 ZIP 下载') + '</div>' +
-            '<div style="display:flex;gap:14px;margin:6px 0 8px;">' +
-            '<label style="' + checkLabel + '"><input type="radio" name="bili-psave" value="zip"' + (s.portableSave !== 'dir' ? ' checked' : '') + '> 打包 ZIP</label>' +
-            '<label style="' + checkLabel + '"><input type="radio" name="bili-psave" value="dir"' + (s.portableSave === 'dir' ? ' checked' : '') + (FSA_SUPPORTED ? '' : ' disabled') + '> 写入授权目录</label>' +
+            '<div style="display:flex;gap:16px;margin-bottom:10px;">' +
+            '<label class="bp-check"><input type="radio" name="bili-psave" value="zip"' + (s.portableSave !== 'dir' ? ' checked' : '') + '> 打包 ZIP</label>' +
+            '<label class="bp-check"><input type="radio" name="bili-psave" value="dir"' + (s.portableSave === 'dir' ? ' checked' : '') + (FSA_SUPPORTED ? '' : ' disabled') + '> 写入授权目录</label>' +
             '</div>' +
-            '<div style="' + labelStyle + ';margin-top:4px;">视频下载方式</div>' +
-            '<div style="display:flex;gap:14px;margin:6px 0 8px;">' +
-            '<label style="' + checkLabel + '"><input type="radio" name="bili-vsave" value="single"' + (s.portableVideoSave !== 'zip' ? ' checked' : '') + '> 逐个下载</label>' +
-            '<label style="' + checkLabel + '"><input type="radio" name="bili-vsave" value="zip"' + (s.portableVideoSave === 'zip' ? ' checked' : '') + '> 打包成 ZIP（自动分卷）</label>' +
+            '<div class="bp-label" style="margin-top:4px;">视频下载方式</div>' +
+            '<div style="display:flex;gap:16px;margin-bottom:10px;">' +
+            '<label class="bp-check"><input type="radio" name="bili-vsave" value="single"' + (s.portableVideoSave !== 'zip' ? ' checked' : '') + '> 逐个下载</label>' +
+            '<label class="bp-check"><input type="radio" name="bili-vsave" value="zip"' + (s.portableVideoSave === 'zip' ? ' checked' : '') + '> 打包成 ZIP（自动分卷）</label>' +
             '</div>' +
-            (FSA_SUPPORTED ? '<button id="bili-dir-pick" style="width:100%;padding:8px 0;border:1px solid var(--bili-save-border);background:var(--bili-save-input-bg);color:var(--bili-save-fg);border-radius:8px;cursor:pointer;font-size:13px;">📂 选择文件夹</button>' : '') +
-            '<div id="bili-dir-current" style="font-size:11px;color:var(--bili-save-muted);margin-top:6px;word-break:break-all;"></div>' +
+            (FSA_SUPPORTED ? '<button id="bili-dir-pick" class="bp-btn bp-btn--block">📂 选择文件夹</button>' : '') +
+            '<div id="bili-dir-current" class="bp-hint" style="margin-top:8px;word-break:break-all;"></div>' +
             '</div>';
-        // 「功能与提示」卡片：功能介绍入口 + 仅提示一次 + 去除无关功能
+
+        // 环境版：绝对路径输入
+        const envDirCard =
+            '<div class="bp-section">' +
+            '<div class="bp-section__title">📁 保存目录</div>' +
+            '<div class="bp-hint" style="margin-bottom:8px;">留空 = 自动保存到桌面「B站下载」文件夹</div>' +
+            '<input id="bili-dir-input" class="bp-input" type="text" placeholder="例如 D:\\bilibili_pics" value="' + (s.saveDir || '').replace(/"/g, '&quot;') + '">' +
+            '<div id="bili-dir-current" class="bp-hint" style="margin-top:8px;word-break:break-all;"></div>' +
+            '</div>';
+
+        const optionsCard =
+            '<div class="bp-section">' +
+            '<div class="bp-section__title">⚡ 下载选项</div>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">' +
+            '<div><div class="bp-label">间隔 (ms)</div><input id="bili-int-input" class="bp-input" type="number" min="0" step="100" value="' + s.intervalMs + '"></div>' +
+            '<div><div class="bp-label">超时 (ms)</div><input id="bili-timeout-input" class="bp-input" type="number" min="5000" step="1000" value="' + s.timeoutMs + '"></div>' +
+            '</div>' +
+            '<div style="display:flex;gap:18px;margin-top:12px;">' +
+            '<label class="bp-check"><input type="checkbox" id="bili-dedupe-input"' + (s.dedupe ? ' checked' : '') + '> 查重</label>' +
+            '<label class="bp-check"><input type="checkbox" id="bili-autorun-input"' + (s.autoRun ? ' checked' : '') + '> 打开页面自动提取</label>' +
+            '</div>' +
+            '</div>';
+
+        const modeCard =
+            '<div class="bp-section">' +
+            '<div class="bp-section__title">🖼️ 下载模式</div>' +
+            '<div class="bp-seg" role="group" aria-label="下载模式">' +
+            '<button class="bp-seg__item bp-mode-opt" data-mode="auto" aria-pressed="' + (s.downloadMode !== 'review' ? 'true' : 'false') + '">⬇️ 自动下载</button>' +
+            '<button class="bp-seg__item bp-mode-opt" data-mode="review" aria-pressed="' + (s.downloadMode === 'review' ? 'true' : 'false') + '">🔍 审查模式</button>' +
+            '</div>' +
+            '<div class="bp-label" style="margin-top:12px;">审查键位（点击后按任意键）</div>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">' +
+            '<button class="bili-key-btn bp-btn bp-btn--sm" data-key="next">下一页 <b class="bp-kbd" id="bili-key-next">' + keyName(s.keys && s.keys.next || '→') + '</b></button>' +
+            '<button class="bili-key-btn bp-btn bp-btn--sm" data-key="prev">上一页 <b class="bp-kbd" id="bili-key-prev">' + keyName(s.keys && s.keys.prev || '←') + '</b></button>' +
+            '<button class="bili-key-btn bp-btn bp-btn--sm" data-key="download">下载 <b class="bp-kbd" id="bili-key-download">' + keyName(s.keys && s.keys.download || '↓') + '</b></button>' +
+            '<button class="bili-key-btn bp-btn bp-btn--sm" data-key="exit">退出 <b class="bp-kbd" id="bili-key-exit">' + keyName(s.keys && s.keys.exit || 'Esc') + '</b></button>' +
+            '</div>' +
+            '</div>';
+
+        // 「功能与提示」卡片：功能介绍入口 + 仅提示一次 + 去除无关功能 + 音轨
         const featureCard =
-            '<div style="' + cardStyle + '">' +
-            '<div style="' + groupTitle + '">🧩 功能与提示</div>' +
-            '<button id="bili-intro-btn" style="width:100%;padding:8px 0;margin-bottom:10px;border:1px solid var(--bili-save-border);background:var(--bili-save-input-bg);color:var(--bili-save-fg);border-radius:8px;cursor:pointer;font-size:13px;">📖 功能介绍（哪些功能需要环境）</button>' +
-            '<label style="' + checkLabel + ';margin-bottom:8px;"><input type="checkbox" id="bili-envnotice-input"' + (s.envNotice ? ' checked' : '') + '> 需要环境的功能「仅提示一次」</label>' +
-            '<label style="' + checkLabel + ';"><input type="checkbox" id="bili-hideenv-input"' + (s.hideEnvOnly ? ' checked' : '') + '> 去除无关功能：隐藏需要本地环境的功能</label>' +
-            '<div style="' + labelStyle + ';margin:10px 0 4px;">🎵 音轨</div>' +
-            '<label style="' + checkLabel + ';margin-bottom:2px;"><input type="checkbox" id="bili-hires-input"' + (s.hiResAudio ? ' checked' : '') + '> 高音质音轨：优先无损 FLAC / 杜比全景声</label>' +
-            '<div style="' + labelStyle + ';font-size:11px;">需大会员；无损 FLAC 部分播放器不支持，默认用普通音轨</div>' +
-            (IS_PORTABLE ? '<button id="bili-clear-marks" style="width:100%;margin-top:10px;padding:7px 0;border:1px solid var(--bili-save-border);background:var(--bili-save-input-bg);color:var(--bili-save-muted);border-radius:8px;cursor:pointer;font-size:12px;">🧹 清空「已下载」记录</button>' : '') +
+            '<div class="bp-section">' +
+            '<div class="bp-section__title">🧩 功能与提示</div>' +
+            '<button id="bili-intro-btn" class="bp-btn bp-btn--block" style="margin-bottom:10px;">📖 功能介绍（哪些功能需要环境）</button>' +
+            '<label class="bp-check" style="margin-bottom:8px;"><input type="checkbox" id="bili-envnotice-input"' + (s.envNotice ? ' checked' : '') + '> 需要环境的功能「仅提示一次」</label>' +
+            '<label class="bp-check" style="margin-bottom:12px;"><input type="checkbox" id="bili-hideenv-input"' + (s.hideEnvOnly ? ' checked' : '') + '> 去除无关功能：隐藏需要本地环境的功能</label>' +
+            '<div class="bp-label" style="margin-bottom:4px;">🎵 音轨</div>' +
+            '<label class="bp-check"><input type="checkbox" id="bili-hires-input"' + (s.hiResAudio ? ' checked' : '') + '> 高音质音轨：优先无损 FLAC / 杜比全景声</label>' +
+            '<div class="bp-hint" style="margin-top:4px;">需大会员；无损 FLAC 部分播放器不支持，默认用普通音轨</div>' +
+            (IS_PORTABLE ? '<button id="bili-clear-marks" class="bp-btn bp-btn--block bp-btn--sm" style="margin-top:12px;">🧹 清空「已下载」记录</button>' : '') +
             '</div>';
+
         panel.innerHTML =
-            '<div style="display:flex;align-items:center;gap:8px;padding:14px 16px;background:linear-gradient(135deg,#00a1d6,#00b3e6);color:#fff;">' +
-            '<span style="font-size:18px;">⚙️</span>' +
-            '<b style="font-size:15px;flex:1;">Bilibili-Plus 设置</b>' +
-            '<button id="bili-settings-x" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:26px;height:26px;border-radius:50%;cursor:pointer;font-size:14px;line-height:1;">✕</button>' +
+            '<div class="bp-head">' +
+            '<span class="bp-head__icon">⚙️</span>' +
+            '<span class="bp-head__title">Bilibili-Plus 设置</span>' +
+            '<button class="bp-close" id="bili-settings-x" aria-label="关闭">✕</button>' +
             '</div>' +
-            (IS_PORTABLE ? portableDirCard : (
-            '<div style="' + cardStyle + '">' +
-            '<div style="' + groupTitle + '">📁 保存目录</div>' +
-            '<div style="' + labelStyle + '">留空 = 自动保存到桌面「B站下载」文件夹</div>' +
-            '<input id="bili-dir-input" type="text" placeholder="例如 D:\\bilibili_pics" value="' + (s.saveDir||'').replace(/"/g,'&quot;') + '" style="' + inputStyle + '">' +
-            '<div id="bili-dir-current" style="font-size:11px;color:var(--bili-save-muted);margin-bottom:2px;word-break:break-all;"></div>' +
-            '</div>')) +
-            '<div style="' + cardStyle + '">' +
-            '<div style="' + groupTitle + '">⚡ 下载选项</div>' +
-            '<div style="display:flex;gap:10px;">' +
-            '<div style="flex:1;"><div style="' + labelStyle + '">间隔 (ms)</div>' +
-            '<input id="bili-int-input" type="number" min="0" step="100" value="' + s.intervalMs + '" style="' + inputStyle + '"></div>' +
-            '<div style="flex:1;"><div style="' + labelStyle + '">超时 (ms)</div>' +
-            '<input id="bili-timeout-input" type="number" min="5000" step="1000" value="' + s.timeoutMs + '" style="' + inputStyle + '"></div>' +
+            '<div class="bp-scroll">' +
+            themeCard +
+            (IS_PORTABLE ? portableDirCard : envDirCard) +
+            optionsCard + modeCard + featureCard +
             '</div>' +
-            '<div style="display:flex;gap:16px;margin-top:8px;">' +
-            '<label style="' + checkLabel + '"><input type="checkbox" id="bili-dedupe-input"' + (s.dedupe ? ' checked' : '') + '> 查重</label>' +
-            '<label style="' + checkLabel + '"><input type="checkbox" id="bili-autorun-input"' + (s.autoRun ? ' checked' : '') + '> 打开页面自动提取</label>' +
-            '</div>' +
-            '</div>' +
-            '<div style="' + cardStyle + '">' +
-            '<div style="' + groupTitle + '">🖼️ 下载模式</div>' +
-            '<div style="display:flex;gap:10px;">' +
-            '<label style="' + radioLabel + '"><input type="radio" name="bili-mode" value="auto"' + (s.downloadMode !== 'review' ? ' checked' : '') + '> ⬇️ 自动下载</label>' +
-            '<label style="' + radioLabel + '"><input type="radio" name="bili-mode" value="review"' + (s.downloadMode === 'review' ? ' checked' : '') + '> 🔍 审查模式</label>' +
-            '</div>' +
-            '<div style="' + labelStyle + ';margin-top:10px;">审查键位（点击后按任意键）</div>' +
-            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px;">' +
-            '<button class="bili-key-btn" data-key="next" style="' + keyBtnStyle + '">下一页 <b id="bili-key-next">' + (s.keys && s.keys.next || '→') + '</b></button>' +
-            '<button class="bili-key-btn" data-key="prev" style="' + keyBtnStyle + '">上一页 <b id="bili-key-prev">' + (s.keys && s.keys.prev || '←') + '</b></button>' +
-            '<button class="bili-key-btn" data-key="download" style="' + keyBtnStyle + '">下载 <b id="bili-key-download">' + (s.keys && s.keys.download || '↓') + '</b></button>' +
-            '<button class="bili-key-btn" data-key="exit" style="' + keyBtnStyle + '">退出 <b id="bili-key-exit">' + (s.keys && s.keys.exit || 'Esc') + '</b></button>' +
-            '</div>' +
-            '</div>' +
-            featureCard +
-            '<div style="padding:14px 16px;">' +
-            '<div style="display:flex;gap:8px;">' +
-            '<button id="bili-donate-btn" style="flex:1;padding:8px 0;border:1px solid #ffd700;background:#fff8e1;color:#8a6d00;border-radius:8px;cursor:pointer;font-size:13px;">☕ 赞助</button>' +
-            '<button id="bili-dir-cancel" style="flex:1;padding:8px 0;border:1px solid var(--bili-save-border);background:var(--bili-save-bg);color:var(--bili-save-fg);border-radius:8px;cursor:pointer;font-size:13px;">取消</button>' +
-            '<button id="bili-dir-ok" style="flex:1.4;padding:8px 0;border:none;background:linear-gradient(135deg,#00a1d6,#00b3e6);color:#fff;border-radius:8px;cursor:pointer;font-size:13px;box-shadow:0 2px 8px rgba(0,161,214,0.3);">💾 保存设置</button>' +
-            '</div>' +
+            '<div class="bp-foot">' +
+            '<button id="bili-donate-btn" class="bp-btn bp-btn--sm">☕ 赞助</button>' +
+            '<span class="bp-foot__spacer"></span>' +
+            '<button id="bili-dir-cancel" class="bp-btn bp-btn--ghost">取消</button>' +
+            '<button id="bili-dir-ok" class="bp-btn bp-btn--primary">💾 保存设置</button>' +
             '</div>';
         document.body.appendChild(panel);
-        // 「✕」的关闭绑定放在 close() 定义之后（要连带注销键位录制用的 listener）
-        const input = panel.querySelector('#bili-dir-input');
-        if(input){
-            input.addEventListener('focus', (e) => { e.target.style.borderColor = '#00a1d6'; });
-            input.addEventListener('blur', (e) => { e.target.style.borderColor = 'var(--bili-save-border)'; });
-        }
+        // 主题：点一下即时生效并落盘（输入框的聚焦样式由 .bp-input:focus 处理，不用再手写）
+        panel.querySelectorAll('.bp-theme-opt').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const t = setTheme(btn.getAttribute('data-theme'));
+                panel.querySelectorAll('.bp-theme-opt').forEach(b =>
+                    b.setAttribute('aria-pressed', String(b.getAttribute('data-theme') === t)));
+            });
+        });
+        // 下载模式：分段控件本身维护选中态，保存时按 aria-pressed 取值
+        panel.querySelectorAll('.bp-mode-opt').forEach(btn => {
+            btn.addEventListener('click', () => {
+                panel.querySelectorAll('.bp-mode-opt').forEach(b =>
+                    b.setAttribute('aria-pressed', String(b === btn)));
+            });
+        });
+        const pickedMode = () => {
+            const on = panel.querySelector('.bp-mode-opt[aria-pressed="true"]');
+            return on ? on.getAttribute('data-mode') : 'auto';
+        };
         const curEl = panel.querySelector('#bili-dir-current');
         panel.querySelector('#bili-donate-btn').addEventListener('click', () => { showDonatePanel(null); });
         // 功能介绍入口 + 「仅提示一次」/「去除无关功能」开关
@@ -2860,12 +3339,12 @@
                 const psaveRadio = panel.querySelector('input[name="bili-psave"]:checked');
                 const intervalMsP = Math.max(0, parseInt(panel.querySelector('#bili-int-input').value, 10) || 0);
                 const timeoutMsP = Math.max(5000, parseInt(panel.querySelector('#bili-timeout-input').value, 10) || 30000);
-                const modeRadioP = panel.querySelector('input[name="bili-mode"]:checked');
+                const modeRadioP = pickedMode();
                 const vsaveRadio = panel.querySelector('input[name="bili-vsave"]:checked');
                 saveSettings({
                     saveDir: '', intervalMs: intervalMsP, timeoutMs: timeoutMsP,
                     dedupe: panel.querySelector('#bili-dedupe-input').checked,
-                    downloadMode: modeRadioP ? modeRadioP.value : 'auto',
+                    downloadMode: modeRadioP,
                     autoRun: panel.querySelector('#bili-autorun-input').checked,
                     portableSave: psaveRadio ? psaveRadio.value : 'zip',
                     portableVideoSave: vsaveRadio ? vsaveRadio.value : 'single',
@@ -2885,13 +3364,13 @@
                 try{ localStorage.setItem(DIR_ASKED_KEY, '1'); }catch(e){}
                 return;
             }
-            const dir = input.value.trim();
+            const dirInput = panel.querySelector('#bili-dir-input');
+            const dir = (dirInput ? dirInput.value : '').trim();
             const intervalMs = Math.max(0, parseInt(panel.querySelector('#bili-int-input').value, 10) || 0);
             const timeoutMs = Math.max(5000, parseInt(panel.querySelector('#bili-timeout-input').value, 10) || 30000);
             const dedupe = panel.querySelector('#bili-dedupe-input').checked;
             const autoRun = panel.querySelector('#bili-autorun-input').checked;
-            const modeRadio = panel.querySelector('input[name="bili-mode"]:checked');
-            const downloadMode = modeRadio ? modeRadio.value : 'auto';
+            const downloadMode = pickedMode();
             const keys = Object.assign({}, DEFAULT_SETTINGS.keys, window.__biliPendingKeys || {});
             const prevSettings = loadSettings();
             const ns = { saveDir: dir, intervalMs, timeoutMs, dedupe, downloadMode, autoRun, keys,
@@ -2940,11 +3419,11 @@
                     const conflict = Object.keys(DEFAULT_SETTINGS.keys).find(other => other !== which && cur[other] === k);
                     if(conflict){
                         showToast('⚠️ 该键已绑定「' + (KEY_BTN_LABELS[conflict] || conflict) + '」，请换一个键');
-                        btn.innerHTML = KEY_BTN_LABELS[which] + ' <b>' + (cur[which] || (which === 'exit' ? 'Esc' : '')) + '</b>';
+                        btn.innerHTML = KEY_BTN_LABELS[which] + ' <b class="bp-kbd">' + keyName(cur[which] || (which === 'exit' ? 'Esc' : '')) + '</b>';
                         return;
                     }
                     window.__biliPendingKeys[which] = k;
-                    btn.innerHTML = KEY_BTN_LABELS[which] + ' <b>' + k + '</b>';
+                    btn.innerHTML = KEY_BTN_LABELS[which] + ' <b class="bp-kbd">' + keyName(k) + '</b>';
                 };
                 pendingKeyListener = listener;
                 document.addEventListener('keydown', listener);
@@ -3388,45 +3867,45 @@
         const panel = document.createElement('div');
         // ── 面板容器 ──
         panel.id = 'bili-video-panel';
-        Object.assign(panel.style, {
-            position:'fixed', right:'20px', bottom:'180px', zIndex:999999,
-            background:'#fff', color:'#222', padding:'16px', borderRadius:'12px',
-            width:'440px', maxWidth:'calc(100vw - 40px)', maxHeight:'calc(100vh - 200px)',
-            display:'flex', flexDirection:'column',
-            boxShadow:'0 8px 28px rgba(0,0,0,0.3)', fontSize:'13px'
-        });
+        panel.className = 'bp-panel';
+        panel.style.cssText = 'right:20px;bottom:88px;width:460px;max-height:calc(100vh - 120px);';
+        injectUiCss();
         panel.innerHTML =
-            '<div style="display:flex;align-items:center;margin-bottom:10px;">' +
             // ── 面板 HTML：标题 + 列表 + 进度 + 底部操作 ──
-            '<b style="font-size:15px;color:#00a1d6;">📹 视频批量下载</b>' +
-            '<span style="margin-left:auto;font-size:12px;color:#888;" id="bili-video-hint"></span>' +
+            '<div class="bp-head">' +
+            '<span class="bp-head__icon">📹</span>' +
+            '<span class="bp-head__title">视频批量下载</span>' +
+            '<span class="bp-head__meta" id="bili-video-hint"></span>' +
+            '<button class="bp-close" id="bili-video-x" aria-label="关闭">✕</button>' +
             '</div>' +
-            '<div id="bili-video-list" style="overflow:auto;flex:1;border:1px solid #eee;border-radius:8px;padding:6px;"></div>' +
-            '<div id="bili-video-progress" style="display:none;margin-top:10px;padding:8px 10px;border:1px solid #eee;border-radius:8px;background:#fafafa;font-size:12px;color:#555;">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">' +
-            '<span id="bili-video-prog-text" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">准备中…</span>' +
-            '<b id="bili-video-prog-pct" style="color:#00a1d6;flex-shrink:0;margin-left:8px;">0%</b>' +
+            '<div id="bili-video-list" class="bp-scroll" style="flex:1;min-height:0;padding:6px;border-bottom:1px solid var(--bp-border);"></div>' +
+            '<div id="bili-video-progress" style="display:none;padding:10px 16px 0;">' +
+            '<div class="bp-prog">' +
+            '<div class="bp-prog__top">' +
+            '<span class="bp-prog__text" id="bili-video-prog-text">准备中…</span>' +
+            '<span class="bp-prog__pct" id="bili-video-prog-pct">0%</span>' +
             '</div>' +
-            '<div style="height:6px;background:#e3e6ec;border-radius:3px;overflow:hidden;"><div id="bili-video-prog-bar" style="' + STYLE.barFill + '"></div></div>' +
-            '<div id="bili-video-prog-sub" style="margin-top:5px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>' +
+            '<div class="bp-progress"><div class="bp-progress__bar" id="bili-video-prog-bar"></div></div>' +
+            '<div class="bp-prog__sub" id="bili-video-prog-sub"></div>' +
             '</div>' +
-            '<div style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:#555;">' +
-            '<label for="bili-video-quality" style="flex-shrink:0;">清晰度</label>' +
-            '<select id="bili-video-quality" style="flex:1;min-width:0;padding:4px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;background:#fff;color:#333;">' +
+            '</div>' +
+            '<div style="display:flex;align-items:center;gap:8px;padding:10px 16px 0;">' +
+            '<label for="bili-video-quality" class="bp-hint" style="flex-shrink:0;margin:0;">清晰度</label>' +
+            '<select id="bili-video-quality" class="bp-select" style="flex:1;min-width:0;">' +
             QUALITY_CHOICES.map(q => '<option value="' + q.id + '"' +
                 ((Number(loadSettings().videoQuality) || 0) === q.id ? ' selected' : '') + '>' + q.label + '</option>').join('') +
             '</select>' +
             '</div>' +
-            '<div id="bili-video-quality-hint" style="margin-top:4px;font-size:11px;color:#999;"></div>' +
-            '<div style="display:flex;align-items:center;gap:10px;margin-top:10px;">' +
-            '<label style="font-size:12px;color:#555;cursor:pointer;" title="只勾选尚未下载的视频，避免重复下载"><input type="checkbox" id="bili-video-all" style="vertical-align:middle;"> 全选未下载</label>' +
-            '<button id="bili-video-clear" style="padding:4px 10px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:12px;color:#555;">清空</button>' +
-            '<span style="flex:1;"></span>' +
-            '<button id="bili-video-dl" style="' + STYLE.btnPrimary + '">下载选中</button>' +
-            '<button id="bili-video-close" style="padding:6px 12px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px;">关闭</button>' +
-            '</div>' +
-            (IS_PORTABLE ? ('<div style="margin-top:8px;font-size:11px;color:#fa8c16;">便携版：默认下 B 站官方 mp4 单文件（自带音轨、无需 ffmpeg），但这种格式最高只有 720P；要 1080P 以上就在上面选具体清晰度（下载后会自动合并成一个带声音的 mp4，合并不了才分开存）</div>') : '') +
-            '<div id="bili-video-dir" style="margin-top:8px;font-size:11px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title=""></div>';
+            '<div id="bili-video-quality-hint" class="bp-hint" style="padding:6px 16px 0;"></div>' +
+            (IS_PORTABLE ? ('<div class="bp-tipbox" style="margin:10px 16px 0;text-align:left;">便携版：默认下 B 站官方 mp4 单文件（自带音轨、无需 ffmpeg），但这种格式最高只有 720P；要 1080P 以上就在上面选具体清晰度（下载后会自动合并成一个带声音的 mp4，合并不了才分开存）</div>') : '') +
+            '<div id="bili-video-dir" class="bp-hint" style="padding:8px 16px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title=""></div>' +
+            '<div class="bp-foot" style="margin-top:10px;">' +
+            '<label class="bp-check" title="只勾选尚未下载的视频，避免重复下载"><input type="checkbox" id="bili-video-all"> 全选未下载</label>' +
+            '<button id="bili-video-clear" class="bp-btn bp-btn--sm">清空</button>' +
+            '<span class="bp-foot__spacer"></span>' +
+            '<button id="bili-video-dl" class="bp-btn bp-btn--primary">下载选中</button>' +
+            '<button id="bili-video-close" class="bp-btn bp-btn--ghost">关闭</button>' +
+            '</div>';
         document.body.appendChild(panel);
 
         const listEl = panel.querySelector('#bili-video-list');
@@ -3499,26 +3978,26 @@
         // ── 渲染视频列表（合集项带 [合集] 标记）──
         const render = () => {
             if(!state.items.length){
-                listEl.innerHTML = '<div style="color:#999;padding:24px;text-align:center;">当前页面未检测到视频。</div>';
+                listEl.innerHTML = '<div class="bp-empty">当前页面未检测到视频。</div>';
                 return;
             }
             listEl.innerHTML = state.items.map((it, i) => {
-                const tag = it.fromCollection ? ' · <span style="color:#fb7299;">[合集]</span>' : '';
-                const dur = it.duration ? (' · ' + formatDuration(it.duration)) : '';
-                const size = it.size ? (' · ' + formatSize(it.size)) : '';
-                const q = it.quality ? (' · ' + qualityLabel(it.quality)) : '';
-                const err = it.error ? ' · <span style="color:#f00;">获取失败</span>'
-                    : (it.errorMsg ? ' · <span style="color:#f00;" title="' + escapeHtml(it.errorMsg) + '">下载失败</span>' : '');
+                const tag = it.fromCollection ? '<span class="bp-badge bp-badge--accent">合集</span>' : '';
+                const dur = it.duration ? ('<span>' + formatDuration(it.duration) + '</span>') : '';
+                const size = it.size ? ('<span>' + formatSize(it.size) + '</span>') : '';
+                const q = it.quality ? ('<span>' + qualityLabel(it.quality) + '</span>') : '';
+                const err = it.error ? '<span class="bp-badge bp-badge--danger">获取失败</span>'
+                    : (it.errorMsg ? '<span class="bp-badge bp-badge--danger" title="' + escapeHtml(it.errorMsg) + '">下载失败</span>' : '');
                 // 已下载的项给一个「重新下载」入口：不看记账、覆盖同名文件重拿一遍
                 const done = state.downloaded.has(videoKey(it))
-                    ? ' · <span style="color:#00a85d;">✅ 已下载</span>' +
-                        ' <button class="bili-video-redl" data-i="' + i + '" title="重新下载这个视频（覆盖同名文件）" style="padding:0 6px;border:1px solid #ffa940;background:#fff;color:#fa8c16;border-radius:4px;cursor:pointer;font-size:11px;line-height:16px;">🔄 重下</button>'
+                    ? '<span class="bp-badge bp-badge--ok">✅ 已下载</span>' +
+                        '<button class="bili-video-redl bp-btn bp-btn--sm" data-i="' + i + '" title="重新下载这个视频（覆盖同名文件）">🔄 重下</button>'
                     : '';
                 const ck = state.checked.has(it) ? ' checked' : '';
-                return '<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid #f2f2f2;cursor:pointer;">' +
-                    '<input type="checkbox" class="bili-video-check" data-i="' + i + '"' + ck + ' style="flex-shrink:0;">' +
-                    '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(it.title) + '">' + escapeHtml(it.title) + '</span>' +
-                    '<span style="color:#999;font-size:12px;flex-shrink:0;">' + tag + dur + size + q + err + done + '</span>' +
+                return '<label class="bp-item">' +
+                    '<input type="checkbox" class="bili-video-check" data-i="' + i + '"' + ck + '>' +
+                    '<span class="bp-item__title" title="' + escapeHtml(it.title) + '">' + escapeHtml(it.title) + '</span>' +
+                    '<span class="bp-item__meta">' + tag + dur + size + q + err + done + '</span>' +
                     '</label>';
             }).join('');
         };
@@ -3815,6 +4294,7 @@
 
         // ── 其它交互：关闭 / 全选 ──
         panel.querySelector('#bili-video-close').addEventListener('click', () => panel.remove());
+        panel.querySelector('#bili-video-x').addEventListener('click', () => panel.remove());
 
         // ── 勾选状态：事件委托维护（列表重建后依然有效，不会因重绘丢失勾选）──
         listEl.addEventListener('change', (e) => {
@@ -3930,35 +4410,55 @@
     // ========================================================================
     // 十四、悬浮按钮与启动
     // ========================================================================
+    // 主题循环切换：跟随系统 → 云白 → 夜空 → 樱花 → …（纯 CSS 变量，即时生效，不用刷新页面）
+    const THEME_CYCLE = ['auto', 'cloud', 'midnight', 'sakura'];
+    const THEME_ICON = { auto: '🌗', cloud: '☀️', midnight: '🌙', sakura: '🌸' };
+    const THEME_SHORT = { auto: '跟随系统', cloud: '云白', midnight: '夜空', sakura: '樱花' };
+    const themeButtonText = t => (THEME_ICON[t] || '🎨') + ' ' + (THEME_SHORT[t] || t);
+    // 当前主题的唯一真相源：悬浮菜单和设置面板都从这里读，改一处即可
+    const themeState = { current: 'auto' };
+    function setTheme(t){
+        const n = applyTheme(t);
+        themeState.current = n;
+        saveTheme(n);
+        return n;
+    }
+
     // 创建右下角悬浮按钮组
     function makeButton(){
+        injectUiCss();
         const wrap = document.createElement('div');
-        Object.assign(wrap.style, { position:'fixed', right:'20px', bottom:'20px', zIndex:999999, display:'flex', flexDirection:'column', gap:'8px', alignItems:'flex-end' });
+        wrap.className = 'bp-fab-wrap';
 
-        const subBtns = [];
-        const mkSub = (text, color, onClick) => {
+        const menu = document.createElement('div');
+        menu.className = 'bp-fab__menu';
+        menu.hidden = true;
+        wrap.appendChild(menu);
+
+        // 说明：mkSub() 的副作用就是创建按钮并挂进菜单；
+        // 只有需要动态改文案/禁用状态的按钮（如 saveBtn、themeBtn）才需要接收返回值。
+        const mkSub = (text, tone, onClick) => {
             const b = document.createElement('button');
+            b.className = 'bp-fab__item';
+            if(tone) b.setAttribute('data-tone', tone);
             b.textContent = text;
-            Object.assign(b.style, {
-                padding:'8px 14px', background:'var(--bili-save-bg)', color:color || 'var(--bili-save-fg)', border:'1px solid ' + (color || 'var(--bili-save-border)'),
-                borderRadius:'6px', cursor:'pointer', boxShadow:'0 2px 6px rgba(0,0,0,0.15)', fontSize:'13px', display:'none'
-            });
             b.addEventListener('click', onClick);
-            wrap.appendChild(b);
-            subBtns.push(b);
+            menu.appendChild(b);
             return b;
         };
 
-        // 说明：mkSub() 的副作用就是创建按钮并登记到 subBtns；
-        // 只有需要动态改文案/禁用状态的按钮（如 saveBtn）才需要接收返回值。
-        mkSub((THEME === 'dark' ? '☀️ 日间' : '🌙 夜间'), '#ffb300', () => {
-            const next = THEME === 'dark' ? 'light' : 'dark';
-            saveTheme(next);
-            location.reload();
+        let curTheme = themeState.current;
+        const themeBtn = mkSub(themeButtonText(curTheme), 'amber', () => {
+            const i = THEME_CYCLE.indexOf(curTheme);
+            curTheme = setTheme(THEME_CYCLE[(i + 1) % THEME_CYCLE.length]);
+            themeBtn.textContent = themeButtonText(curTheme);
+            themeBtn.title = '点击切换到下一个主题（当前：' + (THEME_SHORT[curTheme] || curTheme) + '）';
+            showToast('🎨 主题已切换为「' + (THEME_SHORT[curTheme] || curTheme) + '」');
         });
-        mkSub('⚙️ 设置', '#00a1d6', openSettingsPanel);
-        mkSub('📹 视频下载', '#fb7299', openVideoPanel);
-        const saveBtn = mkSub('⬇️ 提取并保存', '#00a1d6', () => {
+        themeBtn.title = '点击切换到下一个主题（当前：' + (THEME_SHORT[curTheme] || curTheme) + '）';
+        mkSub('⚙️ 设置', 'accent', openSettingsPanel);
+        mkSub('📹 视频下载', 'pink', openVideoPanel);
+        const saveBtn = mkSub('⬇️ 提取并保存', 'accent', () => {
             saveBtn.disabled = true;
             saveBtn.textContent = '正在提取...';
             collectAndSave().finally(() => {
@@ -3968,17 +4468,27 @@
         });
 
         const rootBtn = document.createElement('button');
-        rootBtn.textContent = 'Bilibili-Plus';
-        Object.assign(rootBtn.style, {
-            padding:'10px 18px', background:'#00a1d6', color:'#fff', border:'none', borderRadius:'8px',
-            cursor:'pointer', boxShadow:'0 3px 10px rgba(0,161,214,0.4)', fontSize:'14px', fontWeight:'bold',
-            letterSpacing:'0.5px'
-        });
+        rootBtn.className = 'bp-fab';
+        rootBtn.innerHTML = '<span class="bp-fab__dot"></span>Bilibili-Plus';
+        const setOpen = (open) => {
+            menu.hidden = !open;
+            // 让状态浮窗跟着上移，否则弹出的菜单会把提示压住（两者都在右下角）
+            document.documentElement.classList.toggle('bp-fab-open', open);
+            rootBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        };
+        setOpen(false);
         rootBtn.addEventListener('click', () => {
-            const show = rootBtn.textContent !== '✖ 收起';
-            subBtns.forEach(b => { b.style.display = show ? 'block' : 'none'; });
-            rootBtn.textContent = show ? '✖ 收起' : 'Bilibili-Plus';
+            const open = menu.hidden;
+            // 菜单要展开了才刷新主题按钮文案（设置面板里可能刚换过主题）
+            if(open){
+                curTheme = themeState.current;
+                themeBtn.textContent = themeButtonText(curTheme);
+                themeBtn.title = '点击切换到下一个主题（当前：' + (THEME_SHORT[curTheme] || curTheme) + '）';
+            }
+            setOpen(open);
         });
+        // 点完任一项就收起菜单：否则弹出的面板会正好盖住菜单，看着像卡住了
+        menu.addEventListener('click', () => setOpen(false));
         wrap.appendChild(rootBtn);
         document.body.appendChild(wrap);
     }
@@ -4044,7 +4554,8 @@
     // ========================================================================
     // 初始化入口
     function init(){
-        applyTheme(THEME);
+        themeState.current = setTheme(THEME);      // 顺手把旧版的 light / dark 迁移成新主题名
+        applyTheme(themeState.current);
         makeButton();
         setupDynamicListWatcher();
         maybeAutoRun();
@@ -4064,6 +4575,11 @@
             fetchVideoStreams: fetchVideoStreams,
             loadSettings: loadSettings,
             saveSettings: saveSettings,
+            // 面板入口：只用于本地渲染调试（需要页面显式设置 window.__BILI_PLUS_TEST__）
+            openSettingsPanel: openSettingsPanel,
+            openVideoPanel: openVideoPanel,
+            openReviewPanel: openReviewPanel,
+            showDonatePanel: showDonatePanel,
             // 纯函数（无 DOM 依赖），给单测用
             planVideoTargets: planVideoTargets,
             videoKey: videoKey,

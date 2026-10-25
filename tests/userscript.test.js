@@ -230,7 +230,60 @@ check('便携版：内联的 ZIP 分批能力可用', () => {
     assert.strictEqual(batches[0][0].name, 'a.jpg');
 });
 
-// ── 7. 源码级守卫：这些坑没有 DOM 就测不到，但可以用结构断言钉住 ──
+// ── 7. 视觉系统（src/lib/theme.js + 产物）──
+const TH = require('../src/lib/theme.js');
+
+check('主题名归一化：旧版 light / dark 映射到新主题', () => {
+    assert.strictEqual(TH.normalizeTheme('light'), 'cloud');
+    assert.strictEqual(TH.normalizeTheme('dark'), 'midnight');
+    assert.strictEqual(TH.normalizeTheme('sakura'), 'sakura');
+    assert.strictEqual(TH.normalizeTheme('不认识的'), TH.DEFAULT_THEME);
+    assert.strictEqual(TH.normalizeTheme(null), TH.DEFAULT_THEME);
+});
+
+check('跟随系统：浅色用 cloud、深色用 midnight', () => {
+    assert.strictEqual(TH.resolveTheme('auto', false), 'cloud');
+    assert.strictEqual(TH.resolveTheme('auto', true), 'midnight');
+    assert.strictEqual(TH.resolveTheme('sakura', true), 'sakura', '固定主题不该被系统设置覆盖');
+});
+
+check('三套色板 token 齐全且互不相同', () => {
+    const keys = Object.keys(TH.VARS);
+    for (const name of ['cloud', 'midnight', 'sakura']) {
+        const p = TH.PALETTES[name];
+        assert.ok(p, '缺少色板：' + name);
+        for (const k of keys) assert.ok(p[k], name + ' 缺少 token：' + k);
+    }
+    assert.notStrictEqual(TH.PALETTES.cloud.surface, TH.PALETTES.midnight.surface, '明暗两套背景色撞了');
+});
+
+check('样式表：四套主题都有选择器，且没有依赖 color-mix 等新特性', () => {
+    const css = TH.buildCss();
+    for (const t of TH.THEMES) assert.ok(css.includes('data-bp-theme="' + t + '"'), '缺少主题选择器：' + t);
+    assert.ok(css.includes('@media (prefers-color-scheme: dark)'), '跟随系统没接系统明暗');
+    assert.ok(!/color-mix\(/.test(css), '用了 color-mix，老浏览器会失效');
+    for (const cls of ['.bp-panel', '.bp-head', '.bp-btn--primary', '.bp-seg', '.bp-toast', '.bp-review']) {
+        assert.ok(css.includes(cls), '样式表缺少组件：' + cls);
+    }
+    assert.ok(/prefers-reduced-motion/.test(css), '没尊重「减少动态效果」');
+});
+
+check('样式表：正文区能收缩（否则底部按钮会被内容顶掉）', () => {
+    assert.ok(/\.bp-panel > \.bp-scroll\{flex:1;min-height:0;\}/.test(TH.buildCss()), '缺 .bp-panel > .bp-scroll 的收缩规则');
+});
+
+for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
+    check(label + '：内联了视觉系统，且面板不再写死白底 / 旧变量', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(t.includes('__biliTheme'), '没内联 theme.js');
+        assert.ok(t.includes('function buildCss'), 'theme.js 没真正内联（只有占位）');
+        assert.ok(!/background:'#fff'/.test(t), '还有写死白底的面板（暗色主题下会刺眼）');
+        assert.ok(!/--bili-save-/.test(t), '还在用旧的五个 CSS 变量');
+        assert.ok(!/location\.reload\(\)/.test(t), '换主题不该刷新页面');
+    });
+}
+
+// ── 8. 源码级守卫：这些坑没有 DOM 就测不到，但可以用结构断言钉住 ──
 for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
     check(label + '：写授权目录失败时会清掉半成品（否则下次查重会跳过坏文件）', () => {
         const t = fs.readFileSync(file, 'utf8');
