@@ -12,6 +12,13 @@
 - 同理，不要使用任何会把署名指向非本人的自动化（网页端编辑产生的
   `committer: GitHub <noreply@github.com>` 也要避免）。
 
+## 提交与发版（默认全自动，不用再问）
+- 代码改动完成、`npm test` 通过后，**直接 `git push` 并跑 `node pack/pack.js --publish`**，
+  不需要每次再确认一遍；默认希望修复尽快到用户手里。
+- 例外：用户当次明确说「只提交」「先别 push」「先别发版」时，按当次指令来。
+- 发版前必须确认 `package.json` 与产物里的 `@version` 已同步提升（`npm test` 里有这条守卫，
+  不一致会直接失败）。
+
 ## 项目速览
 - 手写源码只有 `src/bilibili-save.user.js` 和 `src/lib/*.js`；
   根目录的 `bilibili-save.user.js`、`便携版/bilibili-save.user.js` 是 **构建产物，不要手改**。
