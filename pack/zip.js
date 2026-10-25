@@ -138,7 +138,8 @@ function writeZip(outPath, entries) {
     eocd.writeUInt32LE(cdSize, 12);
     eocd.writeUInt32LE(cdOffset, 16);
 
-    fs.writeFileSync(outPath, Buffer.concat([...locals, ...central, eocd]));
+    // 同 lib 里的 zipStore：用 concat 而不是展开实参，条目多时不必担心中参数个数上限
+    fs.writeFileSync(outPath, Buffer.concat(locals.concat(central, [eocd])));
     const bytes = fs.statSync(outPath).size;
     return {
         path: outPath,

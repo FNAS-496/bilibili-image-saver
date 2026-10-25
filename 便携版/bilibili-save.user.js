@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）（便携版·无需环境）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader (Portable)
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.9.41
+// @version      0.9.42
 // @author       FNAS-496 <sijiudeliu@outlook.com>
 // @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、日夜主题（默认不自动下载，需点击按钮）；便携版纯浏览器运行，无需安装任何环境）
 // @description:en Bilibili-Plus: auto-download original images from Bilibili favorites, dynamics, opus and space pages; video batch download, review mode, custom keys (needs the local server started via "一键启动.bat")
@@ -180,7 +180,9 @@
                 ...u32(0x06054b50), ...u16(0), ...u16(0),
                 ...u16(entries.length), ...u16(entries.length), ...u32(cdLen), ...u32(cdOff), ...u16(0)
             ]);
-            return new Blob([...parts, ...central, eocd], { type: 'application/zip' });
+            // 用 concat 而不是 [...parts, ...central, eocd]：后者把每个分片当成函数实参展开，
+            // 条目上万时实参个数逼近引擎上限（各引擎门槛不同），而且完全没必要
+            return new Blob(parts.concat(central, [eocd]), { type: 'application/zip' });
         }
 
         // 分批规划：单个 ZIP 受 32 位字段限制（≤65535 条、≤4GB），超了就拆成多个包；
@@ -721,6 +723,15 @@
     // ========================================================================
     // 三、图片地址处理（规范化 / 原图还原 / 过滤）
     // ========================================================================
+    // B 站页面本身是 https：http 的媒体地址会被浏览器按混合内容直接拦掉，
+    // 所以把 B 站自家 CDN 的 http 地址统一升级成 https（第三方域名保持原样，不擅自改）
+    function upgradeMediaProtocol(url){
+        if(url && url.protocol === 'http:' && /(^|\.)(hdslb\.com|bilibili\.com|bilivideo\.com|bilivideo\.cn)$/i.test(url.hostname)){
+            url.protocol = 'https:';
+        }
+        return url;
+    }
+
     // 把相对 / 协议相对地址补全为绝对地址
     function normalizeUrl(raw, base){
         if(!raw) return null;
@@ -729,7 +740,7 @@
         try{
             const url = new URL(raw, base || window.location.href);
             if(url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-            return url.href;
+            return upgradeMediaProtocol(url).href;
         }catch(e){
             return null;
         }
@@ -741,15 +752,16 @@
 
 
     // 缩略图地址还原为原图（反转义 \u002F、去 @ 参数、webp/avif→jpg）
-    function toOriginalImageUrl(raw){
+    function toOriginalImageUrl(raw, base){
         if(!raw) return null;
         let u = String(raw).trim()
             .replace(/\\u002F/g, '/')
             .replace(/\\\//g, '/');
         if(u.startsWith('//')) u = 'https:' + u;
         try{
-            const url = new URL(u, window.location.href);
+            const url = new URL(u, base || window.location.href);
             if(url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+            upgradeMediaProtocol(url);
             let pathname = url.pathname.split('@')[0];
             if(/\.(webp|avif)$/i.test(pathname) && /(hdslb\.com|bilibili\.com)/i.test(url.hostname)){
                 pathname = pathname.replace(/\.(webp|avif)$/i, '.jpg');
@@ -850,10 +862,12 @@
     // 从纯文本中提取图片地址
     function extractUrlsFromText(text, baseUrl = window.location.href){
         const urls = new Set();
-        const regex = /https?:\/\/[^\s"'<>]+?\.(?:jpe?g|png|gif|webp|bmp|avif)(?:[@?#][^\s"'<>]*)?/gi;
+        // \\?\/ 同时吃普通与 JSON 转义两种写法：直接扫 innerHTML 时地址常常是 https:\/\/… 形式，
+        // 只认 https:// 会整段漏掉（漏的不只是样式，而是真的少下几张图）
+        const regex = /https?:\\?\/\\?\/[^\s"'<>]+?\.(?:jpe?g|png|gif|webp|bmp|avif)(?:[@?#][^\s"'<>]*)?/gi;
         let match;
         while((match = regex.exec(text))){
-            const original = toOriginalImageUrl(match[0]);
+            const original = toOriginalImageUrl(match[0], baseUrl);
             if(original && isContentImageUrl(original)) urls.add(original);
         }
         return Array.from(urls);
@@ -1086,11 +1100,17 @@
                 });
             });
         }
+        // 普通 fetch 没有内建超时：服务假死时会一直挂着，这里补一个和 GM 通道一致的超时
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 300000);
         return fetch(LOCAL_SERVER, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        }).then(r => r.json());
+            body: JSON.stringify(payload),
+            signal: controller.signal
+        }).then(r => r.json()).catch(err => {
+            throw (err && err.name === 'AbortError') ? new Error('连接本地保存服务超时') : err;
+        }).finally(() => clearTimeout(timer));
     }
 
     // 批量提交图片地址并统计结果（环境版走本地服务，便携版走浏览器直存）
@@ -1273,7 +1293,8 @@
         document.body.appendChild(a);
         a.click();
         setTimeout(() => { try{ a.remove(); }catch(e){} }, 0);
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        // 回收别太早：几 GB 的 ZIP 可能几十秒才被浏览器真正接管，提前 revoke 会让下载中途报失败
+        setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
     }
 
     // 授权目录里是否已有这个文件（用于「已存在就跳过」，而不是覆盖甚至误删用户原有的文件）
@@ -1287,7 +1308,15 @@
         if(skipExisting && await fileExistsInDir(dir, filename)) return false;
         const fh = await dir.getFileHandle(filename, { create:true });
         const w = await fh.createWritable();
-        await blob.stream().pipeTo(w);
+        try{
+            await blob.stream().pipeTo(w);
+        }catch(e){
+            // 写了一半失败：必须 abort + 删掉残片，否则留下一个坏文件，
+            // 下次查重会把它当成「已下载」直接跳过，用户永远拿到的是一个打不开的文件
+            try{ await w.abort(); }catch(_e){}
+            try{ await dir.removeEntry(filename); }catch(_e){}
+            throw e;
+        }
         return true;
     }
 
@@ -1359,11 +1388,12 @@
 
         const targets = [];
         const seenNames = new Set();
-        for(const u of urls){
+        for(let ui = 0; ui < urls.length; ui++){
+            const u = urls[ui];
             const name = BS.hashFileNameFromUrl(u);
             if(seenNames.has(name)) continue;      // 同一张图的多个地址（如 webp/jpg 变体）只留一个，避免 ZIP 里出现同名条目
             seenNames.add(name);
-            targets.push({ url:u, name });
+            targets.push({ url:u, name, idx: ui });   // idx = 在调用方数组里的位置，结果据此对齐
         }
         let known = new Set();
         if(dedupe){
@@ -1373,6 +1403,8 @@
         const total = targets.length;
         const results = [];
         let idx = 0, finished = 0;
+        let totalBytes = 0;                            // 已下载的字节总量（用来在内存吃紧前提醒用户）
+        let memWarned = false;
         const progress = showProgress('便携版保存中 0/' + total);
         const tick = () => {
             if(progress && progress.firstChild) progress.firstChild.textContent = '便携版保存中 ' + finished + '/' + total;
@@ -1381,15 +1413,22 @@
             while(idx < total){
                 const t = targets[idx++];
                 if(dedupe && known.has(t.name)){
-                    results.push({ url:t.url, name:t.name, exists:true, saved:t.name });
+                    results.push({ idx:t.idx, url:t.url, name:t.name, exists:true, saved:t.name });
                     finished++; tick();
                     continue;
                 }
                 try{
                     const bytes = await fetchBytes(t.url, timeout);
-                    results.push({ url:t.url, name:t.name, bytes });
+                    results.push({ idx:t.idx, url:t.url, name:t.name, bytes });
+                    totalBytes += bytes.length;
+                    // 非目录模式要等全部下完才打包，字节全在内存里：攒到一定量就提醒一次，
+                    // 别等标签页崩了才知道该换「写入授权目录」
+                    if(!dir && !memWarned && totalBytes > 800 * 1024 * 1024){
+                        memWarned = true;
+                        showToast('⚠️ 本次图片总量已超过 800 MB，都在内存里等着打包\n建议在「设置 → 保存位置」选「写入授权目录」（边下边写，不占内存）');
+                    }
                 }catch(err){
-                    results.push({ url:t.url, name:t.name, error: err.message || String(err) });
+                    results.push({ idx:t.idx, url:t.url, name:t.name, error: err.message || String(err) });
                 }
                 finished++; tick();
             }
@@ -2261,13 +2300,15 @@
             try{
                 const json = await sendUrlsToServer(remaining);
                 if(json && json.results){
+                    // 结果顺序 = 完成顺序，且 url 可能是 webp→jpg 变体：先认 idx（原始请求下标），
+                    // 再退回 url 匹配，最后才按下标硬对，避免把「已下载」标到别的图上
                     json.results.forEach((r, i) => {
-                        if(r && (r.saved || r.exists)){
-                            // 结果可能按完成顺序返回：优先按 url 定位；对不上再退回位置对应
-                            let origIdx = r.url ? urls.indexOf(r.url) : -1;
-                            if(origIdx < 0) origIdx = urls.indexOf(remaining[i]);
-                            if(origIdx >= 0) downloaded.add(origIdx);
-                        }
+                        if(!r || !(r.saved || r.exists)) return;
+                        let origIdx = -1;
+                        if(r.idx != null && remaining[r.idx] != null) origIdx = urls.indexOf(remaining[r.idx]);
+                        if(origIdx < 0 && r.url) origIdx = urls.indexOf(r.url);
+                        if(origIdx < 0) origIdx = urls.indexOf(remaining[i]);
+                        if(origIdx >= 0) downloaded.add(origIdx);
                     });
                     countEl.textContent = downloaded.size;
                     const c = countResults(json);
@@ -2736,7 +2777,7 @@
             '</div>' +
             '</div>';
         document.body.appendChild(panel);
-        panel.querySelector('#bili-settings-x').addEventListener('click', () => panel.remove());
+        // 「✕」的关闭绑定放在 close() 定义之后（要连带注销键位录制用的 listener）
         const input = panel.querySelector('#bili-dir-input');
         if(input){
             input.addEventListener('focus', (e) => { e.target.style.borderColor = '#00a1d6'; });
@@ -2803,7 +2844,11 @@
                 document.removeEventListener('keydown', pendingKeyListener);
                 pendingKeyListener = null;
             }
+            // 关掉面板 = 放弃没保存的键位改动；不清掉的话，下次打开面板点保存
+            // 会把上一次「取消」掉的改动一起写进设置
+            window.__biliPendingKeys = null;
         };
+        panel.querySelector('#bili-settings-x').addEventListener('click', close);
         panel.querySelector('#bili-dir-cancel').addEventListener('click', () => {
             close();
             try{ localStorage.setItem(DIR_ASKED_KEY, '1'); }catch(e){}
@@ -3000,6 +3045,14 @@
     function videoKey(v){
         if(!v) return '';
         return String(v.bvid || '') + ((v.multiPart && v.cid != null) ? '#' + v.cid : '');
+    }
+    // 本次真正要下载哪些项：已下载的默认跳过（省流量）；点「🔄 重下」时 force=true 全部重下。
+    // 抽成纯函数是为了能单测 —— 这段逻辑曾把 skippedDone 写丢，导致下载成功后抛 ReferenceError。
+    function planVideoTargets(picked, force, isDownloaded){
+        const list = (Array.isArray(picked) ? picked : []).filter(Boolean);
+        const skip = (typeof isDownloaded === 'function') ? isDownloaded : () => false;
+        const targets = force ? list.slice() : list.filter(it => !skip(it));
+        return { targets, skipped: list.length - targets.length };
     }
     // 从当前 URL 提取视频号（BV… / av… 都原样返回，接口参数名由 videoIdParam 决定）
     function getVideoBvidFromUrl(){
@@ -3563,11 +3616,13 @@
         panel.querySelector('#bili-video-dl').addEventListener('click', async () => {
             // 以 state.checked 为准：勾选状态由事件委托维护，不受列表重绘影响
             const picked = Array.from(state.checked).filter(it => state.items.indexOf(it) >= 0);
-            if(!picked.length){ showToast('请先勾选视频'); return; }
-            // 已下载的默认跳过（省掉多余请求）；点列表里的「🔄 重下」则强制重下、覆盖同名文件
+            // 先取走 force 再判断 picked：否则「🔄 重下」后列表恰好没勾上任何项时，
+            // force=true 会残留到下一次普通下载，把已下载的视频统统覆盖重下一遍
             const force = !!state.force;
             state.force = false;
-            const targets = force ? picked : picked.filter(it => !state.downloaded.has(videoKey(it)));
+            if(!picked.length){ showToast('请先勾选视频'); return; }
+            // 已下载的默认跳过（省掉多余请求）；点列表里的「🔄 重下」则强制重下、覆盖同名文件
+            const { targets, skipped: skippedDone } = planVideoTargets(picked, force, it => state.downloaded.has(videoKey(it)));
             if(!targets.length){ showToast('所选视频都已经下载过了\n想重下就点列表里那个「🔄 重下」喵'); return; }
             const dlBtn = dlBtnEl || panel.querySelector('#bili-video-dl');
             const progEl = panel.querySelector('#bili-video-progress');
@@ -3965,7 +4020,7 @@
     // 启动自检：内嵌收款码完整性与本地服务连通性
     function verifySetup(){
         const REPO = 'https://github.com/FNAS-496/bilibili-image-saver';
-        const qrOk = typeof DONATE_QR === 'string' && DONATE_QR.indexOf('__QR_B64__') === -1 && DONATE_QR.length > 100;
+        const qrOk = typeof DONATE_QR === 'string' && DONATE_QR.indexOf('data:image/') === 0 && DONATE_QR.length > 100;
         console.log('[check] 收款码(内嵌): ' + (qrOk ? 'ready' : 'missing'));
         if(!qrOk){
             console.warn('[BiliSave] 收款码数据缺失，打赏面板将显示不出收款码。完整版请从 ' + REPO + ' 下载。');
@@ -4009,6 +4064,17 @@
             fetchVideoStreams: fetchVideoStreams,
             loadSettings: loadSettings,
             saveSettings: saveSettings,
+            // 纯函数（无 DOM 依赖），给单测用
+            planVideoTargets: planVideoTargets,
+            videoKey: videoKey,
+            toOriginalImageUrl: toOriginalImageUrl,
+            normalizeUrl: normalizeUrl,
+            isContentImageUrl: isContentImageUrl,
+            extractUrlsFromText: extractUrlsFromText,
+            parseDashStream: parseDashStream,
+            parseDurlStream: parseDurlStream,
+            pickStream: pickStream,
+            planZipBatches: BS.planZipBatches,
             idbListNames: BS.idbListNames,
             idbClearNames: BS.idbClearNames
         };

@@ -13,10 +13,12 @@
   `committer: GitHub <noreply@github.com>` 也要避免）。
 
 ## 项目速览
-- 手写源码只有 `src/bilibili-save.user.js` 和 `src/lib/browser-save.js`；
+- 手写源码只有 `src/bilibili-save.user.js` 和 `src/lib/*.js`；
   根目录的 `bilibili-save.user.js`、`便携版/bilibili-save.user.js` 是 **构建产物，不要手改**。
-- 改完源码要跑：`node build.js` 重新生成产物，再跑 `node tests/browser-save.test.js`、
-  `node tests/pack.test.js`、`node tests/server.test.js`（等价于 `npm test`）。
+- 改完源码要跑 `node build.js` 重新生成产物，再跑 `npm test`
+  （六个测试文件：browser-save / pack / server / userscript / dash-merge / wbi）。
+  其中 `tests/userscript.test.js` 会把两份产物真的在 vm 里求值一遍，
+  能抓住「引用了不存在的变量」这类纯文本断言查不出来的问题。
 - 打包 / 发布：`node pack/pack.js`（构建 + 打包 + ZIP 回读校验，产物在 `发行版/`）；
   `node pack/pack.js --publish`（发 GitHub Release，tag = `v<package.json 版本>`）。
 - 发版前 `package.json` 与用户脚本里的 `@version` **必须同步提升**，否则 Tampermonkey

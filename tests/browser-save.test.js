@@ -332,7 +332,8 @@ const runBuildChecks = () => {
             const t = fs.readFileSync(file, 'utf8');
             assert.ok(/bili-video-redl/.test(t), '列表里没有「重新下载」入口');
             assert.ok(/state\.force = true/.test(t), '点「重下」没有置强制标记');
-            assert.ok(/const targets = force \? picked : picked\.filter/.test(t), '强制重下时仍会被「已下载」过滤掉');
+            assert.ok(/const force = \!\!state\.force;\n\s+state\.force = false;\n\s+if\(!picked\.length\)/.test(t), 'force 必须在 picked 判空之前取走，否则会残留到下一次普通下载');
+            assert.ok(/planVideoTargets\(picked, force/.test(t), '强制重下时仍会被「已下载」过滤掉');
             assert.ok(/async function saveVideosInBrowser\(items, ui, opts\)/.test(t), 'saveVideosInBrowser 没接 force');
             assert.ok(/, !force, fileProgress/.test(t), '目录模式落盘没按 force 覆盖同名文件');
             assert.ok(/postJsonToPath\('\/video\/save', \{ videos, jobId, force \}\)/.test(t), '环境版没把 force 传给服务端');

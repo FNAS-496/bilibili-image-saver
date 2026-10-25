@@ -175,6 +175,10 @@ function normalizeImageUrl(url){
         let u = String(url).replace(/\\u002F/g, '/').replace(/\\\//g, '/');
         if(u.startsWith('//')) u = 'https:' + u;
         const parsed = new URL(u);
+        // B 站页面走 https：把 http 原图地址升级成 https，否则会被浏览器按混合内容直接拦掉
+        if(parsed.protocol === 'http:' && /(^|\.)(hdslb\.com|bilibili\.com)$/i.test(parsed.hostname)){
+            parsed.protocol = 'https:';
+        }
         let pathname = parsed.pathname.split('@')[0];
         if(/\.(webp|avif)$/i.test(pathname) && /(hdslb\.com|bilibili\.com)/i.test(parsed.hostname)){
             pathname = pathname.replace(/\.(webp|avif)$/i, '.jpg');
@@ -494,26 +498,34 @@ async function saveVideo(item, index, job, force){
     }
 }
 
-// 读请求体：限长（超了直接 413，别让无上限的字符串拼接把内存吃光），
+// 读请求体：限长（超了直接 413，别让无上限的拼接把内存吃光），
 // 并兜住回调里抛出的异常（否则 async 回调的 reject 会变成 unhandledRejection）
+// 限长按「字节」算：一个中文字符在 UTF-8 里占 3 字节，按字符串长度算会放过 3 倍的实际内存
 function readBody(req, res, limit, onDone){
-    let body = '';
+    const chunks = [];
+    let size = 0;
     let tooBig = false;
     req.on('data', chunk => {
         if(tooBig) return;
-        body += chunk;
-        if(body.length > limit){
+        size += chunk.length;
+        if(size > limit){
             tooBig = true;
-            body = '';
+            chunks.length = 0;
+            // 不能在这里 req.destroy()：会把还没 flush 的响应一起掐掉，客户端只看到
+            // ECONNRESET，根本不知道是体积超限。正确做法是先把 413 发完，
+            // 再把剩下的请求体读掉丢弃（内存已经不攒了），连接由 Connection: close 收尾。
             try{
-                res.writeHead(413, {'Content-Type':'application/json'});
+                res.writeHead(413, {'Content-Type':'application/json', 'Connection':'close'});
                 res.end(JSON.stringify({ ok:false, error:'request body too large' }));
             }catch(e){}
-            req.destroy();
+            req.resume();
+            return;
         }
+        chunks.push(chunk);
     });
     req.on('end', () => {
         if(tooBig) return;
+        const body = Buffer.concat(chunks).toString('utf8');
         Promise.resolve().then(() => onDone(body)).catch(err => {
             console.error('handler failed', err);
             try{
@@ -532,6 +544,15 @@ const server = http.createServer((req, res) => {
     if(!trusted){
         res.writeHead(403, {'Content-Type':'text/plain'});
         res.end('forbidden origin');
+        return;
+    }
+    // 防 DNS rebinding：恶意域名可以把自己解析到 127.0.0.1 并绕过 Origin 检查（同源，
+    // Origin 为空或是自己的域名），所以再核对 Host 头 —— 服务只绑 127.0.0.1，正常请求的
+    // Host 只可能是 127.0.0.1 / localhost / [::1]。
+    const hostHeader = String(req.headers.host || '').toLowerCase();
+    if(hostHeader && !/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(hostHeader)){
+        res.writeHead(403, {'Content-Type':'text/plain'});
+        res.end('forbidden host');
         return;
     }
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
@@ -606,11 +627,13 @@ const server = http.createServer((req, res) => {
 
             const seen = new Set();
             const urls = [];
-            for(const u of rawUrls){
-                const n = normalizeImageUrl(u);
+            const requestIdx = [];                 // urls[i] 对应请求里的第几项（去重后下标会错位，得单独记）
+            for(let ri = 0; ri < rawUrls.length; ri++){
+                const n = normalizeImageUrl(rawUrls[ri]);
                 if(n && !seen.has(n)){
                     seen.add(n);
                     urls.push(n);
+                    requestIdx.push(ri);
                 }
             }
             if(!urls.length){
@@ -628,12 +651,14 @@ const server = http.createServer((req, res) => {
                     const u = urls[i];
                     try{
                         const result = await tryDownloadFile(u, i + 1, dlOpts);
-                        results.push(result);
+                        // 按下标落位并带上请求下标：并发完成顺序 ≠ 请求顺序，
+                        // 客户端要据此把「已下载」标回正确的那张图（url 可能是 webp→jpg 变体，认不回来）
+                        results[i] = Object.assign({ idx: requestIdx[i] }, result);
                         if(result.exists) console.log('Exists (skip)', result.saved);
                         else console.log('Saved', result.url, '->', result.saved);
                     }catch(err){
                         console.error('Failed', u, err.message);
-                        results.push({ url: u, error: err.message });
+                        results[i] = { idx: requestIdx[i], url: u, error: err.message };
                     }
                     if(dlInterval > 0) await new Promise(r => setTimeout(r, dlInterval));
                 }
@@ -860,7 +885,12 @@ if(require.main === module){
     });
 }
 
-process.on('uncaughtException', (e)=>{ console.error('uncaught', e); });
+process.on('uncaughtException', (e)=>{
+    console.error('uncaught', e);
+    // 进程级未捕获异常说明状态已经不可信（写流没关、半成品文件还在、定时器还在跑）。
+    // 记完就退出，让「一键启动.bat」重开一个干净的服务，别带着坏状态继续接请求。
+    process.exit(1);
+});
 process.on('unhandledRejection', (e)=>{ console.error('unhandledRejection', e); });
 
 // 导出纯函数供单测使用（被 require 时不会监听端口）

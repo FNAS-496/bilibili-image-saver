@@ -122,7 +122,9 @@
             ...u32(0x06054b50), ...u16(0), ...u16(0),
             ...u16(entries.length), ...u16(entries.length), ...u32(cdLen), ...u32(cdOff), ...u16(0)
         ]);
-        return new Blob([...parts, ...central, eocd], { type: 'application/zip' });
+        // 用 concat 而不是 [...parts, ...central, eocd]：后者把每个分片当成函数实参展开，
+        // 条目上万时实参个数逼近引擎上限（各引擎门槛不同），而且完全没必要
+        return new Blob(parts.concat(central, [eocd]), { type: 'application/zip' });
     }
 
     // 分批规划：单个 ZIP 受 32 位字段限制（≤65535 条、≤4GB），超了就拆成多个包；

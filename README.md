@@ -204,7 +204,7 @@ Tampermonkey 会按脚本里的 `@updateURL` 自动检查更新喵，也可以�
 npm run build     # 生成 环境版(根目录) + 便携版脚本（顺带同步"无需环境直接安装版"）
 npm run pack      # 打四个发行包 → 发行版/（会先自动 build，并逐个条目回读校验 ZIP）
 npm run release   # 打包 + 发 GitHub Release（tag = v<package.json 版本>，附件就是那四个 zip）
-npm test          # 单测：便携版内核（ZIP 字节跟 Python 实现比对）+ 打包工具链
+npm test          # 单测：内核(与 Python 实现比对) + 打包工具链 + 服务端点 + 用户脚本运行时 + 音画合并 + wbi 签名
 npm run check     # 语法自检（源码、便携版产物、打包脚本）
 npm start         # 跑本地保存服务（环境版）
 ```

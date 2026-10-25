@@ -90,6 +90,12 @@ check('normalizeImageUrl：补协议 / 去缩略参数 / webp→jpg / 去 hash',
     assert.strictEqual(S.normalizeImageUrl('https://i0.hdslb.com/bfs/a.webp'), 'https://i0.hdslb.com/bfs/a.jpg');
     assert.strictEqual(S.normalizeImageUrl('https://i0.hdslb.com/bfs/a.jpg#frag'), 'https://i0.hdslb.com/bfs/a.jpg');
 });
+check('normalizeImageUrl：B 站域名的 http 升级成 https（不然会被按混合内容拦掉）', () => {
+    assert.strictEqual(S.normalizeImageUrl('http://i0.hdslb.com/bfs/a.jpg'), 'https://i0.hdslb.com/bfs/a.jpg');
+    assert.strictEqual(S.normalizeImageUrl('http://www.bilibili.com/bfs/a.jpg'), 'https://www.bilibili.com/bfs/a.jpg');
+    // 第三方域名不擅自改协议
+    assert.strictEqual(S.normalizeImageUrl('http://example.com/a.jpg'), 'http://example.com/a.jpg');
+});
 
 check('视频下载会逐条尝试备用 CDN 地址', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'save_images_server.js'), 'utf8');
@@ -110,8 +116,87 @@ check('视频支持 force 重下（跳过查重、覆盖同名文件）', () => 
     assert.ok(/await saveVideo\(v, i \+ 1, job, force\)/.test(src), 'force 没传进保存流程');
 });
 
-try {
-    fs.rmSync(TMP, { recursive: true, force: true });
-} catch (e) { /* 临时目录删不掉不影响结果 */ }
+check('图像下载结果按下标落位并回带原始请求下标（客户端据此把「已下载」标回正确的图）', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'save_images_server.js'), 'utf8');
+    assert.ok(/const requestIdx = \[\];/.test(src), '没有记录「去重后下标 → 原始请求下标」的映射');
+    assert.ok(/results\[i\] = Object\.assign\(\{ idx: requestIdx\[i\] \}, result\)/.test(src), '/save 没有按下标落位');
+    assert.ok(/results\[i\] = \{ idx: requestIdx\[i\], url: u, error: err\.message \}/.test(src), '失败项也没带 idx');
+});
 
-console.log('通过 ' + passed + ' 项' + (process.exitCode ? '，有失败 ❌' : '，全部通过 ✅'));
+// ── HTTP 层：Host / Origin 校验（真起一个临时端口，不碰 8765）──
+const http = require('http');
+
+const checkAsync = async (name, fn) => {
+    try {
+        await fn();
+        passed++;
+        console.log('  ok   ' + name);
+    } catch (e) {
+        console.error('  FAIL ' + name + '\n       ' + e.message);
+        process.exitCode = 1;
+    }
+};
+
+function request(port, { path: reqPath = '/getdir', headers = {}, method = 'GET', body } = {}) {
+    return new Promise((resolve, reject) => {
+        const hdrs = Object.assign({}, headers);
+        if (body) {
+            hdrs['Content-Type'] = 'application/json';
+            hdrs['Content-Length'] = Buffer.byteLength(body);
+        }
+        const req = http.request({ host: '127.0.0.1', port, path: reqPath, method, headers: hdrs }, res => {
+            let text = '';
+            res.on('data', c => { text += c; });
+            res.on('end', () => resolve({ status: res.statusCode, body: text }));
+        });
+        req.on('error', reject);
+        req.end(body);
+    });
+}
+
+(async () => {
+    let port = 0;
+    try {
+        port = await new Promise((resolve, reject) => {
+            S.server.once('error', reject);
+            S.server.listen(0, '127.0.0.1', () => resolve(S.server.address().port));
+        });
+    } catch (e) {
+        console.error('  FAIL 起临时端口失败：' + e.message);
+        process.exitCode = 1;
+    }
+
+    if (port) {
+        await checkAsync('Host 是本机时正常放行', async () => {
+            const r = await request(port, { headers: { Host: '127.0.0.1:' + port } });
+            assert.strictEqual(r.status, 200);
+            assert.ok(JSON.parse(r.body).ok);
+        });
+        await checkAsync('Host 是恶意域名时拒绝（防 DNS rebinding）', async () => {
+            const r = await request(port, { headers: { Host: 'evil.example.com' } });
+            assert.strictEqual(r.status, 403);
+            assert.ok(/forbidden host/.test(r.body), '没走到 Host 校验分支');
+        });
+        await checkAsync('Origin 是非 B 站域名时拒绝', async () => {
+            const r = await request(port, { headers: { Host: '127.0.0.1:' + port, Origin: 'https://evil.example.com' } });
+            assert.strictEqual(r.status, 403);
+        });
+        await checkAsync('Origin 是 bilibili.com 时放行', async () => {
+            const r = await request(port, { headers: { Host: '127.0.0.1:' + port, Origin: 'https://www.bilibili.com' } });
+            assert.strictEqual(r.status, 200);
+        });
+        await checkAsync('请求体超过上限时返回 413 而不是把连接掐断（客户端要看得懂原因）', async () => {
+            const big = JSON.stringify({ dir: 'x'.repeat(1.5 * 1024 * 1024) });
+            const r = await request(port, { path: '/setdir', method: 'POST', body: big });
+            assert.strictEqual(r.status, 413);
+            assert.ok(/too large/.test(r.body), '响应体里没有说明原因');
+        });
+        await new Promise(resolve => S.server.close(resolve));
+    }
+
+    try {
+        fs.rmSync(TMP, { recursive: true, force: true });
+    } catch (e) { /* 临时目录删不掉不影响结果 */ }
+
+    console.log('通过 ' + passed + ' 项' + (process.exitCode ? '，有失败 ❌' : '，全部通过 ✅'));
+})();

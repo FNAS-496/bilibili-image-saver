@@ -29,6 +29,7 @@ const NOTES = {
     'src/lib/mp4box.min.js': '第三方库 MP4Box.js（github.com/gpac/mp4box.js，BSD-3-Clause）的 esbuild 打包产物，只用它的 mp4 解析/封装能力做音视频合并。只内联进便携版；环境版不带它（环境版交给 ffmpeg 合并）。别手改，要升级就重新打包一份。',
     'src/lib/wbi.js': 'B 站 wbi 签名源码（w_rid / wts，内含手写 MD5）：给 playurl 请求加签名以降低风控概率；拿不到两个 key、或带签名取不到数据，会自动退回未签名请求（实测不签名也能正常取流，签名只是锦上添花）。构建时内联进两个版本，Node 单测直接 require 同一份文件。',
     'tests/browser-save.test.js': '便携版内核的单测（npm test）。ZIP 结构的期望值由独立的 Python 实现算出，属于跨语言比对，不是自己验自己；另含取流/清晰度/合并等回归守卫。',
+    'tests/userscript.test.js': '用户脚本的运行时单测（npm test）：在 Node 的 vm 里用一个「无 DOM、无网络」的沙箱把两份产物完整求值一遍，能抓住「顶层引用不存在的变量」这类只有用户点了按钮才炸的问题（纯文本断言查不出来）；另外逐个单测脚本里不依赖 DOM 的纯函数（目标挑选、地址规范化、DASH/durl 解析、清晰度挑选）。',
     'tests/dash-merge.test.js': '音视频合并的单测（npm test）：拿 tests/fixtures 里的真实 fMP4 分片合并后读回，确认音视频两条轨都在、编码与样本数不变、超限与坏输入会被明确拒绝。',
     'tests/wbi.test.js': 'wbi 签名的单测（npm test）：MD5 用 RFC 1321 标准向量 + Node 自带 crypto 双重对照，签名串按接口规则逐条断言。',
     'tests/fixtures/video.m4s': '测试用的极小 fMP4 视频分片（ffmpeg 生成的黑帧，约 2KB），只给合并单测用；里面没有任何真实视频内容。',
