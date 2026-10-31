@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）（便携版·无需环境）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader (Portable)
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.10.0
+// @version      0.10.1
 // @author       FNAS-496 <sijiudeliu@outlook.com>
 // @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、四套主题（跟随系统/云白/夜空/樱花）（默认不自动下载，需点击按钮）；便携版纯浏览器运行，无需安装任何环境）
 // @description:en Bilibili-Plus: auto-download original images from Bilibili favorites, dynamics, opus and space pages; video batch download, review mode, custom keys (needs the local server started via "一键启动.bat")
@@ -1413,7 +1413,12 @@
     // 五、网络抓取
     // ========================================================================
     // 抓取文本内容（优先 GM_xmlhttpRequest，带 cookie 与超时；GM 失败退回普通 fetch）
-    async function fetchText(url){
+    // opts.accept：请求 JSON 接口时务必传 application/json —— 用 text/html 去要 JSON，
+    // B 站的接口风控会直接回 412（实测：同一接口只换 Accept 就 412）。
+    const ACCEPT_HTML = 'text/html,application/xhtml+xml,*/*;q=0.8';
+    const ACCEPT_JSON = 'application/json, text/plain, */*';
+    async function fetchText(url, opts){
+        const accept = (opts && opts.accept) || ACCEPT_HTML;
         let gmError = null;
         if(typeof GM_xmlhttpRequest === 'function'){
             try{
@@ -1427,7 +1432,7 @@
                         headers: {
                             'User-Agent': navigator.userAgent,
                             'Referer': 'https://www.bilibili.com/',
-                            'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8'
+                            'Accept': accept
                         },
                         onload: function(response){
                             if(response.status >= 200 && response.status < 300){
@@ -1447,7 +1452,7 @@
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 20000);
         try{
-            const resp = await fetch(url, { credentials: 'include', signal: controller.signal });
+            const resp = await fetch(url, { credentials: 'include', signal: controller.signal, headers: { 'Accept': accept } });
             if(!resp.ok) throw new Error('Fetch failed ' + resp.status + ' for ' + url);
             return await resp.text();
         }catch(err){
@@ -2335,6 +2340,14 @@
         if(isSpace && /\/favlist/.test(path)){
             return { type:'favlist', uid, imagePage:true, label:'收藏夹' };
         }
+
+        // 旧版收藏夹入口（www.bilibili.com/medialist/detail/ml<fid> 与 /medialist/play/<fid>）：
+        // 以前漏了这里，于是在这类页面上视频面板只会显示「未检测到视频」
+        if(host === 'www.bilibili.com' && /^\/medialist\/(detail|play)\//.test(path)){
+            const fid = getFavFolderId();
+            return { type:'favlist', uid, fid, imagePage:true, label:'收藏夹' };
+        }
+
 
         if(isSpace && /\/dynamic/.test(path)){
             return { type:'dynamic-list', uid, imagePage:true, label:'动态列表' };
@@ -3538,14 +3551,145 @@
         const m = location.href.match(/\/video\/(BV[0-9A-Za-z]+|av\d+)/i);
         return m ? m[1] : null;
     }
-    // 收藏夹页面一次最多列出多少个（避免长列表把面板撑爆）
+    // DOM 兜底时一次最多列多少个（避免长列表把面板撑爆）。
+    // 正常路径不会用到它：收藏夹走接口分页，能拿全。
     const MAX_FAV_PANEL_ITEMS = 50;
-    let lastFavTruncated = false;
+
+    // 从 URL 取收藏夹 fid：新版 space…/favlist?fid=123，旧版 www…/medialist/detail/ml123
+    function getFavFolderId(){
+        try{
+            const fid = new URLSearchParams(location.search).get('fid');
+            if(fid && /^\d+$/.test(fid)) return fid;
+        }catch(e){}
+        // medialist 的两种写法都要认：/medialist/detail/ml123 与 /medialist/play/ml123，
+        // 「ml」前缀也可能没有（部分入口是纯数字）
+        const m = location.pathname.match(/\/medialist\/(?:detail|play)\/(?:ml)?(\d+)/i);
+        return m ? m[1] : null;
+    }
+
+    // 收藏夹内容接口的分页参数与限速。
+    // ps 最大只接受 40（传 100 返回 -400）；但拉全 1000+ 个要几十页，
+    // 实测「几十次请求挤在几秒内」会被 B 站按 IP 风控（之后连单次请求都回 412），
+    // 所以这里刻意压低并发、页间留间隔，并在 412 时退避重试、仍失败就停止并保留已拿到的部分。
+    const FAV_PAGE_SIZE = 20;
+    const MAX_FAV_PAGES = 60;                       // 20 × 60 = 1200 个，够覆盖常见收藏夹
+    const FAV_CONCURRENCY = 2;
+    const FAV_PAGE_DELAY = 350;                     // 每个 worker 每页之后的间隔（ms）
+
+    const isRateLimited = msg => /\b412\b|-412|风控|请求过于频繁|频繁|too many/i.test(String(msg == null ? '' : msg));
+
+    // 拉一页收藏夹；失败时返回带错误标记的对象，由调用方决定重试还是停
+    async function fetchFavPage(fid, pn){
+        try{
+            const text = await fetchText('https://api.bilibili.com/x/v3/fav/resource/list?media_id=' + encodeURIComponent(fid) +
+                '&pn=' + pn + '&ps=' + FAV_PAGE_SIZE + '&keyword=&order=mtime&type=0&tid=0&platform=web',
+                { accept: ACCEPT_JSON });
+            const j = JSON.parse(text);
+            if(j && j.code === 0 && j.data) return { data: j.data };
+            // 接口明确回了错误码：-400 参数问题，-412 / 其它多为风控
+            return { error: 'code=' + (j && j.code) + (j && j.message ? ' ' + j.message : ''), rateLimited: !!j && j.code === -412 };
+        }catch(e){
+            return { error: (e && e.message) || String(e), rateLimited: isRateLimited(e && e.message) };
+        }
+    }
+
+    // 收藏夹全部视频：走官方接口分页。
+    // 为什么必须走接口：收藏夹页是「客户端渲染 + 虚拟滚动」，document 里永远只有当前可见的十几条，
+    // 靠 querySelectorAll 抓 DOM 只能拿到一小撮（实测一个 1062 个视频的收藏夹，DOM 里能抓到的远少于这个数）。
+    // onPage(items, info)：每拉到一页就回调一次，界面可以先显示出来，不用等全部拉完。
+    async function collectFavFolderItems(fid, onPage){
+        if(!fid) return null;
+        const first = await fetchFavPage(fid, 1);
+        if(first.rateLimited) return { titled: '', total: 0, items: [], rateLimited: true, skipped: 0, truncated: false };
+        if(!first.data) return null;
+
+        const total = (first.data.info && first.data.info.media_count) || 0;
+        const firstMedias = first.data.medias || [];
+        const pageCount = Math.max(1, Math.min(MAX_FAV_PAGES,
+            Math.ceil(Math.max(total, firstMedias.length) / FAV_PAGE_SIZE)));
+
+        const pageMap = new Map();
+        pageMap.set(1, firstMedias);
+
+        // 把接口条目转成列表项：失效稿件（attr>0）与非普通视频（type!==2）跳过
+        const toItems = (medias) => {
+            const out = [];
+            let skipped = 0;
+            for(const m of medias || []){
+                if(!m || !m.bvid || m.attr > 0 || (m.type != null && m.type !== 2)){ skipped++; continue; }
+                out.push({
+                    bvid: m.bvid,
+                    cid: null,
+                    title: String(m.title || ('视频 ' + m.bvid)).trim(),
+                    duration: m.duration || null,
+                    fromFav: true
+                });
+            }
+            return { items: out, skipped };
+        };
+
+        if(onPage){
+            const p1 = toItems(firstMedias);
+            onPage(p1.items, { page: 1, pageCount, total, skipped: p1.skipped });
+        }
+
+        let next = 2, donePages = 1, rateLimited = false, skippedAll = 0;
+        async function worker(){
+            while(next <= pageCount && !rateLimited){
+                const p = next++;
+                let r = await fetchFavPage(fid, p);
+                // 被风控：退避一次再试，还不行就整体停下来（已拿到的页面照样能用）
+                if(r.rateLimited){
+                    await sleep(1500);
+                    r = await fetchFavPage(fid, p);
+                }
+                if(r.rateLimited || (!r.data && r.error && isRateLimited(r.error))){
+                    rateLimited = true;
+                    break;
+                }
+                if(r.data){
+                    pageMap.set(p, r.data.medias || []);
+                    if(r.data.has_more === false) next = pageCount + 1;   // 已到最后一页，别再往下拉
+                }
+                donePages++;
+                if(onPage){
+                    const pi = toItems(r.data ? r.data.medias : []);
+                    skippedAll += pi.skipped;
+                    onPage(pi.items, { page: donePages, pageCount, total, skipped: pi.skipped });
+                }
+                await sleep(FAV_PAGE_DELAY);        // 限速：别把几十个请求挤在一瞬间
+            }
+        }
+        await Promise.all(Array.from({ length: Math.min(FAV_CONCURRENCY, Math.max(0, pageCount - 1)) }, () => worker()));
+
+        const items = [];
+        const seen = new Set();
+        let skipped = 0;
+        for(let p = 1; p <= pageCount; p++){
+            const arr = pageMap.get(p);
+            if(!arr) continue;
+            const pi = toItems(arr);
+            skipped += pi.skipped;
+            for(const it of pi.items){
+                if(seen.has(it.bvid)) continue;
+                seen.add(it.bvid);
+                items.push(it);
+            }
+        }
+        if(!items.length && !rateLimited) return null;
+        return {
+            title: (first.data.info && first.data.info.title) || '收藏夹',
+            total,
+            skipped,
+            rateLimited,
+            truncated: !rateLimited && (pageCount >= MAX_FAV_PAGES || total > items.length + skipped),
+            items
+        };
+    }
 
     // 收集当前页可下载的视频（当前视频 / 收藏夹列表）
     function collectVideoItems(){
         const items = [];
-        lastFavTruncated = false;
         if(/\/video\/(BV[0-9A-Za-z]+|av\d+)/i.test(location.pathname)){
             const bvid = getVideoBvidFromUrl();
             if(bvid){
@@ -3568,7 +3712,6 @@
                 const domTitle = ((titleEl ? titleEl.textContent : (a.getAttribute('title') || a.textContent)) || '').trim();
                 items.push({ bvid, cid: null, title: domTitle || ('视频 ' + bvid), duration: null });
             });
-            lastFavTruncated = items.length > MAX_FAV_PANEL_ITEMS;
             return items.slice(0, MAX_FAV_PANEL_ITEMS);
         }
         return items;
@@ -3965,7 +4108,7 @@
         //   items      : 列表项
         //   downloaded : 已下载集合，键 = videoKey(项)（BV 号；多 P 再加 #cid）
         //   checked    : 已勾选的项，存对象引用而非下标 —— 列表重绘（fillCids 会 splice 展开分P）后仍能保持勾选
-        const state = { items: [], ready: false, downloaded: new Set(), checked: new Set(), force: false };
+        const state = { items: [], ready: false, downloaded: new Set(), checked: new Set(), force: false, loadingFav: false, favHint: '' };
         const dlBtnEl = panel.querySelector('#bili-video-dl');
 
         // 同步「下载选中」按钮上的数量提示
@@ -3978,7 +4121,8 @@
         // ── 渲染视频列表（合集项带 [合集] 标记）──
         const render = () => {
             if(!state.items.length){
-                listEl.innerHTML = '<div class="bp-empty">当前页面未检测到视频。</div>';
+                listEl.innerHTML = '<div class="bp-empty">' +
+                    (state.loadingFav ? '正在读取收藏夹…' : '当前页面未检测到视频。') + '</div>';
                 return;
             }
             listEl.innerHTML = state.items.map((it, i) => {
@@ -4021,7 +4165,9 @@
 
         // ── 补齐 cid（仅当前视频/收藏夹项；合集项 cid 已知，跳过）──
         const fillCids = async () => {
-            const need = state.items.filter(it => it.cid == null && !it.fromCollection);
+            // 收藏夹可能上千个视频：绝不在这里逐个请求 view 接口（会慢到没法用，还容易触发风控）。
+            // 它们的 cid 在勾选下载时由 prepWorker 按需获取。
+            const need = state.items.filter(it => it.cid == null && !it.fromCollection && !it.fromFav);
             if(!need.length) return;
             hintEl.textContent = '获取视频信息中...';
             let done = 0;
@@ -4079,7 +4225,7 @@
                 while(done < total){
                     const i = done++;
                     const it = state.items[i];
-                    if(it.cid == null || it.error || it.fromCollection){ continue; }
+                    if(it.cid == null || it.error || it.fromCollection || it.fromFav){ continue; }
                     const s = await fetchVideoStreams(it.bvid, it.cid, currentQuality());
                     if(s && s.videoUrl) applyStream(it, s);
                     else { it.error = true; }
@@ -4088,7 +4234,10 @@
                 }
             }
             await Promise.all(Array.from({ length: Math.min(CHILD_CONCURRENCY, total) }, () => worker()));
-            hintEl.textContent = '共 ' + state.items.length + ' 个（已自动获取大小与画质）';
+            // 收藏夹项不预取大小（上千个逐个请求既慢又容易被风控），这里不能说「已自动获取」
+            const favCount = state.items.filter(it => it.fromFav).length;
+            hintEl.textContent = state.favHint || ('共 ' + state.items.length + ' 个' +
+                (favCount ? '（收藏夹项在下载时获取大小）' : '（已自动获取大小与画质）'));
         };
 
         // ── 下载选中：先补齐缺失的流地址，再交给本地服务下载 ──
@@ -4356,7 +4505,13 @@
         const items = collectVideoItems();
         state.items = items;
         render();
-        if(!items.length){ hintEl.textContent = ''; return; }
+        // 收藏夹页即使 DOM 里一条都抓不到也必须继续往下走 —— 内容要走接口分页拉。
+        // （收藏夹是虚拟滚动，DOM 里经常是 0 条；这里一旦提前 return，接口就永远不会被调用，
+        //   面板只会显示「当前页面未检测到视频」，正是收藏夹下载「一直有问题」的直接原因。）
+        const earlyPageInfo = detectPageType();
+        const isFavPage = !!(earlyPageInfo && earlyPageInfo.type === 'favlist');
+        if(!items.length && !isFavPage){ hintEl.textContent = ''; return; }
+        if(!items.length && isFavPage) hintEl.textContent = '正在读取收藏夹…';
 
         // 读取本地已下载列表并在列表上标记「✅ 已下载」：全选与下载都会自动跳过，避免重复下载
         // 注意：这里不做 state.items 过滤 —— 合集项是稍后才异步合并进来的，
@@ -4380,6 +4535,67 @@
         })();
 
         (async () => {
+            // ── 收藏夹：必须用官方接口分页拉全 ──
+            // 收藏夹页是客户端渲染 + 虚拟滚动，DOM 里永远只有当前可见的十几条，
+            // 所以「面板只列出几个」「想勾的视频根本不在列表里」的根因就在这里。
+            const pageInfo = detectPageType();
+            if(pageInfo && pageInfo.type === 'favlist'){
+                const fid = getFavFolderId();
+                if(fid){
+                    hintEl.textContent = '正在读取收藏夹…';
+                    state.loadingFav = true;
+                    render();
+                    let fav = null;
+                    // 渐进式：每拉完一页就把已拿到的追加到列表，用户不用干等几十页
+                    const favSeen = new Set();
+                    const appendPage = (pageItems) => {
+                        let added = 0;
+                        for(const it of pageItems){
+                            if(favSeen.has(it.bvid)) continue;
+                            favSeen.add(it.bvid);
+                            state.items.push(it);
+                            added++;
+                        }
+                        if(added){ render(); refreshDlBtn(); }
+                    };
+                    try{
+                        fav = await collectFavFolderItems(fid, (pageItems, info) => {
+                            appendPage(pageItems);
+                            hintEl.textContent = '正在读取收藏夹 ' + info.page + '/' + info.pageCount +
+                                ' 页（已 ' + state.items.length + ' 个）…';
+                        });
+                    }catch(e){ console.warn('[BiliSave] 读取收藏夹失败', e); }
+                    state.loadingFav = false;
+                    render();
+
+                    if(fav && fav.rateLimited){
+                        state.favHint = '⚠️ B 站限流了，已加载 ' + state.items.length + ' 个' +
+                            (fav.total ? '（共 ' + fav.total + ' 个）' : '') + '；稍等几分钟重开面板可继续';
+                        hintEl.textContent = state.favHint;
+                        showToast('⚠️ 收藏夹读取被 B 站限流\n已加载 ' + state.items.length + ' 个' +
+                            (fav.total ? '（共 ' + fav.total + ' 个）' : '') +
+                            '\n稍等几分钟重开「视频下载」面板会接着读');
+                    }else if(fav && state.items.length){
+                        const extra = [];
+                        if(fav.skipped) extra.push('跳过失效/非视频 ' + fav.skipped + ' 个');
+                        if(fav.truncated) extra.push('收藏夹共 ' + fav.total + ' 个，已达单次上限');
+                        state.favHint = '共 ' + state.items.length + ' 个' +
+                            (extra.length ? '（' + extra.join('；') + '）' : '');
+                        hintEl.textContent = state.favHint;
+                    }else if(!fav){
+                        const domCount = state.items.length;
+                        state.favHint = domCount
+                            ? '共 ' + domCount + ' 个（接口读取失败，只列出页面可见部分）'
+                            : '读取收藏夹失败，请刷新页面重试';
+                        hintEl.textContent = state.favHint;
+                        if(!domCount) console.warn('[BiliSave] 收藏夹接口没返回数据');
+                    }
+                }else{
+                    state.favHint = '未能从地址栏识别收藏夹 ID（fid），只列出页面可见部分';
+                    hintEl.textContent = state.favHint;
+                }
+            }
+
             let col = null;
             try{ col = await collectCollectionItems(); }catch(e){}
             if(col && col.items.length){
@@ -4400,9 +4616,8 @@
                     ? '（合集共 ' + col.total + ' 个，已达上限只取前 ' + colCount + ' 个）'
                     : '（合集项下载时获取大小）';
                 hintEl.textContent = '视频 ' + videoCount + ' 个 · ' + colName + tip;
-            } else {
-                hintEl.textContent = '共 ' + state.items.length + ' 个'
-                    + (lastFavTruncated ? '（收藏夹只列出前 ' + MAX_FAV_PANEL_ITEMS + ' 个）' : '');
+            } else if(!(pageInfo && pageInfo.type === 'favlist')){
+                hintEl.textContent = '共 ' + state.items.length + ' 个';
             }
         })();
     }
@@ -4590,6 +4805,11 @@
             parseDashStream: parseDashStream,
             parseDurlStream: parseDurlStream,
             pickStream: pickStream,
+            // 收藏夹：接口分页拉全（DOM 在虚拟列表下抓不到）
+            getFavFolderId: getFavFolderId,
+            collectFavFolderItems: collectFavFolderItems,
+            collectVideoItems: collectVideoItems,
+            detectPageType: detectPageType,
             planZipBatches: BS.planZipBatches,
             idbListNames: BS.idbListNames,
             idbClearNames: BS.idbClearNames

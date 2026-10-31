@@ -29,6 +29,10 @@ const check = (name, fn) => {
     }
 };
 
+// 异步用例（要跑真实的分页/限流逻辑）：排队，最后统一 await 再打印汇总
+const asyncChecks = [];
+const checkAsync = (name, fn) => { asyncChecks.push({ name, fn }); };
+
 // 最小沙箱：只给「脚本顶层 + 纯函数」真正需要的东西。
 // document.readyState 故意设成 loading，于是脚本只会把 init 挂到 load 事件上，永远不跑 UI。
 function makeSandbox() {
@@ -58,14 +62,48 @@ function makeSandbox() {
 }
 
 // 在沙箱里求值一份 userscript，返回它暴露的测试钩子
-function loadUserscript(file) {
+function loadUserscript(file, pageUrl) {
     const code = fs.readFileSync(file, 'utf8');
     const sandbox = makeSandbox();
+    if (pageUrl) {
+        const u = new URL(pageUrl);
+        const loc = { href: pageUrl, hostname: u.hostname, pathname: u.pathname, search: u.search, origin: u.origin };
+        sandbox.window.location = loc;
+        sandbox.location = loc;              // 脚本里用的是裸 location
+    }
     vm.createContext(sandbox);
     vm.runInContext(code, sandbox, { filename: file });
     const hooks = sandbox.window.__biliPlusTest;
     assert.ok(hooks, '脚本没有暴露 window.__biliPlusTest 钩子');
     return hooks;
+}
+
+// 在沙箱里跑一段「需要联网」的逻辑：用 mock 顶掉 fetch，记录每次请求
+function loadWithMockFetch(file, pageUrl, handler) {
+    const code = fs.readFileSync(file, 'utf8');
+    const sandbox = makeSandbox();
+    if (pageUrl) {
+        const u = new URL(pageUrl);
+        const loc = { href: pageUrl, hostname: u.hostname, pathname: u.pathname, search: u.search, origin: u.origin };
+        sandbox.window.location = loc;
+        sandbox.location = loc;
+    }
+    sandbox.calls = [];
+    sandbox.fetch = (url, opts) => {
+        const call = { url: String(url), accept: (opts && opts.headers && opts.headers.Accept) || '' };
+        sandbox.calls.push(call);
+        const r = handler(call, sandbox.calls.length);
+        if (r instanceof Error) return Promise.reject(r);
+        // 模拟 Response：fetchText 只用到 ok / status / text()
+        return Promise.resolve({
+            ok: r.status === undefined || (r.status >= 200 && r.status < 300),
+            status: r.status === undefined ? 200 : r.status,
+            text: () => Promise.resolve(typeof r.body === 'string' ? r.body : JSON.stringify(r.body))
+        });
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(code, sandbox, { filename: file });
+    return sandbox;
 }
 
 const FULL = path.join(ROOT, 'bilibili-save.user.js');
@@ -283,7 +321,145 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
     });
 }
 
-// ── 8. 源码级守卫：这些坑没有 DOM 就测不到，但可以用结构断言钉住 ──
+// ── 9. 收藏夹：必须走接口分页（DOM 在虚拟列表下抓不到）──
+const FAV_URL = 'https://space.bilibili.com/3493259812801159/favlist?fid=2196779159&ftype=create';
+
+check('getFavFolderId：新版 favlist?fid= 与旧版 medialist 都能解析', () => {
+    const cases = [
+        [FAV_URL, '2196779159'],
+        ['https://space.bilibili.com/123/favlist?fid=3659170159', '3659170159'],
+        ['https://www.bilibili.com/medialist/detail/ml2196779159', '2196779159'],
+        ['https://www.bilibili.com/medialist/play/ml2196779159', '2196779159'],
+        ['https://www.bilibili.com/medialist/detail/2196779159', '2196779159'],
+        ['https://space.bilibili.com/123/favlist', null],
+        ['https://www.bilibili.com/video/BV1xx411c7mD', null]
+    ];
+    for (const [href, expect] of cases) {
+        assert.strictEqual(loadUserscript(FULL, href).getFavFolderId(), expect, href);
+    }
+});
+
+check('detectPageType：收藏夹页（含旧版 medialist）识别为 favlist', () => {
+    for (const href of [FAV_URL,
+        'https://www.bilibili.com/medialist/detail/ml2196779159',
+        'https://www.bilibili.com/medialist/play/ml2196779159']) {
+        assert.strictEqual(loadUserscript(FULL, href).detectPageType().type, 'favlist', href);
+    }
+    assert.notStrictEqual(loadUserscript(FULL, 'https://www.bilibili.com/video/BV1xx411c7mD').detectPageType().type, 'favlist');
+});
+
+// 造一页收藏夹接口响应
+const favPage = (pn, n, opts) => {
+    const o = opts || {};
+    const medias = Array.from({ length: n }, (_, i) => {
+        const idx = pn * 100 + i;
+        const m = { bvid: 'BV' + String(idx).padStart(10, '0'), title: '视频 ' + idx, duration: 60, type: 2 };
+        if (o.withDead && i === 0) { m.attr = 1; }              // 失效稿件
+        if (o.withNonVideo && i === 1) { m.type = 21; }          // 番剧等
+        if (o.withNoBvid && i === 2) { m.bvid = ''; }            // 没有 bvid
+        return m;
+    });
+    return { code: 0, data: { medias, has_more: o.hasMore !== false, info: { media_count: o.total != null ? o.total : 20, title: '我的收藏' } } };
+};
+
+checkAsync('收藏夹接口请求用的是 Accept: application/json（用 text/html 要 JSON 会被 412）', () => {
+    const sb = loadWithMockFetch(FULL, FAV_URL, () => ({ body: favPage(1, 1, { total: 1, hasMore: false }) }));
+    return sb.window.__biliPlusTest.collectFavFolderItems('2196779159').then(() => {
+        assert.ok(sb.calls.length > 0, '一个请求都没发');
+        for (const c of sb.calls) {
+            assert.ok(/fav\/resource\/list/.test(c.url), '请求地址不对：' + c.url);
+            assert.ok(/application\/json/.test(c.accept), 'Accept 不是 application/json，实际：' + c.accept);
+        }
+    });
+});
+
+checkAsync('收藏夹：分页拼接完整、跳过失效/非视频/无 bvid 的条目', () => {
+    const sb = loadWithMockFetch(FULL, FAV_URL, (call) => {
+        const pn = Number(/[?&]pn=(\d+)/.exec(call.url)[1]);
+        return { body: favPage(pn, 20, { total: 60, hasMore: pn < 3 }) };
+    });
+    return sb.window.__biliPlusTest.collectFavFolderItems('2196779159').then(fav => {
+        assert.ok(fav, '没返回结果');
+        assert.strictEqual(fav.total, 60);
+        assert.strictEqual(fav.items.length, 60, '应该拿到 3 页共 60 条，实际 ' + fav.items.length);
+        assert.ok(fav.items.every(i => i.fromFav === true), '缺 fromFav 标记（下载时就不会按需取 cid）');
+        const bvids = new Set(fav.items.map(i => i.bvid));
+        assert.strictEqual(bvids.size, fav.items.length, '有重复项');
+    });
+});
+
+checkAsync('收藏夹：失效稿件（attr>0）、非视频（type!==2）、空 bvid 都被跳过并计数', () => {
+    const sb = loadWithMockFetch(FULL, FAV_URL, () => ({
+        body: favPage(1, 20, { total: 20, hasMore: false, withDead: true, withNonVideo: true, withNoBvid: true })
+    }));
+    return sb.window.__biliPlusTest.collectFavFolderItems('2196779159').then(fav => {
+        assert.ok(fav);
+        assert.strictEqual(fav.items.length, 17, '20 条里应跳过 3 条，实际剩 ' + fav.items.length);
+        assert.strictEqual(fav.skipped, 3, '跳过计数不对：' + fav.skipped);
+        assert.ok(fav.items.every(i => /^BV[0-9]{10}$/.test(i.bvid)), '混进了非法 bvid');
+    });
+});
+
+checkAsync('收藏夹：has_more=false 时不再往下拉（并发下允许 1 页窗口容差）', () => {
+    const sb = loadWithMockFetch(FULL, FAV_URL, (call) => {
+        const pn = Number(/[?&]pn=(\d+)/.exec(call.url)[1]);
+        return { body: favPage(pn, 20, { total: 100, hasMore: pn < 2 }) };
+    });
+    return sb.window.__biliPlusTest.collectFavFolderItems('2196779159').then(fav => {
+        assert.ok(fav);
+        const maxPn = Math.max(...sb.calls.map(c => Number(/[?&]pn=(\d+)/.exec(c.url)[1])));
+        // total=100 → 5 页。pn=2 就告诉我们 has_more=false，
+        // 但两个 worker 并发时 pn=3 可能已经发出去了（请求撤不回），所以容忍多 1 页。
+        assert.ok(maxPn <= 3, 'has_more=false 之后还在拉，最大页码 ' + maxPn + '（应该早就停了）');
+    });
+});
+
+checkAsync('收藏夹：每拉一页就回调（界面不用等全部拉完）', () => {
+    const sb = loadWithMockFetch(FULL, FAV_URL, (call) => {
+        const pn = Number(/[?&]pn=(\d+)/.exec(call.url)[1]);
+        return { body: favPage(pn, 20, { total: 60, hasMore: pn < 3 }) };
+    });
+    const seen = [];
+    return sb.window.__biliPlusTest.collectFavFolderItems('2196779159', (items, info) => {
+        seen.push({ n: items.length, page: info.page, pageCount: info.pageCount });
+    }).then(() => {
+        assert.ok(seen.length >= 3, '回调次数太少：' + seen.length);
+        assert.strictEqual(seen[0].page, 1, '第一页就该回调');
+        assert.strictEqual(seen[0].pageCount, 3);
+    });
+});
+
+checkAsync('收藏夹：被 412 限流时返回 rateLimited 并保留已拿到的条目', () => {
+    const sb = loadWithMockFetch(FULL, FAV_URL, (call) => {
+        const pn = Number(/[?&]pn=(\d+)/.exec(call.url)[1]);
+        if (pn >= 2) return { status: 412, body: 'blocked' };
+        return { body: favPage(1, 20, { total: 200, hasMore: true }) };
+    });
+    return sb.window.__biliPlusTest.collectFavFolderItems('2196779159').then(fav => {
+        assert.ok(fav, '限流时也不该返回 null');
+        assert.strictEqual(fav.rateLimited, true, '没标记 rateLimited');
+        assert.ok(fav.items.length >= 20, '第一页的数据要留住，实际 ' + fav.items.length);
+    });
+});
+
+checkAsync('收藏夹：首页就 412 时给出 rateLimited（不静默失败）', () => {
+    const sb = loadWithMockFetch(FULL, FAV_URL, () => ({ status: 412, body: 'blocked' }));
+    return sb.window.__biliPlusTest.collectFavFolderItems('2196779159').then(fav => {
+        assert.ok(fav, '首页 412 也该返回对象（界面要能提示限流）');
+        assert.strictEqual(fav.rateLimited, true);
+        assert.strictEqual(fav.items.length, 0);
+    });
+});
+
+checkAsync('收藏夹：没有 fid 时返回 null（界面退回 DOM 兜底）', () => {
+    const sb = loadWithMockFetch(FULL, FAV_URL, () => ({ body: favPage(1, 20, { total: 20 }) }));
+    return sb.window.__biliPlusTest.collectFavFolderItems(null).then(r => {
+        assert.strictEqual(r, null);
+        assert.strictEqual(sb.calls.length, 0, '没有 fid 还发了请求');
+    });
+});
+
+
 for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
     check(label + '：写授权目录失败时会清掉半成品（否则下次查重会跳过坏文件）', () => {
         const t = fs.readFileSync(file, 'utf8');
@@ -302,6 +478,25 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         const t = fs.readFileSync(file, 'utf8');
         assert.ok(/querySelector\('#bili-settings-x'\)\.addEventListener\('click', close\)/.test(t), '✕ 又变成直接 remove 了');
     });
+    check(label + '：收藏夹页 DOM 为空也不能提前 return（否则接口永远不被调用）', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        // 收藏夹是虚拟滚动，document 里经常一个视频链接都没有；
+        // 曾经的写法 `if(!items.length){ return; }` 会让接口一次都不请求，面板只显示「未检测到视频」
+        assert.ok(/if\(!items\.length && !isFavPage\)/.test(t),
+            '视频面板在 DOM 抓不到条目时又提前 return 了，收藏夹永远拉不到内容');
+        assert.ok(/state\.loadingFav = true/.test(t), '没有「正在读取收藏夹」的状态');
+        assert.ok(/fromFav/.test(t), '收藏夹项缺少 fromFav 标记（下载时就不会按需取 cid）');
+    });
+    check(label + '：收藏夹项不预取大小（上千个逐个请求会慢死且触发风控）', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/!it\.fromCollection && !it\.fromFav/.test(t), 'fillCids 没排除收藏夹项');
+        assert.ok(/it\.fromCollection \|\| it\.fromFav/.test(t), 'fetchSizes 没排除收藏夹项');
+    });
+    check(label + '：请求 JSON 接口用 application/json（用 text/html 会被 412）', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/const ACCEPT_JSON = 'application\/json/.test(t), '没有 JSON 用的 Accept 常量');
+        assert.ok(/\{ accept: ACCEPT_JSON \}/.test(t), '收藏夹接口没有显式传 accept: ACCEPT_JSON');
+    });
 }
 
 check('版本号三处同步（package.json / 环境版 / 便携版）', () => {
@@ -315,4 +510,17 @@ check('版本号三处同步（package.json / 环境版 / 便携版）', () => {
     assert.strictEqual(versionOf(PORTABLE), pkg, '便携版 @version 与 package.json 不一致');
 });
 
-console.log('通过 ' + passed + ' 项' + (process.exitCode ? '，有失败 ❌' : '，全部通过 ✅'));
+// 异步用例统一在这里跑（要联网 mock 的分页/限流逻辑）
+(async () => {
+    for (const { name, fn } of asyncChecks) {
+        try {
+            await fn();
+            passed++;
+            console.log('  ok   ' + name);
+        } catch (e) {
+            console.error('  FAIL ' + name + '\n       ' + e.message);
+            process.exitCode = 1;
+        }
+    }
+    console.log('通过 ' + passed + ' 项' + (process.exitCode ? '，有失败 ❌' : '，全部通过 ✅'));
+})();
