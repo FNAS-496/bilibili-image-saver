@@ -321,14 +321,35 @@ const runBuildChecks = () => {
         });
         check(label + '：blob 下载只能「下载」，绝不能退化成页面导航', () => {
             const t = fs.readFileSync(file, 'utf8');
-            const at = t.indexOf('function triggerBlobDownload');
-            const seg = t.slice(at, at + 800);
-            assert.ok(/a\.download = String\(filename \|\| ''\)\.trim\(\) \|\| '/.test(seg),
-                'download 没有兜底文件名：为空时浏览器会改成「导航」到 blob 地址（blob 的 origin 就是当前站点）');
-            assert.ok(/a\.rel = 'noopener'/.test(seg), '缺 rel=noopener');
-            assert.ok(/a\.target = '_self'/.test(seg), '缺显式 target');
+            const at = t.indexOf('function anchorDownloadBlob');
+            assert.ok(at > 0, '找不到 anchorDownloadBlob');
+            const seg = t.slice(at, at + 900);
+            assert.ok(/a\.download = name/.test(seg), '没设 download 属性，浏览器会改成「导航」到 blob 地址');
+            // 关键回归守卫：rel="noopener" / target="_self" 会让 Chrome 忽略 download，
+            // 改成导航到 blob URL —— 用户看到的就是「链接已关闭」，文件根本存不下来。
+            assert.ok(!/a\.rel\s*=/.test(seg), '不能设 rel（noopener 会让 download 失效）');
+            assert.ok(!/a\.target\s*=/.test(seg), '不能设 target（与 download 冲突）');
+            assert.ok(/documentElement \|\| document\.body/.test(seg),
+                '应挂到 <html> 上：SPA 框架重渲染 body 会把 <a> 连带清掉');
             assert.ok(/setTimeout\(\(\) => \{ try\{ a\.remove\(\); \}/.test(seg),
                 'click 同一个 tick 就摘节点，下载可能还没被浏览器接住');
+            // 不能按固定时间 revoke：大文件 + 慢网速下会在下载途中把源删掉
+            assert.ok(!/revokeObjectURL[\s\S]{0,80}5 \* 60 \* 1000/.test(t), '还在按 5 分钟固定时间回收 blob URL');
+            assert.ok(/pendingBlobUrls|pagehide/.test(t), 'blob URL 应在页面卸载时统一回收');
+        });
+        check(label + '：优先走 GM_download（绕过 SPA DOM 与多文件下载限制）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            assert.ok(/@grant\s+GM_download/.test(t), '缺 @grant GM_download');
+            assert.ok(/function gmDownloadAvailable\(\)/.test(t), '没有通道探测');
+            assert.ok(/GM_download\(\{/.test(t), '没有调用 GM_download');
+            assert.ok(/onerror: function\(err\)\{[\s\S]{0,200}?fallback\(/.test(t), 'GM_download 失败没有回退');
+        });
+        check(label + '：ZIP 每包上限不超过 512MB（GB 级 Blob 下载会失败）', () => {
+            const t = fs.readFileSync(file, 'utf8');
+            const m = /const ZIP_SOFT_LIMIT_BYTES = (\d+) \* 1024 \* 1024;/.exec(t);
+            assert.ok(m, '找不到 ZIP_SOFT_LIMIT_BYTES');
+            assert.ok(Number(m[1]) <= 512, 'ZIP 软上限 ' + m[1] + 'MB 太大，大 Blob 下载容易「链接已关闭」');
+            assert.ok(/planZipBatches\([\s\S]{0,200}?ZIP_SOFT_LIMIT_BYTES\)/.test(t), '图片打包没传软上限（默认会用 4GB）');
         });
         check(label + '：已下载的能重新下载（force 覆盖，不再被记账挡住）', () => {
             const t = fs.readFileSync(file, 'utf8');

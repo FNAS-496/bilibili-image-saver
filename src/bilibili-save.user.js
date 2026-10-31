@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）@@NAME_SUFFIX@@
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader@@NAME_SUFFIX_EN@@
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.10.1
+// @version      0.10.2
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -14,6 +14,7 @@
 // @match        *://bilibili.com/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
+// @grant        GM_download
 // @connect      hdslb.com
 // @connect      bilibili.com
 // @connect      bilivideo.com
@@ -42,6 +43,11 @@
         pkg: REPO_URL
     };
     const BROWSER_CONCURRENCY = 6;
+    // ZIP 每包的软上限（图片 / 视频打包都用它）。
+    // 为什么不能用 ZIP 规范的 4GB：整包字节要先在内存里拼成一个 Blob 再交给浏览器下载，
+    // GB 级的 Blob 既容易把标签页撑爆，也容易在下载途中被浏览器丢弃，
+    // 用户看到的就是「下载到最后一步、链接已关闭」。512MB 是实测稳定的量级。
+    const ZIP_SOFT_LIMIT_BYTES = 512 * 1024 * 1024;
 
 
     const AUTO_RUN = true;                                                             
@@ -705,22 +711,89 @@
     }
 
     // 触发单个文件下载（ZIP 方式：一次点击一个文件，不会弹「多个文件」授权）
-    function triggerBlobDownload(blob, filename){
-        const url = URL.createObjectURL(blob);
+    // 触发浏览器下载。
+    //
+    // 为什么不能只用 <a download>：
+    //  ① B 站是 SPA，document 上挂着捕获阶段的 click 监听，<a> 容易被当成路由导航；
+    //  ② <a> 一旦带上 rel="noopener" / target，Chrome 就按「导航」而不是「下载」处理，
+    //     blob URL 被打开又立刻关掉，用户看到的就是「链接已关闭」；
+    //  ③ Chrome 对「同一页面连续自动下载多个文件」有限制，批量下会有一部分被拦掉。
+    // 所以分两层：优先 GM_download（扩展层下载，三条全绕过），没有/失败时再用修好的 <a>。
+    let blobDownloadChannel = 'anchor';                 // 自检用：最近一次走的通道
+    // <a> 通道的 blob URL 统一在这里登记，页面卸载时再回收。
+    // 关键：绝不能按固定时间 revoke —— 大文件 + 慢网速下，5 分钟可能还没下载完，
+    // 一 revoke 就等于把正在下载的源删掉，表现为「下载到最后一步突然失败 / 链接已关闭」。
+    const pendingBlobUrls = new Set();
+    let blobUrlCleanupBound = false;
+    function bindBlobUrlCleanup(){
+        if(blobUrlCleanupBound) return;
+        blobUrlCleanupBound = true;
+        const flush = () => {
+            pendingBlobUrls.forEach(u => { try{ URL.revokeObjectURL(u); }catch(e){} });
+            pendingBlobUrls.clear();
+        };
+        window.addEventListener('pagehide', flush, { once: true });
+        window.addEventListener('beforeunload', flush, { once: true });
+    }
+    function gmDownloadAvailable(){
+        return typeof GM_download === 'function';
+    }
+
+    // 兜底通道：修好的 <a download>
+    function anchorDownloadBlob(url, name){
         const a = document.createElement('a');
         a.href = url;
-        // download 一旦失效，浏览器就会「导航」到这个地址而不是下载它（blob 的 origin 是当前站点，
-        // 于是会跳出一个指向本站点的错误页）。所以：文件名兜底、rel/target 显式声明，
-        // 并且不要在 click 的同一个 tick 里把节点摘掉，免得下载还没被接住。
-        a.download = String(filename || '').trim() || 'bilibili-download';
-        a.rel = 'noopener';
-        a.target = '_self';
+        a.download = name;
+        // ⚠️ 绝对不要加 rel="noopener" / target="_self"：它们会让 download 属性失效，
+        //    浏览器改成导航到 blob URL，用户看到「链接已关闭」，文件也存不下来。
         a.style.display = 'none';
-        document.body.appendChild(a);
+        // 挂到 <html> 上：SPA 框架重渲染的是 <body>，挂在 body 里可能被连带清掉
+        (document.documentElement || document.body).appendChild(a);
         a.click();
-        setTimeout(() => { try{ a.remove(); }catch(e){} }, 0);
-        // 回收别太早：几 GB 的 ZIP 可能几十秒才被浏览器真正接管，提前 revoke 会让下载中途报失败
-        setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
+        // 不能立刻移除：下载是异步接管的，节点提前消失会让下载中断
+        setTimeout(() => { try{ a.remove(); }catch(e){} }, 60000);
+        // 不按时间 revoke：等页面卸载时统一回收（见 bindBlobUrlCleanup）
+        pendingBlobUrls.add(url);
+        bindBlobUrlCleanup();
+    }
+
+    function triggerBlobDownload(blob, filename){
+        const name = String(filename || '').trim() || 'bilibili-download';
+        const url = URL.createObjectURL(blob);
+
+        if(gmDownloadAvailable()){
+            let fellBack = false;
+            const fallback = (why) => {
+                if(fellBack) return;
+                fellBack = true;
+                blobDownloadChannel = 'anchor(兜底)';
+                console.warn('[BiliSave] GM_download 不可用（' + why + '），改用 <a> 下载');
+                anchorDownloadBlob(url, name);
+                // 让用户看得见：静默失败最难受
+                try{ showToast('⚠️ 系统下载通道不可用（' + why + '），已改用浏览器下载\n若仍失败，请在 Tampermonkey「设置 → 下载」里把下载模式改为「浏览器 API」'); }catch(e){}
+            };
+            try{
+                GM_download({
+                    url: url,
+                    name: name,
+                    saveAs: false,
+                    onload: function(){
+                        blobDownloadChannel = 'GM_download';
+                        // GM_download 的 onload = 下载已完成，这时回收才安全
+                        setTimeout(() => { try{ URL.revokeObjectURL(url); }catch(e){} }, 60000);
+                    },
+                    onerror: function(err){
+                        fallback((err && (err.error || err.details)) || 'onerror');
+                    }
+                });
+                return;
+            }catch(e){
+                fallback((e && e.message) || 'throw');
+                return;
+            }
+        }
+        blobDownloadChannel = 'anchor';
+        anchorDownloadBlob(url, name);
     }
 
     // 授权目录里是否已有这个文件（用于「已存在就跳过」，而不是覆盖甚至误删用户原有的文件）
@@ -877,7 +950,11 @@
             }else{
                 // 单个 ZIP 有 4GB / 65535 条的硬上限：超了自动分批成多个 ZIP（_part1、_part2…）
                 const baseName = BS.buildZipName();
-                const batches = BS.planZipBatches(okItems.map(r => ({ name:r.name, data:r.bytes, item:r })));
+                // 单个 ZIP 有 4GB / 65535 条的硬上限：超了自动分批成多个 ZIP（_part1、_part2…）。
+                // 但这里必须给一个**远小于 4GB 的软上限**：整包字节要先在内存里拼出来再交给浏览器下载，
+                // 而且 Chrome 下载这种大 Blob 很容易在下到一半时报「链接已关闭」。
+                // 512MB 与音画合并的上限保持一致，内存峰值约 1GB，稳定得多。
+                const batches = BS.planZipBatches(okItems.map(r => ({ name:r.name, data:r.bytes, item:r })), ZIP_SOFT_LIMIT_BYTES);
                 zipName = batches.length > 1
                     ? baseName.replace(/\.zip$/, '') + '_part1~' + batches.length + '.zip'
                     : baseName;
@@ -938,7 +1015,7 @@
         const wantDir = settings.portableSave === 'dir' && FSA_SUPPORTED;
         const dir = await getBrowserDirHandle(wantDir);
         const zipMode = settings.portableVideoSave === 'zip';
-        const ZIP_BATCH_BYTES = 2 * 1024 * 1024 * 1024;   // 打包模式每包软上限（控制内存；ZIP 硬上限仍为 4GB）
+        const ZIP_BATCH_BYTES = ZIP_SOFT_LIMIT_BYTES;      // 打包模式每包软上限（控制内存；ZIP 硬上限仍为 4GB）
         const results = [];
         let mergeNotice = false;
         let bigWarned = false;
@@ -3701,6 +3778,11 @@
         if(!qrOk){
             console.warn('[BiliSave] 收款码数据缺失，打赏面板将显示不出收款码。完整版请从 ' + REPO + ' 下载。');
         }
+        // 下载通道自检：<a download> 在 SPA 页面上很容易被搞成「导航」（表现为「链接已关闭」），
+        // 所以优先 GM_download，这里把实际可用的通道打出来，方便排查
+        console.log('[check] 保存文件通道: ' + (gmDownloadAvailable()
+            ? 'GM_download（优先）+ <a> 兜底'
+            : '仅 <a>（当前管理器没有 GM_download，建议用 Tampermonkey / Violentmonkey）'));
         // 便携版不需要本地服务，自检到此为止
         if(IS_PORTABLE){
             console.info('[BiliSave] 便携版（无需 Node / ffmpeg）：图片与视频由浏览器直接保存。'
@@ -3761,6 +3843,10 @@
             collectFavFolderItems: collectFavFolderItems,
             collectVideoItems: collectVideoItems,
             detectPageType: detectPageType,
+            // 下载通道：诊断「链接已关闭」时用
+            triggerBlobDownload: triggerBlobDownload,
+            getDownloadChannel: () => blobDownloadChannel,
+            gmDownloadAvailable: gmDownloadAvailable,
             planZipBatches: BS.planZipBatches,
             idbListNames: BS.idbListNames,
             idbClearNames: BS.idbClearNames
