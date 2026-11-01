@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）@@NAME_SUFFIX@@
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader@@NAME_SUFFIX_EN@@
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.10.3
+// @version      0.10.4
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -639,11 +639,20 @@
 
     // 取字节：优先用流式 fetch —— 它能边下边报进度（下载进度条靠这个）；
     // 直接请求走不通（CORS / 风控 / 被扩展拦）时才退回 GM 通道。
-    async function fetchBytes(url, timeoutMs, onProgress){
+    // timeoutMs 的语义是「多久没收到新数据就放弃」（stall），不是「总共能下多久」：
+    // 大视频在慢网速下本来就要下半小时以上，用绝对超时会把它们全部判死。
+    const BYTES_STALL_MS = 120000;
+    async function fetchBytes(url, stallMs, onProgress){
         let fetchError = null;
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), (timeoutMs || 30000));
+        const stallTimeout = Math.max(500, stallMs || BYTES_STALL_MS);
+        let timer = null;
+        const bump = () => {
+            if(timer) clearTimeout(timer);
+            timer = setTimeout(() => controller.abort(), stallTimeout);
+        };
         try{
+            bump();
             const res = await fetch(url, { signal: controller.signal });
             if(!res.ok) throw httpStatusError(res.status);
             assertMediaType((res.headers.get('content-type') || '').toLowerCase());
@@ -656,6 +665,7 @@
                     const { done, value } = await reader.read();
                     if(done) break;
                     if(value && value.length){
+                        bump();                                // 还在往下走，重新计时
                         chunks.push(value);
                         received += value.length;
                         if(onProgress) onProgress(received, total);
@@ -671,14 +681,18 @@
             if(onProgress) onProgress(buf.length, total || buf.length);
             return buf;
         }catch(err){
-            if(err.name === 'AbortError') throw new Error('timeout');
+            if(err.name === 'AbortError'){
+                throw new Error('下载停滞：' + Math.round(stallTimeout / 1000) + ' 秒没有收到新数据');
+            }
             fetchError = err;
         }finally{
-            clearTimeout(timer);
+            if(timer) clearTimeout(timer);
         }
         if(typeof GM_xmlhttpRequest === 'function'){
             try{
-                return await gmFetchBytes(url, timeoutMs, onProgress);
+                // GM 通道只有「整体超时」，没有 stall 语义：给它放宽到至少 10 分钟，
+                // 免得大视频在扩展层被提前掐断
+                return await gmFetchBytes(url, Math.max(stallTimeout * 10, 600000), onProgress);
             }catch(err){
                 throw new Error('直接请求：' + fetchError.message + '；GM 通道：' + err.message);
             }
@@ -800,14 +814,20 @@
     }
 
     // 边下边写：响应体不整块进内存，直接流进授权目录；失败时只清掉本次自己写的半成品
-    async function fetchToDir(dir, filename, url, timeoutMs, skipExisting, onProgress){
+    async function fetchToDir(dir, filename, url, stallMs, skipExisting, onProgress){
         if(skipExisting && await fileExistsInDir(dir, filename)) return false;
-        const limit = timeoutMs || 30000;
+        const stallTimeout = Math.max(500, stallMs || BYTES_STALL_MS);
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), limit);
+        // 同 fetchBytes：超时是「多久没收到新数据」，大视频慢慢下也能下完
+        let timer = null;
+        const bump = () => {
+            if(timer) clearTimeout(timer);
+            timer = setTimeout(() => controller.abort(), stallTimeout);
+        };
         let started = false;
         let w = null;
         try{
+            bump();
             // 同样不能把 Referer 抹掉（视频 CDN 校验 Referer，去掉就 403）
             const res = await fetch(url, { signal: controller.signal });
             if(!res.ok) throw httpStatusError(res.status);
@@ -815,8 +835,8 @@
             const fh = await dir.getFileHandle(filename, { create:true });
             w = await fh.createWritable();
             started = true;                          // create:true 会截断同名文件，从这里开始这个文件才算「本次写的」
-            if(onProgress && res.body && typeof res.body.getReader === 'function'){
-                // 要报进度就自己泵：边收边写边回调
+            if(res.body && typeof res.body.getReader === 'function'){
+                // 自己泵：边收边写边回调（也为了能在每块数据上重置 stall 计时）
                 const total = parseInt(res.headers.get('content-length') || '0', 10) || 0;
                 const reader = res.body.getReader();
                 let received = 0;
@@ -824,9 +844,10 @@
                     const { done, value } = await reader.read();
                     if(done) break;
                     if(value && value.length){
+                        bump();
                         received += value.length;
                         await w.write(value);
-                        onProgress(received, total);
+                        if(onProgress) onProgress(received, total);
                     }
                 }
                 await w.close();
@@ -841,15 +862,17 @@
         }catch(err){
             if(w){ try{ await w.abort(); }catch(e){} }
             if(started){ try{ await dir.removeEntry(filename); }catch(e){} }
-            if(err.name === 'AbortError') err = new Error('timeout');
+            if(err.name === 'AbortError'){
+                err = new Error('下载停滞：' + Math.round(stallTimeout / 1000) + ' 秒没有收到新数据');
+            }
             // 流式 fetch 走不通（CORS / 风控 / Referer 被抹掉）就退回 GM 取字节再落盘
             if(!started && typeof GM_xmlhttpRequest === 'function'){
-                const bytes = await fetchBytes(url, limit);
+                const bytes = await fetchBytes(url, stallTimeout);
                 return (await writeBlobToDir(dir, filename, blobOf(bytes, filename), skipExisting)) !== false;
             }
             throw err;
         }finally{
-            clearTimeout(timer);
+            if(timer) clearTimeout(timer);
         }
     }
 
@@ -1074,12 +1097,12 @@
                     showToast('⚠️ 该视频约 ' + formatSize(it.size) + '，要先整块读进内存\n建议在「设置 → 保存位置」选择「写入授权目录」（直接流式写入文件，不占内存）');
                 }
                 if(zipMode){
-                    const vBytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, 600000, fileProgress(i, '⬇️ 视频流')));
+                    const vBytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, BYTES_STALL_MS, fileProgress(i, '⬇️ 视频流')));
                     const vName = base + (it.audioUrl ? '.video.' : '.') + (it.ext || 'mp4');
                     const r = { idx:i, bvid: it.bvid, title: it.title, saved: vName };
                     if(it.audioUrl){
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
-                        const aBytes = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchBytes(u, 600000, fileProgress(i, '🎵 音频流')));
+                        const aBytes = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchBytes(u, BYTES_STALL_MS, fileProgress(i, '🎵 音频流')));
                         const aName = base + '.audio.m4a';
                         // 便携版能就地合并成一个 mp4（合并失败才退回分开存）
                         const merged = wantMerge(it) ? await tryMerge(i, it, vBytes, aBytes) : null;
@@ -1103,9 +1126,9 @@
                 }else if(wantMerge(it)){
                     // 便携版合并：两条流都得先完整进内存才能交给 MP4Box，
                     // 体积超限的项在 wantMerge 里已被挡掉（会走下面那条流式分开存的老路）
-                    const vBytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, 600000, fileProgress(i, '⬇️ 视频流')));
+                    const vBytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, BYTES_STALL_MS, fileProgress(i, '⬇️ 视频流')));
                     if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
-                    const aBytes = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchBytes(u, 600000, fileProgress(i, '🎵 音频流')));
+                    const aBytes = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchBytes(u, BYTES_STALL_MS, fileProgress(i, '🎵 音频流')));
                     const merged = await tryMerge(i, it, vBytes, aBytes);
                     const mName = base + '.mp4';
                     const vName = base + '.video.' + (it.ext || 'mp4');
@@ -1135,11 +1158,11 @@
                     const aName = base + '.audio.m4a';
                     if(dir){
                         // 目录模式：边下边写，不整块进内存；已有同名文件就跳过（不覆盖用户文件）
-                        const wroteVideo = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchToDir(dir, vName, u, 600000, !force, fileProgress(i, '⬇️ 视频流')));
+                        const wroteVideo = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchToDir(dir, vName, u, BYTES_STALL_MS, !force, fileProgress(i, '⬇️ 视频流')));
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
                         let wroteAudio = true;
                         try{
-                            wroteAudio = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchToDir(dir, aName, u, 600000, !force, fileProgress(i, '🎵 音频流')));
+                            wroteAudio = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchToDir(dir, aName, u, BYTES_STALL_MS, !force, fileProgress(i, '🎵 音频流')));
                         }catch(e){
                             // 只清掉本次自己写的那个文件，别动用户原有的
                             if(wroteVideo !== false){ try{ await dir.removeEntry(vName); }catch(_e){} }
@@ -1151,9 +1174,9 @@
                             continue;                      // 音画两个文件都在，不用重下
                         }
                     }else{
-                        const vBytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, 600000, fileProgress(i, '⬇️ 视频流')));
+                        const vBytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, BYTES_STALL_MS, fileProgress(i, '⬇️ 视频流')));
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
-                        const aBytes = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchBytes(u, 600000, fileProgress(i, '🎵 音频流')));
+                        const aBytes = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchBytes(u, BYTES_STALL_MS, fileProgress(i, '🎵 音频流')));
                         triggerBlobDownload(blobOf(vBytes, vName), vName);
                         await sleep(500);                      // 稍作间隔，避免浏览器连续下载节流
                         triggerBlobDownload(blobOf(aBytes, aName), aName);
@@ -1163,10 +1186,10 @@
                 }else{
                     const name = base + '.' + (it.ext || 'mp4');
                     if(dir){
-                        const wrote = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchToDir(dir, name, u, 600000, !force, fileProgress(i, '⬇️ 下载中')));
+                        const wrote = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchToDir(dir, name, u, BYTES_STALL_MS, !force, fileProgress(i, '⬇️ 下载中')));
                         results.push({ idx:i, bvid: it.bvid, title: it.title, saved: name, exists: wrote === false });
                     }else{
-                        const bytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, 600000, fileProgress(i, '⬇️ 下载中')));
+                        const bytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, BYTES_STALL_MS, fileProgress(i, '⬇️ 下载中')));
                         triggerBlobDownload(blobOf(bytes, name), name);
                         results.push({ idx:i, bvid: it.bvid, title: it.title, saved: name });
                     }

@@ -245,6 +245,128 @@ function request(port, { path: reqPath = '/getdir', headers = {}, method = 'GET'
             assert.ok(r.status === 400 || r.status === 403 || r.status === 404, '越界请求没被拒绝：' + r.status);
         });
 
+        // ── 大视频：超时必须是「没有新数据」而不是「总共下太久」──
+        // 一个 4K 视频几 GB，慢网速下正常就要下半小时以上。用绝对超时会全部判死。
+        const slowServer = http.createServer((req, res) => {
+            const mode = req.url === '/stall' ? 'stall' : 'slow';
+            const chunk = Buffer.alloc(64 * 1024, 7);
+            const total = 10;                                  // 声明的总长：10 × 64KB
+            const sendUpTo = mode === 'slow' ? total : 4;      // stall：只发 4 块就停住（一半不到）
+            res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(chunk.length * total) });
+            let sent = 0;
+            const timer = setInterval(() => {
+                if(sent >= sendUpTo){
+                    clearInterval(timer);
+                    if(mode === 'slow') res.end();              // 正常结束
+                    return;                                     // stall：挂着不动，既不发数据也不 end
+                }
+                res.write(chunk);
+                sent++;
+            }, 120);
+            req.on('close', () => clearInterval(timer));
+        });
+        const slowPort = await new Promise(resolve => slowServer.listen(0, '127.0.0.1', () => resolve(slowServer.address().port)));
+
+        await checkAsync('大视频：只要还在往下传，慢速也能一路下完（stall 超时不会杀长任务）', async () => {
+            const dest = path.join(TMP, 'slow-download.mp4');
+            // 总耗时约 1.2 秒，远超 500ms 的 stall 窗口；只要能下完就说明计时被重置了
+            const n = await S.downloadVideoToFile('http://127.0.0.1:' + slowPort + '/slow', dest, 500);
+            assert.strictEqual(n, 640 * 1024, '字节数不对：' + n);
+            assert.strictEqual(fs.statSync(dest).size, 640 * 1024, '落盘大小不对');
+            fs.rmSync(dest, { force: true });
+        });
+
+        await checkAsync('大视频：真的卡住（发一半不动）时按 stall 超时报错，而不是永远挂着', async () => {
+            const dest = path.join(TMP, 'stall-download.mp4');
+            const t0 = Date.now();
+            let err = null;
+            try{
+                await S.downloadVideoToFile('http://127.0.0.1:' + slowPort + '/stall', dest, 500);
+            }catch(e){ err = e; }
+            const ms = Date.now() - t0;
+            assert.ok(err, '卡住的下载居然成功了');
+            assert.ok(/停滞/.test(err.message), '错误信息没说清是卡住：' + err.message);
+            assert.ok(ms < 5000, '从卡住到放弃用了 ' + ms + 'ms，太久了');
+            assert.ok(!fs.existsSync(dest) || fs.statSync(dest).size === 0, '卡住的下载不该留下半成品当成品');
+            try{ fs.rmSync(dest, { force: true }); }catch(e){}
+        });
+
+        await checkAsync('大视频：上次异常退出留下的 .tmp_ 半成品会被清理，但不动新文件', async () => {
+            const stale = path.join(TMP, 'videos', '.tmp_111_1_v.mp4');
+            const fresh = path.join(TMP, 'videos', '.tmp_222_1_v.mp4');
+            fs.writeFileSync(stale, Buffer.alloc(1024));
+            fs.writeFileSync(fresh, Buffer.alloc(1024));
+            const old = new Date(Date.now() - 48 * 3600 * 1000);
+            fs.utimesSync(stale, old, old);                     // 48 小时前 = 上次残留
+            S.cleanupStaleTempFiles();
+            assert.ok(!fs.existsSync(stale), '48 小时前的半成品没被清掉');
+            assert.ok(fs.existsSync(fresh), '刚写的临时文件被误删了');
+            fs.rmSync(fresh, { force: true });
+        });
+
+        await checkAsync('大视频：文件从 50MB 涨到 200MB，内存几乎不变（真流式；整块读会线性暴涨）', async () => {
+            const CHUNK = Buffer.alloc(1024 * 1024, 9);       // 源端复用同一块，不随文件大小涨
+            const bigServer = http.createServer((req, res) => {
+                const size = Number((req.url.match(/size=(\d+)/) || [])[1] || 0);
+                res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(size) });
+                let sent = 0;
+                const pump = () => {
+                    while(sent < size){
+                        const n = Math.min(CHUNK.length, size - sent);
+                        sent += n;
+                        if(!res.write(CHUNK.subarray(0, n))) { res.once('drain', pump); return; }
+                    }
+                    res.end();
+                };
+                pump();
+            });
+            const bigPort = await new Promise(resolve => bigServer.listen(0, '127.0.0.1', () => resolve(bigServer.address().port)));
+            const urlFor = size => 'http://127.0.0.1:' + bigPort + '/big.mp4?size=' + size;
+
+            // 采样 arrayBuffers：整块读进内存时它必然 ≥ 文件大小
+            const measurePeak = async(work) => {
+                if(global.gc) global.gc();
+                let peak = process.memoryUsage().arrayBuffers;
+                const t = setInterval(() => {
+                    const v = process.memoryUsage().arrayBuffers;
+                    if(v > peak) peak = v;
+                }, 10);
+                try{ await work(); } finally { clearInterval(t); }
+                return peak;
+            };
+            const dest = path.join(TMP, 'big-stream.mp4');
+            const MB = 1048576;
+            try{
+                const peak50 = await measurePeak(async() => {
+                    const n = await S.downloadVideoToFile(urlFor(50 * MB), dest, 5000);
+                    assert.strictEqual(n, 50 * MB, '50MB 下载字节数不对');
+                });
+                const peak200 = await measurePeak(async() => {
+                    const n = await S.downloadVideoToFile(urlFor(200 * MB), dest, 5000);
+                    assert.strictEqual(n, 200 * MB, '200MB 下载字节数不对');
+                });
+                assert.strictEqual(fs.statSync(dest).size, 200 * MB, '落盘大小不对');
+                // 对照组：同样 200MB，整块读进内存
+                const peakWhole = await measurePeak(async() => {
+                    const r = await fetch(urlFor(200 * MB));
+                    const b = await r.arrayBuffer();
+                    if(b.byteLength !== 200 * MB) throw new Error('对照下载字节数不对');
+                });
+
+                const toMB = v => (v / MB).toFixed(1);
+                console.log('       （流式 50MB→' + toMB(peak50) + 'MB，流式 200MB→' + toMB(peak200)
+                    + 'MB，整块 200MB→' + toMB(peakWhole) + 'MB）');
+                assert.ok(peakWhole > 150 * MB, '对照组没有整块进内存，对比不成立：' + toMB(peakWhole) + 'MB');
+                assert.ok(peak200 - peak50 < 50 * MB,
+                    '文件大了 150MB，内存也涨了 ' + toMB(peak200 - peak50) + 'MB，说明没在流式写盘');
+            } finally {
+                try{ bigServer.close(); }catch(e){}
+                try{ fs.rmSync(dest, { force: true }); }catch(e){}
+            }
+        });
+
+        try{ slowServer.close(); }catch(e){}
+
         await new Promise(resolve => S.server.close(resolve));
     }
 

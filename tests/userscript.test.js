@@ -350,6 +350,33 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         const seg = t.slice(at, at + 400);
         assert.ok(/visibleItems\(\)\.forEach/.test(seg), '全选还在遍历 state.items（会把筛选掉的也勾上）');
     });
+
+    // 大视频：一个 4K 几 GB，慢网速正常要下半小时以上。
+    // 超时必须是「多久没收到数据」，不能用「一开始就定死的总时长」，否则大视频全被判死。
+    check(label + '：下载超时是「没数据才放弃」，不是「总共只准下 N 分钟」', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        for (const fn of ['async function fetchBytes(', 'async function fetchToDir(']) {
+            const at = t.indexOf(fn);
+            assert.ok(at > 0, '找不到 ' + fn);
+            const seg = t.slice(at, at + 2600);
+            // 旧写法：一个 const timer = setTimeout(...) 从头计到尾（大视频必失败）
+            assert.ok(!/const timer = setTimeout\(\(\) => controller\.abort\(\)/.test(seg),
+                fn + ' 里还有一开就跑的绝对超时定时器（大视频必失败）');
+            assert.ok(/const bump = \(\) => \{/.test(seg), fn + ' 没有 stall 计时器');
+            assert.ok(/bump\(\);/.test(seg), fn + ' 起始时没启动 stall 计时');
+            assert.ok(/controller\.abort\(\)/.test(seg), fn + ' 的 stall 定时器没接 abort');
+            // 接受数据的地方必须重置计时（否则还是一刀切）
+            const readerLoop = seg.indexOf('await reader.read()');
+            assert.ok(readerLoop > 0, fn + ' 没走流式读取');
+            const afterRead = seg.slice(readerLoop, readerLoop + 700);
+            assert.ok(/bump\(\)/.test(afterRead), fn + ' 收到数据后没重置 stall 计时（大视频会被误杀）');
+        }
+        // 视频/音频流的调用点不该再传 600000 这种「10 分钟总时长」
+        assert.ok(!/fetchBytes\(u, 600000,/.test(t), '还有调用点传 600000 当总超时');
+        assert.ok(!/fetchToDir\(dir, \w+, u, 600000,/.test(t), 'fetchToDir 调用点还传 600000 当总超时');
+        // 单文件（mp4）在有授权目录时必须流式写盘，不能整块读进内存
+        assert.ok(/fetchToDir\(dir, name, u, BYTES_STALL_MS/.test(t), '单文件视频没走流式写盘（GB 级会 OOM）');
+    });
 }
 
 // ── 9. 收藏夹：必须走接口分页（DOM 在虚拟列表下抓不到）──

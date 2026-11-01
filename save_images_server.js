@@ -296,11 +296,22 @@ async function tryDownloadFile(rawUrl, index, opts){
 // 三、视频下载
 // ========================================================================
 // 下载视频 / 音频流（支持进度回调）
-async function downloadVideoToFile(fileUrl, destPath, timeoutMs, onProgress){
+// 一次视频流下载：边收边写，整段视频**不进内存**（4K 动辄几个 GB，全塞 Buffer 必炸）。
+// 超时语义是「多久没收到新数据」而不是「总共能下多久」——
+// 大视频在慢网速下正常就要下半小时以上，用绝对超时会必然失败。
+const VIDEO_STALL_MS = 120000;
+async function downloadVideoToFile(fileUrl, destPath, stallMs, onProgress){
+    const stallTimeout = Math.max(500, stallMs || VIDEO_STALL_MS);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs || 600000);
+    let timer = null;
+    // 每收到一块数据就重置：只要还在往下走就一直允许
+    const bump = () => {
+        if(timer) clearTimeout(timer);
+        timer = setTimeout(() => controller.abort(), stallTimeout);
+    };
     let ws = null;
     try {
+        bump();
         const res = await fetch(fileUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -337,6 +348,7 @@ async function downloadVideoToFile(fileUrl, destPath, timeoutMs, onProgress){
                 const { done, value } = await reader.read();
                 if(done) break;
                 if(value && value.length){
+                    bump();                                   // 有数据进来 = 没卡住，重新计时
                     received += value.length;
                     if(onProgress) onProgress(received, total);
                     await writeChunk(Buffer.from(value));
@@ -352,13 +364,25 @@ async function downloadVideoToFile(fileUrl, destPath, timeoutMs, onProgress){
         ws = null;
         return received;
     } catch(err){
-        if(ws){ try{ ws.destroy(); }catch(e){} ws = null; }
+        if(ws){
+            const w = ws; ws = null;
+            // 等句柄真的关掉再删：Windows 上文件还被占用时 unlink 会 EPERM
+            await new Promise(resolve => {
+                let done = false;
+                const finish = () => { if(!done){ done = true; resolve(); } };
+                try{ w.once('close', finish); }catch(e){}
+                try{ w.destroy(); }catch(e){ finish(); }
+                setTimeout(finish, 1000);
+            });
+        }
+        // 失败绝不留半成品：留下的坏文件会被查重当成「已下好」，用户以后怎么重下都被跳过
+        try{ fs.unlinkSync(destPath); }catch(e){}
         if(err.name === 'AbortError'){
-            throw new Error('timeout');
+            throw new Error('下载停滞：' + Math.round(stallTimeout / 1000) + ' 秒没有收到新数据（可重试或换个 CDN 节点）');
         }
         throw err;
     } finally {
-        clearTimeout(timeout);
+        if(timer) clearTimeout(timer);
     }
 }
 
@@ -387,8 +411,10 @@ function ffmpegAvailable(){
 function mergeWithFfmpeg(videoPath, audioPath, outPath){
     const tmpOut = outPath + '.part';
     return new Promise((resolve, reject) => {
+        // 合并 GB 级 4K 文件时 -c copy 也可能要跑很久（慢盘 / 4K 大文件），
+        // 原来给 10 分钟，超了会把已经下好的两路流白扔掉。给到 30 分钟。
         execFile(resolveFfmpeg(), ['-y', '-i', videoPath, '-i', audioPath, '-c', 'copy', tmpOut],
-            { timeout: 600000 }, (err) => {
+            { timeout: 1800000, maxBuffer: 8 * 1024 * 1024 }, (err) => {
                 if(err){
                     try{ fs.unlinkSync(tmpOut); }catch(e){}
                     return reject(err);
@@ -1097,6 +1123,27 @@ apply();
     res.end();
 });
 
+// 清理上次异常退出遗留的下载半成品（.tmp_*）。大视频中断会留下 GB 级垃圾，
+// 不清就会一直占着盘。只动 24 小时以前的：万一同一个目录被另一个实例正在用，
+// 不会把人家正在写的文件删掉。
+function cleanupStaleTempFiles(){
+    let names = [];
+    try{ names = fs.readdirSync(VIDEO_OUT_DIR); }catch(e){ return; }
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    let freed = 0, count = 0;
+    for(const n of names){
+        if(!/^\.tmp_/.test(n)) continue;
+        const full = path.join(VIDEO_OUT_DIR, n);
+        try{
+            const st = fs.statSync(full);
+            if(!st.isFile() || st.mtimeMs > cutoff) continue;
+            fs.unlinkSync(full);
+            freed += st.size; count++;
+        }catch(e){}
+    }
+    if(count) console.log('[cleanup] 清理了 ' + count + ' 个上次残留的半成品文件，释放 ' + (freed / 1048576).toFixed(1) + ' MB');
+}
+
 server.on('error', (e)=>{
     if(e && e.code === 'EADDRINUSE'){
         console.error(`端口 ${PORT} 已被占用：可能已经有一个保存服务在运行，或别的程序占了这个端口。`);
@@ -1112,6 +1159,7 @@ if(require.main === module){
         console.log(`save_images_server listening on http://127.0.0.1:${PORT}, output directory: ${OUT_DIR}`);
         const qr = resolveQrPath();
         console.log(`[check] 打赏收款码(兼容 /qr): ${qr ? 'OK (' + path.basename(qr) + ')' : '无（脚本已内嵌收款码，不影响使用）'}`);
+        cleanupStaleTempFiles();
     });
 }
 
@@ -1133,5 +1181,9 @@ module.exports = {
     extensionFromUrl,
     assertInsideDir,
     safeJoin,
-    server
+    server,
+    // 大视频相关：stall 超时语义 + 残留清理，供单测直接调用
+    downloadVideoToFile,
+    cleanupStaleTempFiles,
+    VIDEO_STALL_MS
 };

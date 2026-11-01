@@ -231,9 +231,11 @@ const runBuildChecks = () => {
         check(label + '：取字节两条通道都在（fetch 优先拿进度，GM 兜底保证能下）', () => {
             const t = fs.readFileSync(file, 'utf8');
             const at = t.indexOf('async function fetchBytes');
-            const fn = t.slice(at, at + 2000);
+            const fn = t.slice(at, at + 3000);
             assert.ok(fn.includes('await fetch(url, { signal: controller.signal })'), '缺直接请求通道');
-            assert.ok(t.includes('return await gmFetchBytes(url, timeoutMs, onProgress)'), '缺 GM 兜底通道');
+            // GM 通道只有整体超时：必须比 stall 窗口宽得多，否则大视频在扩展层被掐断
+            assert.ok(/return await gmFetchBytes\(url, Math\.max\(stallTimeout \* 10, 600000\), onProgress\)/.test(fn),
+                '缺 GM 兜底通道（或 GM 通道超时没放宽，大视频会被掐断）');
             assert.ok(fn.includes('res.body.getReader()'), '直接请求通道没走流式读取，拿不到下载进度');
         });
         check(label + '：声明了视频 CDN 的 @connect（否则 GM 到不了 CDN）', () => {
