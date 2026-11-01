@@ -321,8 +321,8 @@ const runBuildChecks = () => {
         });
         check(label + '：blob 下载只能「下载」，绝不能退化成页面导航', () => {
             const t = fs.readFileSync(file, 'utf8');
-            const at = t.indexOf('function anchorDownloadBlob');
-            assert.ok(at > 0, '找不到 anchorDownloadBlob');
+            const at = t.indexOf('function triggerBlobDownload');
+            assert.ok(at > 0, '找不到 triggerBlobDownload');
             const seg = t.slice(at, at + 900);
             assert.ok(/a\.download = name/.test(seg), '没设 download 属性，浏览器会改成「导航」到 blob 地址');
             // 关键回归守卫：rel="noopener" / target="_self" 会让 Chrome 忽略 download，
@@ -337,12 +337,26 @@ const runBuildChecks = () => {
             assert.ok(!/revokeObjectURL[\s\S]{0,80}5 \* 60 \* 1000/.test(t), '还在按 5 分钟固定时间回收 blob URL');
             assert.ok(/pendingBlobUrls|pagehide/.test(t), 'blob URL 应在页面卸载时统一回收');
         });
-        check(label + '：优先走 GM_download（绕过 SPA DOM 与多文件下载限制）', () => {
+        check(label + '：不能用 GM_download 处理 blob（会把 mp4 存成 .txt）', () => {
             const t = fs.readFileSync(file, 'utf8');
-            assert.ok(/@grant\s+GM_download/.test(t), '缺 @grant GM_download');
-            assert.ok(/function gmDownloadAvailable\(\)/.test(t), '没有通道探测');
-            assert.ok(/GM_download\(\{/.test(t), '没有调用 GM_download');
-            assert.ok(/onerror: function\(err\)\{[\s\S]{0,200}?fallback\(/.test(t), 'GM_download 失败没有回退');
+            // 血泪教训：GM_download 对 blob: URL 拿不到 MIME，Tampermonkey 退化成按文本保存，
+            // 用户下载到的就是 xxx.mp4.txt。所以 blob 一律走 <a download>，别再用 GM_download。
+            assert.ok(!/@grant\s+GM_download/.test(t), '还在 @grant GM_download（blob 会被存成 .txt）');
+            assert.ok(!/GM_download\(/.test(t), '还在调用 GM_download（blob 会被存成 .txt）');
+        });
+        check(label + '：送进下载的 Blob 必须带正确 MIME（否则后缀会错）', () => {
+            // 只在**手写源码**里查：产物里还内联了第三方压缩库（它自己有 new Blob），不属本守卫范围
+            const t = fs.readFileSync(path.join(ROOT, 'src', 'bilibili-save.user.js'), 'utf8');
+            const code = t.replace(/^\s*\/\/.*$/gm, '');
+            const bare = code.match(/new Blob\(\[/g) || [];
+            assert.strictEqual(bare.length, 1,
+                '除 blobOf 内部外还有裸 new Blob([...])（共 ' + bare.length + ' 处），请改用 blobOf(bytes, filename)');
+            assert.ok(/function blobOf\(bytes, filename\)\{\s*const blob = new Blob\(\[bytes\], \{ type: mimeForFilename\(filename\) \}\)/.test(code),
+                'blobOf 必须按文件名补 MIME');
+            assert.ok(/function mimeForFilename\(/.test(code), '缺 mimeForFilename');
+            for(const ext of ['mp4', 'm4a', 'zip', 'json']){
+                assert.ok(new RegExp(ext + "\\s*:").test(code), 'MIME_BY_EXT 缺 ' + ext);
+            }
         });
         check(label + '：ZIP 每包上限不超过 512MB（GB 级 Blob 下载会失败）', () => {
             const t = fs.readFileSync(file, 'utf8');

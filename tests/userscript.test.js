@@ -319,6 +319,37 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         assert.ok(!/--bili-save-/.test(t), '还在用旧的五个 CSS 变量');
         assert.ok(!/location\.reload\(\)/.test(t), '换主题不该刷新页面');
     });
+
+    check(label + '：视频面板有搜索与状态筛选，且事件都接上了', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/id="bili-video-search"/.test(t), '缺搜索框');
+        assert.ok(/id="bili-video-filter"/.test(t), '缺状态筛选分段');
+        for (const f of ['all', 'todo', 'done', 'fail']) {
+            assert.ok(new RegExp('data-f="' + f + '"').test(t), '筛选缺选项：' + f);
+        }
+        assert.ok(/state\.filterText = searchEl\.value/.test(t), '搜索框 input 没接到 state.filterText');
+        assert.ok(/state\.filterStatus = b\.getAttribute\('data-f'\)/.test(t), '筛选按钮没接到 state.filterStatus');
+        assert.ok(/const visibleItems = \(\) =>/.test(t), '缺 visibleItems');
+    });
+
+    check(label + '：筛选后勾选框的 data-i 用的是 items 的真实下标', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        // 一旦写成 vis.map((it, i) => ... data-i=i)，筛选后勾选/重下就会作用到别的视频上
+        assert.ok(/listEl\.innerHTML = vis\.map\(\(\{ it, i \}\) =>/.test(t),
+            'render 里没解构出真实下标 i（可能用了筛选后的序号）');
+        const at = t.indexOf('listEl.innerHTML = vis.map(');
+        const seg = t.slice(at, at + 1600);
+        assert.ok(/data-i="' \+ i \+ '"/.test(seg), 'data-i 没用真实下标');
+        assert.ok(/state\.items\[Number\(cb\.getAttribute\('data-i'\)\)\]/.test(t), '勾选没按 data-i 取回原项');
+    });
+
+    check(label + '：全选只作用于当前筛选可见的项', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        const at = t.indexOf('allEl.addEventListener(\'change\'');
+        assert.ok(at > 0, '找不到全选监听');
+        const seg = t.slice(at, at + 400);
+        assert.ok(/visibleItems\(\)\.forEach/.test(seg), '全选还在遍历 state.items（会把筛选掉的也勾上）');
+    });
 }
 
 // ── 9. 收藏夹：必须走接口分页（DOM 在虚拟列表下抓不到）──

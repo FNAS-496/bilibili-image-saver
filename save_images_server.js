@@ -851,15 +851,245 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    if(req.method === 'GET' && req.url === '/'){
-        const files = fs.readdirSync(OUT_DIR).filter(n => /\.(png|jpe?g|gif|webp|bmp)$/i.test(n) && fs.statSync(path.join(OUT_DIR, n)).isFile());
+    // ── 下载目录浏览页（图片 + 视频，带搜索 / 筛选 / 排序）──
+    // 文件清单一次性以 JSON 内联进页面，搜索与筛选全在浏览器里做（零延迟）；
+    // 缩略图走 loading="lazy"，几千张也不会一次性把带宽吃光。
+    if(req.method === 'GET' && (req.url === '/' || req.url.indexOf('/?') === 0)){
         const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-        const items = files.map(n => `<a href="/img/${encodeURIComponent(n)}" target="_blank" title="${esc(n)}"><img src="/img/${encodeURIComponent(n)}" loading="lazy" alt="${esc(n)}"></a>`).join('\n');
-        const html = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>图片相册 - bilibili-image-saver</title>' +
-        '<style>body{font-family:system-ui,sans-serif;background:#f5f6f7;margin:0;padding:16px;}h1{font-size:18px;color:#333;}h1 small{color:#999;font-weight:normal;font-size:13px;}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:12px;}.grid a{display:block;background:#fff;border-radius:8px;padding:6px;box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden;}.grid img{width:100%;height:150px;object-fit:cover;border-radius:6px;display:block;}.empty{color:#999;padding:40px;text-align:center;}</style></head>' +
-        '<body><h1>图片相册 <small>共 ' + files.length + ' 张 · ' + esc(OUT_DIR) + '</small></h1><div class="grid">' + (items || '<div class="empty">还没有图片，去 B 站页面触发下载吧</div>') + '</div></body></html>';
-        res.writeHead(200, {'Content-Type':'text/html; charset=utf-8'});
+        const MAX_ENTRIES = 20000;                   // 上限：超出只列最近的，避免页面被撑爆
+
+        const collect = (dir, kind, re) => {
+            const out = [];
+            let names = [];
+            try{ names = fs.readdirSync(dir); }catch(e){ return out; }
+            for(const n of names){
+                if(!re.test(n)) continue;
+                let st;
+                try{ st = fs.statSync(path.join(dir, n)); }catch(e){ continue; }
+                if(!st.isFile()) continue;
+                out.push({ n, s: st.size, t: Math.round(st.mtimeMs), k: kind });
+            }
+            return out;
+        };
+
+        let all = collect(OUT_DIR, 'image', /\.(png|jpe?g|gif|webp|bmp|avif)$/i)
+            .concat(collect(VIDEO_OUT_DIR, 'video', /\.(mp4|m4s|flv|m4a)$/i));
+        all.sort((a, b) => b.t - a.t);               // 新的在前
+        const truncated = all.length > MAX_ENTRIES;
+        if(truncated) all = all.slice(0, MAX_ENTRIES);
+        // 给每项一个 URL：图片在 /img/，视频在 /video/
+        all.forEach(f => { f.u = (f.k === 'image' ? '/img/' : '/video/') + encodeURIComponent(f.n); });
+
+        const json = JSON.stringify(all).replace(/</g, '\\u003c');   // 防 </script> 截断
+
+        const html = `<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>下载目录 · Bilibili-Plus</title>
+<style>
+  :root{--bg:#f6f7f8;--surface:#fff;--surface2:#f7f8fa;--hover:#e9ebef;--border:#e5e7eb;
+    --text:#18191c;--text2:#61666d;--text3:#9499a0;--accent:#00a1d6;--accent-w:#e8f6fc;
+    --radius:10px;--shadow:0 1px 3px rgba(16,20,28,.07)}
+  @media (prefers-color-scheme: dark){
+    :root{--bg:#14161a;--surface:#1b1d23;--surface2:#22252c;--hover:#2d313a;--border:#333844;
+      --text:#e9eaee;--text2:#a6abb7;--text3:#71767f;--accent:#00b3e6;--accent-w:#16323d;
+      --shadow:0 1px 3px rgba(0,0,0,.4)}}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--text);font-size:14px;line-height:1.6}
+  header{position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:1px solid var(--border);
+    padding:12px 20px;box-shadow:var(--shadow)}
+  .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  h1{font-size:16px;margin:0;font-weight:600}
+  .count{font-size:12px;color:var(--text3)}
+  .dir{font-size:11px;color:var(--text3);word-break:break-all;margin-top:4px}
+  .search{position:relative;flex:1;min-width:180px;max-width:420px}
+  .search input{width:100%;padding:8px 32px 8px 32px;border:1px solid var(--border);border-radius:var(--radius);
+    background:var(--surface2);color:var(--text);font-size:13px;outline:none;font-family:inherit}
+  .search input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-w)}
+  .search .ico{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:13px;pointer-events:none}
+  .search .clr{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:none;background:var(--hover);
+    color:var(--text2);width:18px;height:18px;border-radius:50%;cursor:pointer;font-size:11px;line-height:1;display:none}
+  .search.has-val .clr{display:block}
+  .seg{display:flex;gap:2px;padding:3px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius)}
+  .seg button{border:none;background:transparent;color:var(--text2);padding:5px 12px;border-radius:7px;
+    cursor:pointer;font-size:12px;font-family:inherit;white-space:nowrap;transition:.15s}
+  .seg button:hover{color:var(--text)}
+  .seg button[aria-pressed=true]{background:var(--surface);color:var(--accent);font-weight:600;box-shadow:var(--shadow)}
+  select{border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--text);
+    padding:6px 8px;font-size:12px;font-family:inherit;cursor:pointer;outline:none}
+  main{padding:16px 20px 60px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:12px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;
+    box-shadow:var(--shadow);transition:transform .15s,box-shadow .15s;position:relative;display:block;
+    text-decoration:none;color:inherit}
+  .card:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(16,20,28,.14)}
+  .thumb{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;background:var(--surface2)}
+  .thumb.video{object-fit:contain;background:#000}
+  .badge{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.68);color:#fff;font-size:10px;
+    padding:1px 6px;border-radius:999px;backdrop-filter:blur(4px)}
+  .meta{padding:7px 9px}
+  .name{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sub{font-size:10px;color:var(--text3);margin-top:2px;display:flex;justify-content:space-between;gap:6px}
+  .empty{text-align:center;padding:70px 20px;color:var(--text3)}
+  .empty b{display:block;font-size:15px;color:var(--text2);margin-bottom:6px}
+  mark{background:#ffe58f;color:inherit;border-radius:2px;padding:0 1px}
+  @media (prefers-color-scheme: dark){mark{background:#6b5a1e;color:#fff}}
+</style></head>
+<body>
+<header>
+  <div class="row">
+    <h1>下载目录</h1>
+    <span class="count" id="count"></span>
+    <div class="search" id="searchWrap">
+      <span class="ico">🔍</span>
+      <input id="q" type="search" placeholder="搜索文件名…（按 / 聚焦，Esc 清空）" autocomplete="off">
+      <button class="clr" id="clr" title="清空">✕</button>
+    </div>
+    <div class="seg" id="kind">
+      <button data-k="all" aria-pressed="true">全部</button>
+      <button data-k="image" aria-pressed="false">图片</button>
+      <button data-k="video" aria-pressed="false">视频</button>
+    </div>
+    <select id="sort">
+      <option value="new">最新优先</option>
+      <option value="old">最旧优先</option>
+      <option value="name">文件名 A→Z</option>
+      <option value="size">体积从大到小</option>
+    </select>
+  </div>
+  <div class="dir">${esc(OUT_DIR)}　·　视频：${esc(VIDEO_OUT_DIR)}${truncated ? '　·　⚠️ 文件太多，只列出最近 ' + MAX_ENTRIES + ' 个' : ''}</div>
+</header>
+<main><div class="grid" id="grid"></div><div class="empty" id="empty" hidden></div></main>
+<script>
+const FILES = ${json};
+const $ = id => document.getElementById(id);
+const grid = $('grid'), empty = $('empty');
+let kind = 'all', sortBy = 'new', q = '';
+
+const fmtSize = b => b < 1024 ? b + ' B'
+  : b < 1048576 ? (b / 1024).toFixed(1) + ' KB'
+  : b < 1073741824 ? (b / 1048576).toFixed(1) + ' MB'
+  : (b / 1073741824).toFixed(2) + ' GB';
+const fmtTime = t => {
+  const d = new Date(t), p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+         ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+};
+const escHtml = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// 命中高亮：把匹配片段包进 <mark>
+function highlight(name, needle){
+  if(!needle) return escHtml(name);
+  const i = name.toLowerCase().indexOf(needle);
+  if(i < 0) return escHtml(name);
+  return escHtml(name.slice(0, i)) + '<mark>' + escHtml(name.slice(i, i + needle.length)) + '</mark>' +
+         escHtml(name.slice(i + needle.length));
+}
+
+function apply(){
+  const needle = q.trim().toLowerCase();
+  let list = FILES.filter(f => {
+    if(kind !== 'all' && f.k !== kind) return false;
+    if(needle && f.n.toLowerCase().indexOf(needle) < 0) return false;
+    return true;
+  });
+  if(sortBy === 'new') list.sort((a, b) => b.t - a.t);
+  else if(sortBy === 'old') list.sort((a, b) => a.t - b.t);
+  else if(sortBy === 'name') list.sort((a, b) => a.n.localeCompare(b.n, 'zh'));
+  else if(sortBy === 'size') list.sort((a, b) => b.s - a.s);
+
+  const imgs = list.filter(f => f.k === 'image').length;
+  $('count').textContent = '共 ' + list.length + ' 个' +
+    (list.length !== FILES.length ? '（已筛选，全部 ' + FILES.length + ' 个）' : '') +
+    (list.length && kind === 'all' ? ' · 图片 ' + imgs + ' · 视频 ' + (list.length - imgs) : '');
+
+  if(!list.length){
+    grid.innerHTML = '';
+    empty.hidden = false;
+    empty.innerHTML = FILES.length
+      ? '<b>没有匹配的文件</b>试试别的关键词，或把类型切回「全部」'
+      : '<b>还是空的</b>去 B 站页面触发一次下载吧';
+    return;
+  }
+  empty.hidden = true;
+  // 用字符串拼接一次写入，比逐个 appendChild 快得多
+  grid.innerHTML = list.map(f => {
+    const isV = f.k === 'video';
+    return '<a class="card" href="' + f.u + '" target="_blank" rel="noopener" title="' + escHtml(f.n) + '">' +
+      (isV
+        ? '<video class="thumb video" src="' + f.u + '" preload="metadata" muted></video>'
+        : '<img class="thumb" src="' + f.u + '" loading="lazy" decoding="async" alt="">') +
+      '<span class="badge">' + (isV ? '视频' : '图片') + '</span>' +
+      '<div class="meta"><div class="name">' + highlight(f.n, needle) + '</div>' +
+      '<div class="sub"><span>' + fmtSize(f.s) + '</span><span>' + fmtTime(f.t) + '</span></div></div></a>';
+  }).join('');
+}
+
+$('q').addEventListener('input', e => {
+  q = e.target.value;
+  $('searchWrap').classList.toggle('has-val', !!q);
+  apply();
+});
+$('clr').addEventListener('click', () => {
+  $('q').value = ''; q = ''; $('searchWrap').classList.remove('has-val'); $('q').focus(); apply();
+});
+$('kind').addEventListener('click', e => {
+  const b = e.target.closest('button[data-k]');
+  if(!b) return;
+  kind = b.dataset.k;
+  [...$('kind').children].forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  apply();
+});
+$('sort').addEventListener('change', e => { sortBy = e.target.value; apply(); });
+
+// 键盘：/ 聚焦搜索，Esc 清空
+document.addEventListener('keydown', e => {
+  if(e.key === '/' && document.activeElement !== $('q')){ e.preventDefault(); $('q').focus(); }
+  else if(e.key === 'Escape' && document.activeElement === $('q')){ $('q').value=''; q=''; $('searchWrap').classList.remove('has-val'); apply(); }
+});
+
+apply();
+</script>
+</body></html>`;
+        res.writeHead(200, {'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'no-store'});
         res.end(html);
+        return;
+    }
+
+    // 视频文件（相册页里的视频卡片点开就是它）
+    if(req.method === 'GET' && req.url.indexOf('/video/') === 0){
+        let name;
+        try{ name = path.basename(decodeURIComponent(req.url.slice(7))); }
+        catch(e){ res.writeHead(400, {'Content-Type':'text/plain'}); res.end('bad request'); return; }
+        const full = path.join(VIDEO_OUT_DIR, name);
+        if(!full.startsWith(VIDEO_OUT_DIR + path.sep) || !fs.existsSync(full) || !fs.statSync(full).isFile()){
+            res.writeHead(404, {'Content-Type':'text/plain'}); res.end('not found'); return;
+        }
+        const ext = path.extname(full).toLowerCase();
+        const type = ext === '.mp4' ? 'video/mp4' : ext === '.m4s' ? 'video/mp4'
+            : ext === '.m4a' ? 'audio/mp4' : ext === '.flv' ? 'video/x-flv' : 'application/octet-stream';
+        const st = fs.statSync(full);
+        // 支持 Range：拖进度条 / 播放器要它
+        const range = req.headers.range;
+        if(range){
+            const m = /^bytes=(\d*)-(\d*)$/.exec(range);
+            if(m){
+                const start = m[1] ? parseInt(m[1], 10) : 0;
+                const end = m[2] ? Math.min(parseInt(m[2], 10), st.size - 1) : st.size - 1;
+                if(start <= end && start < st.size){
+                    res.writeHead(206, {
+                        'Content-Type': type, 'Accept-Ranges': 'bytes',
+                        'Content-Range': 'bytes ' + start + '-' + end + '/' + st.size,
+                        'Content-Length': end - start + 1
+                    });
+                    fs.createReadStream(full, { start, end }).pipe(res);
+                    return;
+                }
+            }
+        }
+        res.writeHead(200, {'Content-Type': type, 'Content-Length': st.size, 'Accept-Ranges': 'bytes'});
+        fs.createReadStream(full).pipe(res);
         return;
     }
 

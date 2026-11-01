@@ -145,9 +145,12 @@ function request(port, { path: reqPath = '/getdir', headers = {}, method = 'GET'
             hdrs['Content-Length'] = Buffer.byteLength(body);
         }
         const req = http.request({ host: '127.0.0.1', port, path: reqPath, method, headers: hdrs }, res => {
-            let text = '';
-            res.on('data', c => { text += c; });
-            res.on('end', () => resolve({ status: res.statusCode, body: text }));
+            const chunks = [];
+            res.on('data', c => chunks.push(c));
+            res.on('end', () => {
+                const raw = Buffer.concat(chunks);
+                resolve({ status: res.statusCode, headers: res.headers, raw, body: raw.toString('utf8') });
+            });
         });
         req.on('error', reject);
         req.end(body);
@@ -191,6 +194,57 @@ function request(port, { path: reqPath = '/getdir', headers = {}, method = 'GET'
             assert.strictEqual(r.status, 413);
             assert.ok(/too large/.test(r.body), '响应体里没有说明原因');
         });
+
+        // ── 下载目录页（用户打开 http://127.0.0.1:8765/ 看到的那个页面）──
+        await checkAsync('下载目录页：列出图片与视频，带搜索框和类型筛选', async () => {
+            const r = await request(port, { path: '/' });
+            assert.strictEqual(r.status, 200);
+            assert.ok(/text\/html/.test(r.headers['content-type'] || ''), 'Content-Type 不是 html');
+            assert.ok(/id="q"/.test(r.body), '缺搜索框 id="q"');
+            assert.ok(/data-t="video"|'video'|"video"/.test(r.body), '缺视频类型筛选');
+            assert.ok(/数据|download|相册|目录/.test(r.body), '页面看着不像下载目录');
+        });
+        await checkAsync('下载目录页：文件名里的特殊字符不会破坏页面', async () => {
+            // Windows 文件名不能含 < > "，用 & ' # % 这几个合法但敏感的字符
+            const evil = "xss-&'-1#%.jpg";
+            fs.writeFileSync(path.join(TMP, evil), 'a');
+            try{
+                const r = await request(port, { path: '/' });
+                assert.strictEqual(r.status, 200);
+                assert.ok(r.body.includes('xss-&'), '清单里没列出这个文件（JSON 编码坏了）');
+                // 清单是内联 JSON，防 </script> 截断必须把 < 转成 \u003c（Linux 文件名可含 <）
+                const src = fs.readFileSync(path.join(__dirname, '..', 'save_images_server.js'), 'utf8');
+                assert.ok(/JSON\.stringify\(all\)\.replace\(\/<\/g, '\\\\u003c'\)/.test(src),
+                    '清单 JSON 没做 < 转义，文件名含 </script> 会截断页面');
+            } finally {
+                try{ fs.rmSync(path.join(TMP, evil), { force: true }); }catch(e){}
+            }
+        });
+        await checkAsync('视频路由：支持 Range（206），否则播放器/断点续传会失败', async () => {
+            const name = '测试视频.mp4';
+            const vdir = path.join(TMP, 'videos');     // 视频固定落在 <保存目录>/videos
+            fs.writeFileSync(path.join(vdir, name), Buffer.alloc(1000, 7));
+            try{
+                const full = await request(port, { path: '/video/' + encodeURIComponent(name) });
+                assert.strictEqual(full.status, 200);
+                assert.ok(/video\/mp4/.test(full.headers['content-type'] || ''), 'Content-Type 不是 video/mp4');
+                assert.strictEqual(full.raw.length, 1000, '整段返回长度不对');
+                const part = await request(port, {
+                    path: '/video/' + encodeURIComponent(name),
+                    headers: { Range: 'bytes=0-99' }
+                });
+                assert.strictEqual(part.status, 206, 'Range 请求没回 206');
+                assert.strictEqual(part.raw.length, 100, '返回长度不对');
+                assert.ok(/bytes 0-99\/1000/.test(part.headers['content-range'] || ''), 'Content-Range 不对');
+            } finally {
+                try{ fs.rmSync(path.join(vdir, name), { force: true }); }catch(e){}
+            }
+        });
+        await checkAsync('视频路由：名字越界（../）一律拒绝', async () => {
+            const r = await request(port, { path: '/video/..%2F..%2Fetc%2Fpasswd' });
+            assert.ok(r.status === 400 || r.status === 403 || r.status === 404, '越界请求没被拒绝：' + r.status);
+        });
+
         await new Promise(resolve => S.server.close(resolve));
     }
 

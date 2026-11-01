@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）@@NAME_SUFFIX@@
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader@@NAME_SUFFIX_EN@@
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.10.2
+// @version      0.10.3
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -14,7 +14,6 @@
 // @match        *://bilibili.com/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
-// @grant        GM_download
 // @connect      hdslb.com
 // @connect      bilibili.com
 // @connect      bilivideo.com
@@ -711,18 +710,36 @@
     }
 
     // 触发单个文件下载（ZIP 方式：一次点击一个文件，不会弹「多个文件」授权）
+    // 按扩展名推断 MIME。别省这一步：`new Blob([bytes])` 的 type 是空字符串，
+    // blob URL 的 Content-Type 也就是空 —— 某些下载通道（尤其扩展层的 GM_download）
+    // 拿不到类型时就按「文本」保存，文件会变成 xxx.mp4.txt / xxx.jpg.txt。
+    const MIME_BY_EXT = {
+        jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+        webp: 'image/webp', bmp: 'image/bmp', avif: 'image/avif',
+        mp4: 'video/mp4', m4s: 'video/mp4', m4a: 'audio/mp4', flv: 'video/x-flv',
+        zip: 'application/zip', txt: 'text/plain;charset=utf-8', json: 'application/json'
+    };
+    function mimeForFilename(name){
+        const m = String(name || '').toLowerCase().match(/\.([a-z0-9]{1,5})$/);
+        return (m && MIME_BY_EXT[m[1]]) || 'application/octet-stream';
+    }
+    // 统一入口：保证每个交给浏览器的 Blob 都带正确的 type
+    function blobOf(bytes, filename){
+        const blob = new Blob([bytes], { type: mimeForFilename(filename) });
+        return blob;
+    }
+
     // 触发浏览器下载。
     //
-    // 为什么不能只用 <a download>：
-    //  ① B 站是 SPA，document 上挂着捕获阶段的 click 监听，<a> 容易被当成路由导航；
-    //  ② <a> 一旦带上 rel="noopener" / target，Chrome 就按「导航」而不是「下载」处理，
-    //     blob URL 被打开又立刻关掉，用户看到的就是「链接已关闭」；
-    //  ③ Chrome 对「同一页面连续自动下载多个文件」有限制，批量下会有一部分被拦掉。
-    // 所以分两层：优先 GM_download（扩展层下载，三条全绕过），没有/失败时再用修好的 <a>。
+    // 只用 <a download>，**不再走 GM_download**：
+    //   Tampermonkey 的 GM_download 处理 blob: URL 时拿不到 Content-Type，
+    //   会退化成「文本」保存 —— 实测用户下回来的 mp4 / jpg 全变成 .txt。
+    //   而修好的 <a>（不设 rel / target）实测在 B 站页面能正常下载，
+    //   1MB / 20MB / 100MB 均成功、扩展名也正确，所以没有必要再冒这个险。
     let blobDownloadChannel = 'anchor';                 // 自检用：最近一次走的通道
-    // <a> 通道的 blob URL 统一在这里登记，页面卸载时再回收。
+    // <a> 通道的 blob URL 统一登记，页面卸载时再回收。
     // 关键：绝不能按固定时间 revoke —— 大文件 + 慢网速下，5 分钟可能还没下载完，
-    // 一 revoke 就等于把正在下载的源删掉，表现为「下载到最后一步突然失败 / 链接已关闭」。
+    // 一 revoke 就等于把正在下载的源删掉，表现为「下载到最后一步突然失败」。
     const pendingBlobUrls = new Set();
     let blobUrlCleanupBound = false;
     function bindBlobUrlCleanup(){
@@ -735,12 +752,14 @@
         window.addEventListener('pagehide', flush, { once: true });
         window.addEventListener('beforeunload', flush, { once: true });
     }
-    function gmDownloadAvailable(){
-        return typeof GM_download === 'function';
-    }
 
-    // 兜底通道：修好的 <a download>
-    function anchorDownloadBlob(url, name){
+    function triggerBlobDownload(blob, filename){
+        const name = String(filename || '').trim() || 'bilibili-download';
+        // 兜底：调用方若直接传了「裸 bytes」，在这里补上正确 MIME
+        if(!(blob instanceof Blob) || !blob.type) blob = blobOf(blob, name);
+        const url = URL.createObjectURL(blob);
+        blobDownloadChannel = 'anchor';
+
         const a = document.createElement('a');
         a.href = url;
         a.download = name;
@@ -755,45 +774,6 @@
         // 不按时间 revoke：等页面卸载时统一回收（见 bindBlobUrlCleanup）
         pendingBlobUrls.add(url);
         bindBlobUrlCleanup();
-    }
-
-    function triggerBlobDownload(blob, filename){
-        const name = String(filename || '').trim() || 'bilibili-download';
-        const url = URL.createObjectURL(blob);
-
-        if(gmDownloadAvailable()){
-            let fellBack = false;
-            const fallback = (why) => {
-                if(fellBack) return;
-                fellBack = true;
-                blobDownloadChannel = 'anchor(兜底)';
-                console.warn('[BiliSave] GM_download 不可用（' + why + '），改用 <a> 下载');
-                anchorDownloadBlob(url, name);
-                // 让用户看得见：静默失败最难受
-                try{ showToast('⚠️ 系统下载通道不可用（' + why + '），已改用浏览器下载\n若仍失败，请在 Tampermonkey「设置 → 下载」里把下载模式改为「浏览器 API」'); }catch(e){}
-            };
-            try{
-                GM_download({
-                    url: url,
-                    name: name,
-                    saveAs: false,
-                    onload: function(){
-                        blobDownloadChannel = 'GM_download';
-                        // GM_download 的 onload = 下载已完成，这时回收才安全
-                        setTimeout(() => { try{ URL.revokeObjectURL(url); }catch(e){} }, 60000);
-                    },
-                    onerror: function(err){
-                        fallback((err && (err.error || err.details)) || 'onerror');
-                    }
-                });
-                return;
-            }catch(e){
-                fallback((e && e.message) || 'throw');
-                return;
-            }
-        }
-        blobDownloadChannel = 'anchor';
-        anchorDownloadBlob(url, name);
     }
 
     // 授权目录里是否已有这个文件（用于「已存在就跳过」，而不是覆盖甚至误删用户原有的文件）
@@ -865,7 +845,7 @@
             // 流式 fetch 走不通（CORS / 风控 / Referer 被抹掉）就退回 GM 取字节再落盘
             if(!started && typeof GM_xmlhttpRequest === 'function'){
                 const bytes = await fetchBytes(url, limit);
-                return (await writeBlobToDir(dir, filename, new Blob([bytes]), skipExisting)) !== false;
+                return (await writeBlobToDir(dir, filename, blobOf(bytes, filename), skipExisting)) !== false;
             }
             throw err;
         }finally{
@@ -940,7 +920,7 @@
             if(dir){
                 for(const r of okItems){
                     try{
-                        const written = await writeBlobToDir(dir, r.name, new Blob([r.bytes]), dedupe);
+                        const written = await writeBlobToDir(dir, r.name, blobOf(r.bytes, r.name), dedupe);
                         r.saved = dir.name + '/' + r.name;
                         if(written === false) r.exists = true;      // 目录里已有同名文件：按查重跳过，不覆盖
                     }catch(e){
@@ -1132,20 +1112,20 @@
                     const aName = base + '.audio.m4a';
                     if(merged){
                         if(dir){
-                            await writeBlobToDir(dir, mName, new Blob([merged]), !force);
+                            await writeBlobToDir(dir, mName, blobOf(merged, mName), !force);
                         }else{
-                            triggerBlobDownload(new Blob([merged]), mName);
+                            triggerBlobDownload(blobOf(merged, mName), mName);
                         }
                         results.push({ idx:i, bvid: it.bvid, title: it.title, saved: mName });
                     }else{
                         // 合并失败：数据已经下到内存了，照样写成文件，用户不会白下
                         if(dir){
-                            await writeBlobToDir(dir, vName, new Blob([vBytes]), !force);
-                            await writeBlobToDir(dir, aName, new Blob([aBytes]), !force);
+                            await writeBlobToDir(dir, vName, blobOf(vBytes, vName), !force);
+                            await writeBlobToDir(dir, aName, blobOf(aBytes, aName), !force);
                         }else{
-                            triggerBlobDownload(new Blob([vBytes]), vName);
+                            triggerBlobDownload(blobOf(vBytes, vName), vName);
                             await sleep(500);
-                            triggerBlobDownload(new Blob([aBytes]), aName);
+                            triggerBlobDownload(blobOf(aBytes, aName), aName);
                         }
                         results.push({ idx:i, bvid: it.bvid, title: it.title, saved: vName, separate:true });
                         mergeNotice = true;
@@ -1174,9 +1154,9 @@
                         const vBytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, 600000, fileProgress(i, '⬇️ 视频流')));
                         if(ui.progText) ui.progText.textContent = '第 ' + (i + 1) + '/' + items.length + ' 个 · 🎵 下载音频流';
                         const aBytes = await tryUrls(it.audioUrls || [it.audioUrl], u => fetchBytes(u, 600000, fileProgress(i, '🎵 音频流')));
-                        triggerBlobDownload(new Blob([vBytes]), vName);
+                        triggerBlobDownload(blobOf(vBytes, vName), vName);
                         await sleep(500);                      // 稍作间隔，避免浏览器连续下载节流
-                        triggerBlobDownload(new Blob([aBytes]), aName);
+                        triggerBlobDownload(blobOf(aBytes, aName), aName);
                     }
                     results.push({ idx:i, bvid: it.bvid, title: it.title, saved: vName, separate:true });
                     mergeNotice = true;
@@ -1187,7 +1167,7 @@
                         results.push({ idx:i, bvid: it.bvid, title: it.title, saved: name, exists: wrote === false });
                     }else{
                         const bytes = await tryUrls(it.videoUrls || [it.videoUrl], u => fetchBytes(u, 600000, fileProgress(i, '⬇️ 下载中')));
-                        triggerBlobDownload(new Blob([bytes]), name);
+                        triggerBlobDownload(blobOf(bytes, name), name);
                         results.push({ idx:i, bvid: it.bvid, title: it.title, saved: name });
                     }
                 }
@@ -3049,6 +3029,17 @@
             '<span class="bp-head__meta" id="bili-video-hint"></span>' +
             '<button class="bp-close" id="bili-video-x" aria-label="关闭">✕</button>' +
             '</div>' +
+            '<div id="bili-video-toolbar" style="padding:8px 16px;border-bottom:1px solid var(--bp-border);display:flex;flex-direction:column;gap:6px;">' +
+            '<div style="display:flex;gap:6px;align-items:center;">' +
+            '<input id="bili-video-search" class="bp-input" type="search" placeholder="搜索标题…" autocomplete="off" style="flex:1;min-width:0;padding:6px 10px;font-size:12px;">' +
+            '</div>' +
+            '<div class="bp-seg" id="bili-video-filter" role="group" aria-label="筛选">' +
+            '<button class="bp-seg__item" data-f="all" aria-pressed="true">全部</button>' +
+            '<button class="bp-seg__item" data-f="todo" aria-pressed="false">未下载</button>' +
+            '<button class="bp-seg__item" data-f="done" aria-pressed="false">已下载</button>' +
+            '<button class="bp-seg__item" data-f="fail" aria-pressed="false">失败</button>' +
+            '</div>' +
+            '</div>' +
             '<div id="bili-video-list" class="bp-scroll" style="flex:1;min-height:0;padding:6px;border-bottom:1px solid var(--bp-border);"></div>' +
             '<div id="bili-video-progress" style="display:none;padding:10px 16px 0;">' +
             '<div class="bp-prog">' +
@@ -3136,7 +3127,12 @@
         //   items      : 列表项
         //   downloaded : 已下载集合，键 = videoKey(项)（BV 号；多 P 再加 #cid）
         //   checked    : 已勾选的项，存对象引用而非下标 —— 列表重绘（fillCids 会 splice 展开分P）后仍能保持勾选
-        const state = { items: [], ready: false, downloaded: new Set(), checked: new Set(), force: false, loadingFav: false, favHint: '' };
+        //   filterText / filterStatus : 上千个视频时靠它们把列表缩小到能看
+        const state = {
+            items: [], ready: false, downloaded: new Set(), checked: new Set(),
+            force: false, loadingFav: false, favHint: '',
+            filterText: '', filterStatus: 'all'
+        };
         const dlBtnEl = panel.querySelector('#bili-video-dl');
 
         // 同步「下载选中」按钮上的数量提示
@@ -3146,6 +3142,37 @@
             dlBtnEl.textContent = n ? ('下载选中 (' + n + ')') : '下载选中';
         };
 
+        // 当前可见的项（带它在 state.items 里的真实下标 —— data-i 必须用它，
+        // 否则筛选后点「重下」/勾选会作用到别的视频上）
+        const visibleItems = () => {
+            const q = state.filterText.trim().toLowerCase();
+            const st = state.filterStatus;
+            const out = [];
+            state.items.forEach((it, i) => {
+                if(q && String(it.title || '').toLowerCase().indexOf(q) < 0) return;
+                const done = state.downloaded.has(videoKey(it));
+                const fail = !!(it.error || it.errorMsg);
+                if(st === 'todo' && done) return;
+                if(st === 'done' && !done) return;
+                if(st === 'fail' && !fail) return;
+                out.push({ it, i });
+            });
+            return out;
+        };
+
+        // 筛选状态同步到工具条上的计数
+        const refreshFilterInfo = () => {
+            const vis = visibleItems();
+            const filtering = !!state.filterText.trim() || state.filterStatus !== 'all';
+            if(filtering){
+                hintEl.textContent = '筛出 ' + vis.length + ' / 共 ' + state.items.length + ' 个';
+            } else {
+                hintEl.textContent = state.favHint || ('共 ' + state.items.length + ' 个');
+            }
+            refreshDlBtn();
+            return vis;
+        };
+
         // ── 渲染视频列表（合集项带 [合集] 标记）──
         const render = () => {
             if(!state.items.length){
@@ -3153,7 +3180,13 @@
                     (state.loadingFav ? '正在读取收藏夹…' : '当前页面未检测到视频。') + '</div>';
                 return;
             }
-            listEl.innerHTML = state.items.map((it, i) => {
+            const vis = visibleItems();
+            if(!vis.length){
+                listEl.innerHTML = '<div class="bp-empty">没有符合筛选条件的视频<br>' +
+                    '<span style="font-size:11px;">换个关键词，或把筛选切回「全部」</span></div>';
+                return;
+            }
+            listEl.innerHTML = vis.map(({ it, i }) => {
                 const tag = it.fromCollection ? '<span class="bp-badge bp-badge--accent">合集</span>' : '';
                 const dur = it.duration ? ('<span>' + formatDuration(it.duration) + '</span>') : '';
                 const size = it.size ? ('<span>' + formatSize(it.size) + '</span>') : '';
@@ -3228,7 +3261,7 @@
                 }
             }
             await Promise.all(Array.from({ length: Math.min(CHILD_CONCURRENCY, need.length) }, () => worker()));
-            hintEl.textContent = '共 ' + state.items.length + ' 个';
+            refreshFilterInfo();                     // 保留当前的筛选计数，别被「共 N 个」盖掉
         };
 
         // 取到的流信息落到列表项上；顺带记下「本视频支持、但当前账号拿不到」的档位用于提示
@@ -3264,8 +3297,11 @@
             await Promise.all(Array.from({ length: Math.min(CHILD_CONCURRENCY, total) }, () => worker()));
             // 收藏夹项不预取大小（上千个逐个请求既慢又容易被风控），这里不能说「已自动获取」
             const favCount = state.items.filter(it => it.fromFav).length;
-            hintEl.textContent = state.favHint || ('共 ' + state.items.length + ' 个' +
-                (favCount ? '（收藏夹项在下载时获取大小）' : '（已自动获取大小与画质）'));
+            if(!state.favHint){
+                state.favHint = '共 ' + state.items.length + ' 个' +
+                    (favCount ? '（收藏夹项在下载时获取大小）' : '（已自动获取大小与画质）');
+            }
+            refreshFilterInfo();
         };
 
         // ── 下载选中：先补齐缺失的流地址，再交给本地服务下载 ──
@@ -3483,17 +3519,49 @@
             refreshDlBtn();
         });
 
-        // ── 全选：只勾选「尚未下载」的项，避免重复下载浪费流量 ──
+        // ── 全选：只勾选「当前筛选可见 + 尚未下载」的项 ──
+        // 上千个视频时，用户通常先搜索/筛选再全选，只勾可见部分才符合直觉
         allEl.addEventListener('change', () => {
             state.checked.clear();
             if(allEl.checked){
-                state.items.forEach(it => {
+                visibleItems().forEach(({ it }) => {
                     if(!state.downloaded.has(videoKey(it))) state.checked.add(it);
                 });
             }
             render();
             refreshDlBtn();
         });
+
+        // ── 搜索与状态筛选 ──
+        const searchEl = panel.querySelector('#bili-video-search');
+        const filterEl = panel.querySelector('#bili-video-filter');
+        if(searchEl){
+            searchEl.addEventListener('input', () => {
+                state.filterText = searchEl.value || '';
+                render();
+                refreshFilterInfo();
+            });
+            // 面板里按 Esc 先清搜索，再按一次才关面板
+            searchEl.addEventListener('keydown', e => {
+                if(e.key === 'Escape' && searchEl.value){
+                    e.stopPropagation();
+                    searchEl.value = '';
+                    state.filterText = '';
+                    render();
+                    refreshFilterInfo();
+                }
+            });
+        }
+        if(filterEl){
+            filterEl.addEventListener('click', e => {
+                const b = e.target.closest('button[data-f]');
+                if(!b) return;
+                state.filterStatus = b.getAttribute('data-f');
+                [...filterEl.children].forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+                render();
+                refreshFilterInfo();
+            });
+        }
 
         // ── 清空选择 ──
         const clearEl = panel.querySelector('#bili-video-clear');
@@ -3643,10 +3711,11 @@
                 const tip = (col && col.truncated)
                     ? '（合集共 ' + col.total + ' 个，已达上限只取前 ' + colCount + ' 个）'
                     : '（合集项下载时获取大小）';
-                hintEl.textContent = '视频 ' + videoCount + ' 个 · ' + colName + tip;
+                state.favHint = '视频 ' + videoCount + ' 个 · ' + colName + tip;
             } else if(!(pageInfo && pageInfo.type === 'favlist')){
-                hintEl.textContent = '共 ' + state.items.length + ' 个';
+                state.favHint = '共 ' + state.items.length + ' 个';
             }
+            refreshFilterInfo();
         })();
     }
 
@@ -3778,11 +3847,8 @@
         if(!qrOk){
             console.warn('[BiliSave] 收款码数据缺失，打赏面板将显示不出收款码。完整版请从 ' + REPO + ' 下载。');
         }
-        // 下载通道自检：<a download> 在 SPA 页面上很容易被搞成「导航」（表现为「链接已关闭」），
-        // 所以优先 GM_download，这里把实际可用的通道打出来，方便排查
-        console.log('[check] 保存文件通道: ' + (gmDownloadAvailable()
-            ? 'GM_download（优先）+ <a> 兜底'
-            : '仅 <a>（当前管理器没有 GM_download，建议用 Tampermonkey / Violentmonkey）'));
+        // 下载通道自检：Blob 不带 MIME 时文件会变成 xxx.mp4.txt，这里顺手打印一下实际通道
+        console.log('[check] 保存文件通道: <a download>（Blob 已带正确 MIME）');
         // 便携版不需要本地服务，自检到此为止
         if(IS_PORTABLE){
             console.info('[BiliSave] 便携版（无需 Node / ffmpeg）：图片与视频由浏览器直接保存。'
@@ -3846,7 +3912,6 @@
             // 下载通道：诊断「链接已关闭」时用
             triggerBlobDownload: triggerBlobDownload,
             getDownloadChannel: () => blobDownloadChannel,
-            gmDownloadAvailable: gmDownloadAvailable,
             planZipBatches: BS.planZipBatches,
             idbListNames: BS.idbListNames,
             idbClearNames: BS.idbClearNames
