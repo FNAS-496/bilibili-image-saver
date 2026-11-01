@@ -1,13 +1,4 @@
-修复下载变 .txt，给视频面板与下载目录页加搜索
+移除误提交的临时提交信息文件，并忽略 *.tmp
 
-- 下载变 .txt：v0.10.2 引入的 GM_download 从 blob: 地址拿不到 MIME，
-  Tampermonkey 会退化成按文本保存。移除 GM_download 与 @grant，blob 一律走
-  <a download>；新增 mimeForFilename/blobOf，9 处裸 Blob 全部按扩展名补 MIME
-- 视频面板：工具栏加标题搜索 + 状态筛选（全部/未下载/已下载/失败），
-  筛出时显示「筛出 N / 共 M 个」；「全选未下载」只勾当前可见项；
-  勾选框 data-i 用真实下标（否则筛选后勾选/重下会作用到别的视频）
-- 下载目录页（/）：重写为搜索 + 类型筛选 + 排序 + 命中高亮 + 懒加载缩略图 +
-  暗色自适应，视频可在线播放；新增 GET /video/<名字>（支持 Range 206）
-- 测试：browser-save 新增 MIME 守卫，并删掉那条错误断言（它要求必须写
-  rel="noopener"，正是让「链接已关闭」bug 活着的帮凶）；server 补 4 项
-  （目录页、清单转义、Range、越界）；userscript 补筛选接线/data-i/全选范围守卫
+上一版提交时 git add -A 把 .git-commit-msg.tmp 一起带进去了。
+这个文件只是提交信息草稿，不该入库；顺手在 .gitignore 里加上 *.tmp 防止再犯。

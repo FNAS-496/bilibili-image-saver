@@ -23,6 +23,7 @@ node_modules/
 tmp_*.js
 _temp*
 *.log
+*.tmp
 *~$*
 审查模式测试预览.html
 
