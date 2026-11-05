@@ -245,6 +245,39 @@ function request(port, { path: reqPath = '/getdir', headers = {}, method = 'GET'
             assert.ok(r.status === 400 || r.status === 403 || r.status === 404, '越界请求没被拒绝：' + r.status);
         });
 
+        // ── /list：脚本据此把磁盘上真实存在的文件算作「已下载」──
+        await checkAsync('/list：返回图片与视频清单（脚本用来合并「已下载」状态）', async () => {
+            const img = '清单图片.jpg', vid = '清单视频_BV1xx411c7mD.mp4';
+            fs.writeFileSync(path.join(TMP, img), Buffer.alloc(11));
+            fs.writeFileSync(path.join(TMP, 'videos', vid), Buffer.alloc(22));
+            try{
+                const r = await request(port, { path: '/list' });
+                assert.strictEqual(r.status, 200);
+                const j = JSON.parse(r.body);
+                assert.ok(j.ok, 'ok 不为 true');
+                assert.ok(Array.isArray(j.images) && Array.isArray(j.videos), '缺 images / videos');
+                const i = j.images.find(x => x.n === img);
+                const v = j.videos.find(x => x.n === vid);
+                assert.ok(i, '/list 没列出图片 ' + img);
+                assert.strictEqual(i.s, 11, '图片大小不对');
+                assert.ok(v, '/list 没列出视频 ' + vid);
+                assert.strictEqual(v.s, 22, '视频大小不对');
+                assert.ok(i.t > 0, '缺修改时间（下载目录页要按它排序）');
+            } finally {
+                try{ fs.rmSync(path.join(TMP, img), { force: true }); }catch(e){}
+                try{ fs.rmSync(path.join(TMP, 'videos', vid), { force: true }); }catch(e){}
+            }
+        });
+
+        await checkAsync('下载目录页：带 ?k=video 进来时预置成只显示视频', async () => {
+            const r = await request(port, { path: '/?k=video' });
+            assert.strictEqual(r.status, 200);
+            // 页面脚本必须读 location.search，否则从「视频下载」跳过来还是显示全部
+            assert.ok(/new URLSearchParams\(location\.search\)/.test(r.body), '页面没读 URL 参数');
+            assert.ok(/initKind === 'image' \|\| initKind === 'video'/.test(r.body), '没校验 k 的取值');
+            assert.ok(/QS\.get\('q'\)/.test(r.body), '没支持 ?q= 预置关键词');
+        });
+
         // ── 大视频：超时必须是「没有新数据」而不是「总共下太久」──
         // 一个 4K 视频几 GB，慢网速下正常就要下半小时以上。用绝对超时会全部判死。
         const slowServer = http.createServer((req, res) => {

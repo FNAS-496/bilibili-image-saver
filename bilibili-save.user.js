@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.10.4
+// @version      0.10.5
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -2863,7 +2863,8 @@
                     });
                     countEl.textContent = downloaded.size;
                     const c = countResults(json);
-                    showToast(`✅ 全部下载完成：新增 ${c.saved} 张，已存在 ${c.exists} 张，失败 ${c.failed} 张`);
+                    showToast(`✅ 全部下载完成：新增 ${c.saved} 张，已存在 ${c.exists} 张，失败 ${c.failed} 张`
+                        + (IS_PORTABLE ? '' : '\n想看已存的图？右下角「📁 下载目录」'));
                     close();
                 }
             } finally {
@@ -3219,6 +3220,37 @@
     }
     const getSaveDir = () => serverApi('/getdir');
     const setSaveDir = (dir) => serverApi('/setdir', { dir });
+
+    // 本地下载目录清单（服务端 /list）。用途：把**磁盘上真实存在**的文件也算作「已下载」，
+    // 不再只信 IndexedDB 记账 —— 换机器、清了站点数据、换过保存目录时记账都会失真，
+    // 用户就会重复下载一大堆已经存在的文件。缓存 30 秒，避免每次开面板都打一次。
+    const LOCAL_DIR_TTL = 30000;
+    let localDirCache = { at: 0, data: null };
+    async function localDirList(force){
+        if(IS_PORTABLE) return null;                   // 便携版没有本地服务，只能靠 IndexedDB 记账
+        if(!force && localDirCache.data && Date.now() - localDirCache.at < LOCAL_DIR_TTL) return localDirCache.data;
+        const r = await serverApi('/list');
+        if(!r || !r.ok) return null;
+        localDirCache = { at: Date.now(), data: r };
+        return r;
+    }
+    // 打开本地「下载目录」页（图片 + 视频，带搜索/筛选/播放）。kind 可选 'image' | 'video'
+    const dirPageUrl = (kind) => 'http://127.0.0.1:8765/' + (kind ? ('?k=' + kind) : '');
+    function openDirPage(kind){
+        if(IS_PORTABLE){
+            showToast('📁 下载目录页只有环境版有（便携版不跑本地服务）\n文件在你的浏览器「下载」文件夹里');
+            return;
+        }
+        window.open(dirPageUrl(kind), '_blank', 'noopener');
+    }
+    // 从已下载的视频文件名里反推 videoKey（服务端命名规则：标题_bvid[_c<cid>][.video].ext）
+    function keyFromVideoFileName(name){
+        const s = String(name || '');
+        // (?:\.[0-9A-Za-z]+)+ 用来吃掉多段扩展名（音画分开存时叫 xxx.video.mp4 / xxx.audio.m4a）
+        const m = /(BV[0-9A-Za-z]+)(?:_c(\d+))?(?:\.[0-9A-Za-z]+)+$/.exec(s);
+        if(!m) return '';
+        return m[1] + (m[2] ? '#' + m[2] : '');
+    }
 
     // ========================================================================
     // 十二、设置面板
@@ -4136,6 +4168,7 @@
             '<div class="bp-foot" style="margin-top:10px;">' +
             '<label class="bp-check" title="只勾选尚未下载的视频，避免重复下载"><input type="checkbox" id="bili-video-all"> 全选未下载</label>' +
             '<button id="bili-video-clear" class="bp-btn bp-btn--sm">清空</button>' +
+            '<button id="bili-video-dirpage" class="bp-btn bp-btn--sm" title="打开本地下载目录（只看视频，可搜索 / 播放）">📁 下载目录</button>' +
             '<span class="bp-foot__spacer"></span>' +
             '<button id="bili-video-dl" class="bp-btn bp-btn--primary">下载选中</button>' +
             '<button id="bili-video-close" class="bp-btn bp-btn--ghost">关闭</button>' +
@@ -4646,6 +4679,10 @@
             });
         }
 
+        // ── 打开本地下载目录（只看视频）──
+        const dirPageEl = panel.querySelector('#bili-video-dirpage');
+        if(dirPageEl) dirPageEl.addEventListener('click', () => openDirPage('video'));
+
         // ── 初始化：先渲染当前视频，再异步拉取合集视频 ──
         // 显示实际保存位置：避免用户下载完不知道文件存到哪（便携版会把目录放在自己的文件夹内）
         getSaveDir().then(info => {
@@ -4685,21 +4722,18 @@
         // 注意：这里不做 state.items 过滤 —— 合集项是稍后才异步合并进来的，
         // 先把 bvid 全部记入 state.downloaded，render 时再动态判断，避免漏标。
         (async () => {
-            const list = await serverApi('/video/list');
-            if(!list || !Array.isArray(list.videos) || !list.videos.length) return;
+            const r = await localDirList();
+            const vids = (r && Array.isArray(r.videos)) ? r.videos : [];
+            if(!vids.length) return;
             let hit = 0;
-            for(const v of list.videos){
-                // 文件名可能是 xxx_BV号.mp4 / xxx_BV号_c<cid>.mp4 / xxx_BV号.video.mp4
-                const m = /_(BV[0-9A-Za-z]{10})(?:_c(\d+))?(?:\.[0-9A-Za-z]+)+$/.exec(String(v.name || ''));
-                if(m){
-                    const key = m[2] ? (m[1] + '#' + m[2]) : m[1];       // 多 P 分 P 靠 cid 区分，不能只认 BV 号
-                    if(!state.downloaded.has(key)){
-                        state.downloaded.add(key);
-                        hit++;
-                    }
+            for(const v of vids){
+                const key = keyFromVideoFileName(v.n);
+                if(key && !state.downloaded.has(key)){
+                    state.downloaded.add(key);
+                    hit++;
                 }
             }
-            if(hit){ render(); refreshDlBtn(); }
+            if(hit){ render(); refreshDlBtn(); refreshFilterInfo(); }
         })();
 
         (async () => {
@@ -4842,6 +4876,7 @@
         themeBtn.title = '点击切换到下一个主题（当前：' + (THEME_SHORT[curTheme] || curTheme) + '）';
         mkSub('⚙️ 设置', 'accent', openSettingsPanel);
         mkSub('📹 视频下载', 'pink', openVideoPanel);
+        mkSub('📁 下载目录', 'accent', () => openDirPage());
         const saveBtn = mkSub('⬇️ 提取并保存', 'accent', () => {
             saveBtn.disabled = true;
             saveBtn.textContent = '正在提取...';

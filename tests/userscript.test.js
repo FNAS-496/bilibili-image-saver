@@ -353,6 +353,35 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
 
     // 大视频：一个 4K 几 GB，慢网速正常要下半小时以上。
     // 超时必须是「多久没收到数据」，不能用「一开始就定死的总时长」，否则大视频全被判死。
+    check(label + '：下载目录页已接入「提取图片」「视频下载」', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        // 三个入口：FAB 菜单、视频面板底部、提取完成提示
+        assert.ok(/mkSub\('📁 下载目录'/.test(t), '右下角菜单缺「📁 下载目录」');
+        assert.ok(/id="bili-video-dirpage"/.test(t), '视频面板底部缺「📁 下载目录」按钮');
+        assert.ok(/openDirPage\('video'\)/.test(t), '视频面板的目录按钮没带「只看视频」');
+        assert.ok(/openDirPage\(\)/.test(t), '菜单里的目录入口没接上');
+        assert.ok(/想看已存的图？右下角「📁 下载目录」/.test(t), '提取完成后没提示去哪看');
+        // 从「提取图片 / 视频下载」跳过去时要预置筛选，否则用户还得自己再点一次
+        assert.ok(/function openDirPage\(kind\)/.test(t), '缺 openDirPage');
+        assert.ok(/\?k=/.test(t), '跳转链接没带 ?k= 筛选参数');
+        // 便携版没有本地服务：点了要给明确提示，不能静默失败
+        assert.ok(/if\(IS_PORTABLE\)\{[\s\S]{0,140}下载目录页只有环境版有/.test(t), '便携版点目录没提示');
+    });
+
+    check(label + '：「已下载」以磁盘真实文件为准，不只信 IndexedDB 记账', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/async function localDirList\(force\)/.test(t), '缺 localDirList');
+        assert.ok(/serverApi\('\/list'\)/.test(t), 'localDirList 没调 /list');
+        assert.ok(/const r = await localDirList\(\)/.test(t), '视频面板没把磁盘清单并进已下载');
+        assert.ok(/function keyFromVideoFileName\(name\)/.test(t), '缺文件名 → videoKey 的解析');
+        // 多段扩展名（音画分开存叫 xxx.video.mp4）也要认出来
+        assert.ok(/\(\?:\\\.\[0-9A-Za-z\]\+\)\+\$/.test(t), '文件名解析没处理多段扩展名');
+        // 便携版没有本地服务，本地清单要直接返回 null，别去请求 8765
+        assert.ok(/if\(IS_PORTABLE\) return null;/.test(t), 'localDirList 没排除便携版');
+    });
+
+    // 大视频：一个 4K 几 GB，慢网速正常要下半小时以上。
+    // 超时必须是「多久没收到数据」，不能用「一开始就定死的总时长」，否则大视频全被判死。
     check(label + '：下载超时是「没数据才放弃」，不是「总共只准下 N 分钟」', () => {
         const t = fs.readFileSync(file, 'utf8');
         for (const fn of ['async function fetchBytes(', 'async function fetchToDir(']) {

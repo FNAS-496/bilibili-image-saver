@@ -877,6 +877,20 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    // 本地目录清单：给油猴脚本用（「提取图片」「视频下载」据此把磁盘上真实存在的文件
+    // 算作「已下载」）。只回文件名/大小/时间，不回内容。
+    if(req.method === 'GET' && (req.url === '/list' || req.url.indexOf('/list?') === 0)){
+        res.writeHead(200, {'Content-Type':'application/json', 'Cache-Control':'no-store'});
+        res.end(JSON.stringify({
+            ok: true,
+            dir: OUT_DIR,
+            videoDir: VIDEO_OUT_DIR,
+            images: listFilesBrief(OUT_DIR, /\.(png|jpe?g|gif|webp|bmp|avif)$/i),
+            videos: listFilesBrief(VIDEO_OUT_DIR, /\.(mp4|m4s|flv|m4a)$/i)
+        }));
+        return;
+    }
+
     // ── 下载目录浏览页（图片 + 视频，带搜索 / 筛选 / 排序）──
     // 文件清单一次性以 JSON 内联进页面，搜索与筛选全在浏览器里做（零延迟）；
     // 缩略图走 loading="lazy"，几千张也不会一次性把带宽吃光。
@@ -991,7 +1005,12 @@ const server = http.createServer((req, res) => {
 const FILES = ${json};
 const $ = id => document.getElementById(id);
 const grid = $('grid'), empty = $('empty');
-let kind = 'all', sortBy = 'new', q = '';
+// 支持从脚本里带参跳过来：?k=image / ?k=video 预置类型，?q=xxx 预置关键词
+const QS = new URLSearchParams(location.search);
+const initKind = QS.get('k');
+let kind = (initKind === 'image' || initKind === 'video') ? initKind : 'all';
+let sortBy = 'new';
+let q = QS.get('q') || '';
 
 const fmtSize = b => b < 1024 ? b + ' B'
   : b < 1048576 ? (b / 1024).toFixed(1) + ' KB'
@@ -1075,6 +1094,12 @@ document.addEventListener('keydown', e => {
   else if(e.key === 'Escape' && document.activeElement === $('q')){ $('q').value=''; q=''; $('searchWrap').classList.remove('has-val'); apply(); }
 });
 
+// 应用 URL 里带来的初始状态（从脚本「提取图片 / 视频下载」跳过来时只显示对应类型）
+if(q){ $('q').value = q; $('searchWrap').classList.add('has-val'); }
+if(kind !== 'all'){
+  [...$('kind').children].forEach(x => x.setAttribute('aria-pressed', String(x.dataset.k === kind)));
+}
+
 apply();
 </script>
 </body></html>`;
@@ -1122,6 +1147,22 @@ apply();
     res.writeHead(404);
     res.end();
 });
+
+// 列目录里的文件（只要名字/大小/时间，给 /list 用）
+function listFilesBrief(dir, re){
+    const out = [];
+    let names = [];
+    try{ names = fs.readdirSync(dir); }catch(e){ return out; }
+    for(const n of names){
+        if(!re.test(n)) continue;
+        try{
+            const st = fs.statSync(path.join(dir, n));
+            if(st.isFile()) out.push({ n, s: st.size, t: Math.round(st.mtimeMs) });
+        }catch(e){}
+    }
+    out.sort((a, b) => b.t - a.t);
+    return out;
+}
 
 // 清理上次异常退出遗留的下载半成品（.tmp_*）。大视频中断会留下 GB 级垃圾，
 // 不清就会一直占着盘。只动 24 小时以前的：万一同一个目录被另一个实例正在用，
