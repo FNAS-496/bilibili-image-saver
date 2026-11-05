@@ -353,13 +353,49 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
 
     // 大视频：一个 4K 几 GB，慢网速正常要下半小时以上。
     // 超时必须是「多久没收到数据」，不能用「一开始就定死的总时长」，否则大视频全被判死。
+    check(label + '：控制中心是「一屏直操」，不是「先菜单再点一项」', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/function openControlCenter\(\)/.test(t), '缺 openControlCenter');
+        assert.ok(/panel\.id = 'bili-control-center'/.test(t), '控制中心没有固定 id（无法测试/无法重复打开收起）');
+        // 三个最高频动作必须在首屏
+        for (const id of ['bili-cc-extract', 'bili-cc-video', 'bili-cc-dir']) {
+            assert.ok(t.includes('id="' + id + '"'), '控制中心缺动作按钮：' + id);
+        }
+        // 主题四选一就地可改（不再靠「循环点」）
+        assert.ok(/bp-cc-theme/.test(t), '控制中心没有主题四选一');
+        assert.ok(/data-theme="' \+ t \+ '"/.test(t), '主题按钮没带 data-theme');
+        // 常用开关就地可改
+        for (const id of ['bili-cc-autorun', 'bili-cc-dedupe']) {
+            assert.ok(t.includes('id="' + id + '"'), '控制中心缺开关：' + id);
+        }
+        assert.ok(/bp-cc-mode/.test(t), '控制中心没有下载模式切换');
+        // 细节仍收在设置面板里，不重复造一套
+        assert.ok(/id="bili-cc-settings"/.test(t) && /openSettingsPanel\(\)/.test(t), '控制中心没给「更多设置」入口');
+        // 旧的平铺菜单应当彻底移除
+        assert.ok(!/mkSub\(/.test(t), '还在用旧的平铺菜单 mkSub');
+        assert.ok(!/class="bp-fab__menu"/.test(t), '还在渲染旧的展开菜单');
+        assert.ok(!/THEME_CYCLE/.test(t), '还有没人用的主题循环常量');
+    });
+
+    check(label + '：悬浮按钮单击开控制中心、右键一键提取', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/rootBtn\.addEventListener\('click', openControlCenter\)/.test(t), '单击没接控制中心');
+        assert.ok(/rootBtn\.addEventListener\('contextmenu'/.test(t), '右键没接一键提取');
+        assert.ok(/rootBtn\.title = '[^']*右键 = 直接提取/.test(t), '按钮没告诉用户右键能直接提取');
+        // 再点一次要收起，否则会觉得按钮失灵
+        assert.ok(/if\(document\.getElementById\('bili-control-center'\)\)\{[\s\S]{0,120}closeControlCenter\(\)/.test(t),
+            '再点一次没收起');
+        // 面板开着时 toast 要让位（bp-cc-open 把它挪到面板左侧）
+        assert.ok(/classList\.add\('bp-fab-open', 'bp-cc-open'\)/.test(t), '打开时没同步 bp-fab-open / bp-cc-open');
+        assert.ok(/classList\.remove\('bp-fab-open', 'bp-cc-open'\)/.test(t), '关闭时没清掉 bp-fab-open / bp-cc-open');
+    });
+
     check(label + '：下载目录页已接入「提取图片」「视频下载」', () => {
         const t = fs.readFileSync(file, 'utf8');
-        // 三个入口：FAB 菜单、视频面板底部、提取完成提示
-        assert.ok(/mkSub\('📁 下载目录'/.test(t), '右下角菜单缺「📁 下载目录」');
+        assert.ok(/id="bili-cc-dir"/.test(t), '控制中心缺「📁 下载目录」');
         assert.ok(/id="bili-video-dirpage"/.test(t), '视频面板底部缺「📁 下载目录」按钮');
         assert.ok(/openDirPage\('video'\)/.test(t), '视频面板的目录按钮没带「只看视频」');
-        assert.ok(/openDirPage\(\)/.test(t), '菜单里的目录入口没接上');
+        assert.ok(/openDirPage\(\)/.test(t), '控制中心的目录入口没接上');
         assert.ok(/想看已存的图？右下角「📁 下载目录」/.test(t), '提取完成后没提示去哪看');
         // 从「提取图片 / 视频下载」跳过去时要预置筛选，否则用户还得自己再点一次
         assert.ok(/function openDirPage\(kind\)/.test(t), '缺 openDirPage');

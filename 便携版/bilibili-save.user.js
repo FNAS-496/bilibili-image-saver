@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）（便携版·无需环境）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader (Portable)
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.10.5
+// @version      0.11.0
 // @author       FNAS-496 <sijiudeliu@outlook.com>
 // @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、四套主题（跟随系统/云白/夜空/樱花）（默认不自动下载，需点击按钮）；便携版纯浏览器运行，无需安装任何环境）
 // @description:en Bilibili-Plus: auto-download original images from Bilibili favorites, dynamics, opus and space pages; video batch download, review mode, custom keys (needs the local server started via "一键启动.bat")
@@ -437,11 +437,13 @@
                 '.bp-fab__dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.85;}',
                 '',
                 '/* ===== 状态浮窗 / 提示 ===== */',
-                '/* 位置用变量控制：悬浮菜单展开时（html.bp-fab-open）整体上移，',
-                '   免得提示被弹出的按钮压住（两者都在右下角） */',
-                ':root{--bp-toast-bottom:88px;}',
+                '/* 位置用变量控制，两个场景要让位，否则提示会盖住面板内容：',
+                '   · bp-fab-open：旧式悬浮菜单展开 → 上移',
+                '   · bp-cc-open ：控制中心面板在右侧很高 → 挪到面板左边的空白处 */',
+                ':root{--bp-toast-bottom:88px;--bp-toast-right:20px;}',
                 ':root.bp-fab-open{--bp-toast-bottom:280px;}',
-                '.bp-toast{position:fixed;right:20px;bottom:var(--bp-toast-bottom);z-index:var(--bp-z-toast);',
+                ':root.bp-cc-open{--bp-toast-bottom:24px;--bp-toast-right:416px;}',
+                '.bp-toast{position:fixed;right:var(--bp-toast-right);bottom:var(--bp-toast-bottom);z-index:var(--bp-z-toast);',
                 '    max-width:360px;min-width:190px;padding:10px 14px;border-radius:var(--bp-radius-lg);',
                 '    background:var(--bp-toast-bg);color:var(--bp-toast-fg);',
                 '    border:1px solid rgba(255,255,255,.08);box-shadow:0 10px 32px rgba(0,0,0,.35);',
@@ -507,6 +509,8 @@
                 '        max-width:none !important;bottom:12px !important;',
                 '        max-height:calc(100vh - 24px) !important;}',
                 '    .bp-toast{left:12px;right:12px;max-width:none;}',
+                '    /* 全宽面板会占满底部，提示只能挪到最上面，否则一定被盖住 */',
+                '    :root.bp-cc-open{--bp-toast-bottom:calc(100vh - 120px);--bp-toast-right:12px;}',
                 '}',
                 '',
                 '/* ===== 尊重「减少动态效果」系统设置 ===== */',
@@ -4828,12 +4832,10 @@
     // ========================================================================
     // 十四、悬浮按钮与启动
     // ========================================================================
-    // 主题循环切换：跟随系统 → 云白 → 夜空 → 樱花 → …（纯 CSS 变量，即时生效，不用刷新页面）
-    const THEME_CYCLE = ['auto', 'cloud', 'midnight', 'sakura'];
+    // 主题：四选一，点一下即时生效（纯 CSS 变量，不用刷新页面）
     const THEME_ICON = { auto: '🌗', cloud: '☀️', midnight: '🌙', sakura: '🌸' };
     const THEME_SHORT = { auto: '跟随系统', cloud: '云白', midnight: '夜空', sakura: '樱花' };
-    const themeButtonText = t => (THEME_ICON[t] || '🎨') + ' ' + (THEME_SHORT[t] || t);
-    // 当前主题的唯一真相源：悬浮菜单和设置面板都从这里读，改一处即可
+    // 当前主题的唯一真相源：控制中心和设置面板都从这里读，改一处即可
     const themeState = { current: 'auto' };
     function setTheme(t){
         const n = applyTheme(t);
@@ -4842,72 +4844,187 @@
         return n;
     }
 
+    // ========================================================================
+    // 十一、控制中心（点右下角按钮直接打开）
+    // ========================================================================
+    // 为什么不是「先弹菜单再点一项」：功能一多，一层平铺的菜单就开始挤，
+    // 而且「主题」这种开关混在功能按钮里很别扭。控制中心把最高频的三件事
+    // （提取图片 / 视频下载 / 打开下载目录）放最上面，主题与常用开关就地可改，
+    // 细节仍然收在「更多设置」里，不重复造面板。
+    function closeControlCenter(){
+        const el = document.getElementById('bili-control-center');
+        if(el) el.remove();
+        document.documentElement.classList.remove('bp-fab-open', 'bp-cc-open');
+        const fab = document.querySelector('.bp-fab');
+        if(fab) fab.setAttribute('aria-expanded', 'false');
+    }
+
+    function openControlCenter(){
+        // 再点一次 = 收起（和悬浮按钮的心智一致）
+        if(document.getElementById('bili-control-center')){
+            closeControlCenter();
+            return;
+        }
+        injectUiCss();
+        const s = Object.assign({}, DEFAULT_SETTINGS, loadSettings());
+        const panel = document.createElement('div');
+        panel.id = 'bili-control-center';
+        panel.className = 'bp-panel';
+        panel.style.cssText = 'right:20px;bottom:88px;width:380px;max-height:calc(100vh - 120px);';
+
+        const curTheme = themeState.current;
+        const themeSeg = TH ? TH.THEMES.map(t =>
+            '<button class="bp-seg__item bp-cc-theme" data-theme="' + t + '" aria-pressed="' + (t === curTheme ? 'true' : 'false') + '">' +
+            (THEME_ICON[t] || '') + ' ' + (THEME_SHORT[t] || t) + '</button>').join('') : '';
+
+        panel.innerHTML =
+            '<div class="bp-head">' +
+                '<span class="bp-head__icon">🐾</span>' +
+                '<span class="bp-head__title">Bilibili-Plus</span>' +
+                '<button class="bp-close" id="bili-cc-x" aria-label="关闭">✕</button>' +
+            '</div>' +
+            '<div class="bp-scroll">' +
+                // 下载：最高频的三件事放最上面，少点一层是一层
+                '<div class="bp-section">' +
+                    '<div class="bp-section__title">⬇️ 下载</div>' +
+                    '<button id="bili-cc-extract" class="bp-btn bp-btn--primary bp-btn--block" style="margin-bottom:8px;">⬇️ 提取图片并保存</button>' +
+                    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">' +
+                        '<button id="bili-cc-video" class="bp-btn bp-btn--sm">📹 视频下载</button>' +
+                        '<button id="bili-cc-dir" class="bp-btn bp-btn--sm">📁 下载目录</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="bp-section">' +
+                    '<div class="bp-section__title">🎨 主题</div>' +
+                    '<div class="bp-seg" role="group" aria-label="主题">' + themeSeg + '</div>' +
+                '</div>' +
+                '<div class="bp-section">' +
+                    '<div class="bp-section__title">📂 保存位置</div>' +
+                    '<div class="bp-hint" id="bili-cc-dirpath" style="word-break:break-all;">读取中…</div>' +
+                    '<button id="bili-cc-changedir" class="bp-btn bp-btn--sm" style="margin-top:8px;">更改…</button>' +
+                '</div>' +
+                '<div class="bp-section">' +
+                    '<div class="bp-section__title">⚡ 快捷开关</div>' +
+                    '<label class="bp-check" style="margin-bottom:8px;"><input type="checkbox" id="bili-cc-autorun"' + (s.autoRun ? ' checked' : '') + '> 打开页面自动提取</label>' +
+                    '<label class="bp-check"><input type="checkbox" id="bili-cc-dedupe"' + (s.dedupe ? ' checked' : '') + '> 跳过已下载过的文件</label>' +
+                    '<div class="bp-label" style="margin-top:10px;">下载模式</div>' +
+                    '<div class="bp-seg" role="group" aria-label="下载模式">' +
+                        '<button class="bp-seg__item bp-cc-mode" data-mode="auto" aria-pressed="' + (s.downloadMode !== 'review' ? 'true' : 'false') + '">⬇️ 自动下载</button>' +
+                        '<button class="bp-seg__item bp-cc-mode" data-mode="review" aria-pressed="' + (s.downloadMode === 'review' ? 'true' : 'false') + '">🔍 审查模式</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="bp-section">' +
+                    '<div class="bp-section__title">ℹ️ 帮助</div>' +
+                    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">' +
+                        '<button id="bili-cc-intro" class="bp-btn bp-btn--sm">📖 功能介绍</button>' +
+                        '<button id="bili-cc-donate" class="bp-btn bp-btn--sm">💝 打赏</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+            '<div class="bp-foot">' +
+                '<button id="bili-cc-settings" class="bp-btn bp-btn--sm bp-btn--ghost">⚙️ 更多设置</button>' +
+                '<span class="bp-foot__spacer"></span>' +
+                '<button id="bili-cc-close" class="bp-btn bp-btn--ghost">关闭</button>' +
+            '</div>';
+        document.body.appendChild(panel);
+        // 状态浮窗在右下角：控制中心很高，让它挪到面板左边，别压在面板内容上
+        document.documentElement.classList.add('bp-fab-open', 'bp-cc-open');
+        const fab = document.querySelector('.bp-fab');
+        if(fab) fab.setAttribute('aria-expanded', 'true');
+
+        panel.querySelector('#bili-cc-x').addEventListener('click', closeControlCenter);
+        panel.querySelector('#bili-cc-close').addEventListener('click', closeControlCenter);
+        panel.addEventListener('keydown', e => {
+            if(e.key === 'Escape'){ e.stopPropagation(); closeControlCenter(); }
+        });
+
+        // ── 三个下载入口 ──
+        const extractBtn = panel.querySelector('#bili-cc-extract');
+        extractBtn.addEventListener('click', () => {
+            extractBtn.disabled = true;
+            extractBtn.textContent = '正在提取…';
+            collectAndSave().finally(() => {
+                extractBtn.disabled = false;
+                extractBtn.textContent = '⬇️ 提取图片并保存';
+            });
+        });
+        panel.querySelector('#bili-cc-video').addEventListener('click', () => { closeControlCenter(); openVideoPanel(); });
+        panel.querySelector('#bili-cc-dir').addEventListener('click', () => openDirPage());
+
+        // ── 主题：点了立刻生效并落盘，不用点保存 ──
+        panel.querySelectorAll('.bp-cc-theme').forEach(b => {
+            b.addEventListener('click', () => {
+                const t = b.getAttribute('data-theme');
+                setTheme(t);
+                panel.querySelectorAll('.bp-cc-theme').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+                showToast('🎨 主题已切换为「' + (THEME_SHORT[t] || t) + '」');
+            });
+        });
+
+        // ── 保存位置 ──
+        const pathEl = panel.querySelector('#bili-cc-dirpath');
+        if(IS_PORTABLE){
+            pathEl.textContent = (s.portableSave === 'dir' && FSA_SUPPORTED)
+                ? '浏览器授权目录（便携版）'
+                : '浏览器「下载」文件夹（便携版打包成 ZIP）';
+        } else {
+            pathEl.textContent = s.saveDir || '默认：桌面「B站下载」';
+            getSaveDir().then(info => {
+                if(info && info.dir) pathEl.textContent = info.dir + (info.dir.indexOf('\\') >= 0 ? '\\' : '/') + '（视频在 videos 子目录）';
+                else if(!info) pathEl.textContent = '未连接本地服务（请双击「一键启动.bat」）';
+            });
+        }
+        panel.querySelector('#bili-cc-changedir').addEventListener('click', () => {
+            closeControlCenter();
+            openSettingsPanel();
+        });
+
+        // ── 快捷开关 ──
+        const saveSwitch = (patch) => saveSettings(Object.assign({}, DEFAULT_SETTINGS, loadSettings(), patch));
+        panel.querySelector('#bili-cc-autorun').addEventListener('change', e => {
+            saveSwitch({ autoRun: e.target.checked });
+            showToast(e.target.checked ? '✅ 打开页面会自动提取' : '✅ 已关闭自动提取');
+        });
+        panel.querySelector('#bili-cc-dedupe').addEventListener('change', e => {
+            saveSwitch({ dedupe: e.target.checked });
+            showToast(e.target.checked ? '✅ 会跳过已下载过的文件' : '✅ 已关闭查重');
+        });
+        panel.querySelectorAll('.bp-cc-mode').forEach(b => {
+            b.addEventListener('click', () => {
+                const mode = b.getAttribute('data-mode');
+                saveSwitch({ downloadMode: mode });
+                panel.querySelectorAll('.bp-cc-mode').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+                showToast(mode === 'review' ? '🔍 已切到审查模式（逐张确认）' : '⬇️ 已切到自动下载');
+            });
+        });
+
+        // ── 帮助 ──
+        panel.querySelector('#bili-cc-intro').addEventListener('click', () => { closeControlCenter(); openFeatureIntroPanel(); });
+        panel.querySelector('#bili-cc-donate').addEventListener('click', () => { closeControlCenter(); showDonatePanel({}); });
+        panel.querySelector('#bili-cc-settings').addEventListener('click', () => { closeControlCenter(); openSettingsPanel(); });
+
+        // 焦点进面板，键盘用户能直接 Tab / Esc
+        try{ panel.querySelector('#bili-cc-extract').focus(); }catch(e){}
+    }
+
     // 创建右下角悬浮按钮组
     function makeButton(){
         injectUiCss();
         const wrap = document.createElement('div');
         wrap.className = 'bp-fab-wrap';
 
-        const menu = document.createElement('div');
-        menu.className = 'bp-fab__menu';
-        menu.hidden = true;
-        wrap.appendChild(menu);
-
-        // 说明：mkSub() 的副作用就是创建按钮并挂进菜单；
-        // 只有需要动态改文案/禁用状态的按钮（如 saveBtn、themeBtn）才需要接收返回值。
-        const mkSub = (text, tone, onClick) => {
-            const b = document.createElement('button');
-            b.className = 'bp-fab__item';
-            if(tone) b.setAttribute('data-tone', tone);
-            b.textContent = text;
-            b.addEventListener('click', onClick);
-            menu.appendChild(b);
-            return b;
-        };
-
-        let curTheme = themeState.current;
-        const themeBtn = mkSub(themeButtonText(curTheme), 'amber', () => {
-            const i = THEME_CYCLE.indexOf(curTheme);
-            curTheme = setTheme(THEME_CYCLE[(i + 1) % THEME_CYCLE.length]);
-            themeBtn.textContent = themeButtonText(curTheme);
-            themeBtn.title = '点击切换到下一个主题（当前：' + (THEME_SHORT[curTheme] || curTheme) + '）';
-            showToast('🎨 主题已切换为「' + (THEME_SHORT[curTheme] || curTheme) + '」');
-        });
-        themeBtn.title = '点击切换到下一个主题（当前：' + (THEME_SHORT[curTheme] || curTheme) + '）';
-        mkSub('⚙️ 设置', 'accent', openSettingsPanel);
-        mkSub('📹 视频下载', 'pink', openVideoPanel);
-        mkSub('📁 下载目录', 'accent', () => openDirPage());
-        const saveBtn = mkSub('⬇️ 提取并保存', 'accent', () => {
-            saveBtn.disabled = true;
-            saveBtn.textContent = '正在提取...';
-            collectAndSave().finally(() => {
-                saveBtn.disabled = false;
-                saveBtn.textContent = '⬇️ 提取并保存';
-            });
-        });
-
         const rootBtn = document.createElement('button');
         rootBtn.className = 'bp-fab';
         rootBtn.innerHTML = '<span class="bp-fab__dot"></span>Bilibili-Plus';
-        const setOpen = (open) => {
-            menu.hidden = !open;
-            // 让状态浮窗跟着上移，否则弹出的菜单会把提示压住（两者都在右下角）
-            document.documentElement.classList.toggle('bp-fab-open', open);
-            rootBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-        };
-        setOpen(false);
-        rootBtn.addEventListener('click', () => {
-            const open = menu.hidden;
-            // 菜单要展开了才刷新主题按钮文案（设置面板里可能刚换过主题）
-            if(open){
-                curTheme = themeState.current;
-                themeBtn.textContent = themeButtonText(curTheme);
-                themeBtn.title = '点击切换到下一个主题（当前：' + (THEME_SHORT[curTheme] || curTheme) + '）';
-            }
-            setOpen(open);
+        rootBtn.title = 'Bilibili-Plus：打开控制中心\n右键 = 直接提取图片并保存';
+        rootBtn.setAttribute('aria-expanded', 'false');
+        rootBtn.setAttribute('aria-haspopup', 'dialog');
+        // 单击 = 控制中心（一屏直操）；右键 = 跳过一切直接提取，最高频操作零层级
+        rootBtn.addEventListener('click', openControlCenter);
+        rootBtn.addEventListener('contextmenu', e => {
+            e.preventDefault();
+            showToast('⬇️ 开始提取图片…');
+            collectAndSave();
         });
-        // 点完任一项就收起菜单：否则弹出的面板会正好盖住菜单，看着像卡住了
-        menu.addEventListener('click', () => setOpen(false));
         wrap.appendChild(rootBtn);
         document.body.appendChild(wrap);
     }
