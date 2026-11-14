@@ -481,7 +481,7 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         assert.ok(/const renderUpInfo = \(url\) =>/.test(t), '缺 renderUpInfo');
         // render() 必须带上当前图片的 URL
         const at = t.indexOf('const render = () => {');
-        const seg = t.slice(at, at + 500);
+        const seg = t.slice(at, at + 900);
         assert.ok(/renderUpInfo\(cur\)/.test(seg), 'render() 没按当前图刷新 UP 信息');
         // 一页多条动态时，整页取第一个的结果不可信，不能拿来兜底
         assert.ok(/const multiAuthorPage = /.test(t), '没有区分「一页多条动态」的页面');
@@ -515,6 +515,65 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         assert.ok(!/if\(!upName && st\.opusData && st\.opusData\.title\)/.test(t),
             'st.opusData 的文案条件还是写反的（应该判 upText）');
         assert.ok(/if\(!upText && st\.opusData && st\.opusData\.title\)/.test(t), '缺 opusData 文案兜底');
+    });
+
+    check(label + '：自动续载 = 隐形锚点 + 优先点「加载更多」', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/const AUTO_MORE_ID = 'bili-auto-more'/.test(t), '缺隐形锚点 id');
+        assert.ok(/function ensureAutoMoreAnchor\(\)/.test(t), '缺 ensureAutoMoreAnchor');
+        // 锚点必须是 1×1 + 透明 + 不挡点击，且**不能** display:none（隐藏元素不会被 IO 观察到）
+        const at = t.indexOf('function ensureAutoMoreAnchor()');
+        const seg = t.slice(at, at + 900);
+        assert.ok(/width:1px;height:1px/.test(seg), '锚点不是 1×1');
+        assert.ok(/opacity:0/.test(seg), '锚点不是透明');
+        assert.ok(/pointer-events:none/.test(seg), '锚点会挡住鼠标');
+        // 只看真正写进 cssText 的那串样式（注释里提到 display:none 是说明文字，不算）
+        const css = /a\.style\.cssText = '([^']+)'/.exec(seg);
+        assert.ok(css, '没找到锚点的 cssText 赋值');
+        assert.ok(css[1].indexOf('display:none') < 0, '锚点真的用了 display:none（触发不了无限滚动）');
+        // 有按钮优先点，没有才滚动
+        assert.ok(/function findLoadMoreControl\(\)/.test(t), '缺 findLoadMoreControl');
+        const once = t.slice(t.indexOf('async function autoLoadMoreOnce'), t.indexOf('async function autoLoadMoreForImages'));
+        assert.ok(/if\(btn\)\{[\s\S]{0,120}return 'click'/.test(once), '没有「优先点按钮」的分支');
+        assert.ok(/return 'scroll'/.test(once), '没有滚动触发的兜底');
+        assert.ok(/scrollIntoView\(\{ block: 'end'/.test(once), '滚动分支没把锚点滚进视口');
+    });
+
+    check(label + '：审查模式能「一直有图」——翻到尾部自动续载', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/function openReviewPanel\(urls, onDone, opts\)/.test(t), 'openReviewPanel 没接 opts');
+        assert.ok(/const canFetchMore = typeof options\.fetchMore === 'function'/.test(t), '没识别 fetchMore');
+        assert.ok(/const maybeFetchMore = async \(force\) =>/.test(t), '缺 maybeFetchMore');
+        assert.ok(/urls\.push\.apply\(urls, fresh\)/.test(t), '新图没追加进队列（分母不会变大）');
+        // 翻到尾部就探一次，而不是等用户再按一下
+        const renderAt = t.indexOf('const render = () => {');
+        const renderSeg = t.slice(renderAt, renderAt + 1200);
+        assert.ok(/index >= urls\.length - 1 && lastProbedTotal !== urls\.length/.test(renderSeg),
+            'render 里没做「到尾部就探测」');
+        // 键盘与滚轮翻页都要能触发
+        assert.ok(/if\(index >= urls\.length - 1 && canFetchMore && !exhausted\)/.test(t), '翻页没接续载');
+        // 到底后要有明确状态，不能一直显示「还有更多」
+        assert.ok(/const tail = exhausted \? '' :/.test(t), '没有「到底了」的状态');
+        // collectAndSave 要把 fetchMore 传进去
+        assert.ok(/fetchMore: makeFetchMore\(\)/.test(t), 'collectAndSave 没传 fetchMore');
+        assert.ok(/async function autoLoadMoreForImages\(known, maxRounds\)/.test(t), '缺 autoLoadMoreForImages');
+    });
+
+    check(label + '：可以设置每次最多下载 N 张（0 = 不限）', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/maxPerRun: 0,/.test(t), '缺默认值 maxPerRun');
+        assert.ok(/id="bili-max-input"/.test(t), '设置面板缺「每次最多下载」输入框');
+        assert.ok(/id="bili-cc-max"/.test(t), '控制中心缺「每次最多下载」输入框');
+        // 自动下载模式要截断，审查模式交给面板分批
+        assert.ok(/urlsAll\.slice\(0, maxPerRun\)/.test(t), '自动下载没按上限截断');
+        const dlAllStart = t.indexOf('const dlAll = async () => {');
+        const dlAll = t.slice(dlAllStart, dlAllStart + 2200);
+        assert.ok(/remaining = remaining\.slice\(0, maxPerRun\)/.test(dlAll), '「全部下载」没按上限截断');
+        assert.ok(/if\(capped && left > 0\)/.test(dlAll), '达到上限后没有「还有 N 张没下」的分支');
+        assert.ok(/还有 \$\{left\} 张没下/.test(dlAll), '没提示剩余数量');
+        // 参数 0 时按钮文案不能写成「最多 0 张」
+        assert.ok(/\(maxPerRun \? \('全部下载（最多 ' \+ maxPerRun \+ ' 张）'\) : '全部下载'\)/.test(t),
+            '按钮文案没按上限切换');
     });
 
     check(label + '：「已下载」以磁盘真实文件为准，不只信 IndexedDB 记账', () => {

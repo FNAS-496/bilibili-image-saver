@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）（便携版·无需环境）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader (Portable)
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.11.2
+// @version      0.11.3
 // @author       FNAS-496 <sijiudeliu@outlook.com>
 // @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、四套主题（跟随系统/云白/夜空/樱花）（默认不自动下载，需点击按钮）；便携版纯浏览器运行，无需安装任何环境）
 // @description:en Bilibili-Plus: auto-download original images from Bilibili favorites, dynamics, opus and space pages; video batch download, review mode, custom keys (needs the local server started via "一键启动.bat")
@@ -1160,6 +1160,11 @@
         portableVideoSave: 'single',                    // 便携版视频保存方式：single=逐个下载 zip=打包成 ZIP（自动分卷）
         videoQuality: 0,                                // 视频清晰度（B 站画质码）：0 = 自动（最高可用）
         hiResAudio: false,                              // 高音质音轨：优先无损 FLAC / 杜比全景声（需大会员；FLAC 部分播放器不支持，默认关）
+        // 每次最多下载多少张（0 = 不限）。大合集一次下几千张又慢又容易被风控，
+        // 配上「自动续载」就是「下 N 张 → 自动加载下一批 → 再下 N 张」。
+        maxPerRun: 0,
+        // 自动续载：脚本自己触发页面的「加载更多 / 无限滚动」，让审查模式永远有图可审
+        autoLoadMore: false,
         // 「需要本地环境」的功能：只提示一次（避免反复打扰）
         envNotice: true,
         envNoticeShown: false,
@@ -2787,6 +2792,108 @@
     }
 
     // ========================================================================
+    // 自动续载：让页面自己「加载更多」
+    // ========================================================================
+    // 动态列表 / 新版收藏夹都是**无限滚动**：不滚动到底，新内容永远不出现，
+    // 审查模式审到第 20 张就断了。这里注入一个 1×1 的隐形锚点挂在页面最底端，
+    // 需要时把它滚进视口（B 站的 IntersectionObserver 就会去拉下一页）；
+    // 能直接找到「加载更多 / 下一页」按钮时优先点按钮（分页式页面只能这样）。
+    const AUTO_MORE_ID = 'bili-auto-more';
+    const AUTO_MORE_WAIT = 1400;                       // 等页面把新内容渲染出来
+
+    function ensureAutoMoreAnchor(){
+        let a = document.getElementById(AUTO_MORE_ID);
+        if(a) return a;
+        a = document.createElement('a');
+        a.id = AUTO_MORE_ID;
+        a.setAttribute('aria-hidden', 'true');
+        a.setAttribute('tabindex', '-1');
+        a.setAttribute('href', 'javascript:void 0');
+        // 注意：不能用 display:none —— 隐藏元素不会被 IntersectionObserver 观察到，
+        // 也就永远触发不了无限滚动。用 1×1 + opacity:0 才算真正「隐形但存在」。
+        a.style.cssText = 'position:fixed;left:0;bottom:0;width:1px;height:1px;' +
+            'opacity:0;overflow:hidden;pointer-events:none;z-index:-1;';
+        (document.body || document.documentElement).appendChild(a);
+        return a;
+    }
+
+    function elementVisible(el){
+        if(!el) return false;
+        try{
+            const r = el.getBoundingClientRect();
+            if(r.width <= 0 || r.height <= 0) return false;
+            const cs = getComputedStyle(el);
+            return cs.display !== 'none' && cs.visibility !== 'hidden';
+        }catch(e){ return false; }
+    }
+
+    // 页面上「加载更多 / 下一页」的入口（找到就点，比滚动可靠）
+    function findLoadMoreControl(){
+        const sels = [
+            '[class*="load-more"]', '[class*="loadmore"]', '[class*="load_more"]',
+            '.bili-dyn-list__load-more', '[class*="more-btn"]', '[class*="more__btn"]',
+            '.be-pager-next', '[class*="pager"] [class*="next"]', '[class*="pagination"] [class*="next"]',
+            '.bili-fav-sn-pager-next', '[class*="fav"] [class*="next"]'
+        ];
+        for(const sel of sels){
+            for(const el of document.querySelectorAll(sel)){
+                if(!elementVisible(el)) continue;
+                const tag = el.tagName.toLowerCase();
+                if(tag !== 'a' && tag !== 'button' && el.getAttribute('role') !== 'button') continue;
+                if(el.disabled || /disabled/i.test(el.className || '')) continue;
+                const txt = (el.textContent || '').trim();
+                // 「下一页」类按钮有时没有文字，只有图标，所以文字不是必需条件
+                if(txt && /没有更多|到底|无更多|已加载全部/.test(txt)) continue;
+                return el;
+            }
+        }
+        return null;
+    }
+
+    // 触发一次「加载更多」。返回 'click' | 'scroll' | 'none'
+    async function autoLoadMoreOnce(waitMs){
+        const btn = findLoadMoreControl();
+        if(btn){
+            try{ btn.click(); }catch(e){}
+            await sleep(waitMs || AUTO_MORE_WAIT);
+            return 'click';
+        }
+        const a = ensureAutoMoreAnchor();
+        try{
+            // 隐形锚点滚进视口 → 无限滚动的哨兵被触发
+            a.scrollIntoView({ block: 'end', inline: 'nearest' });
+        }catch(e){
+            try{ window.scrollTo(0, document.documentElement.scrollHeight); }catch(_e){}
+        }
+        await sleep(waitMs || AUTO_MORE_WAIT);
+        return 'scroll';
+    }
+
+    // 连续加载，直到图片数量不再增长（或到达上限次数）。返回本次新出现的 URL
+    async function autoLoadMoreForImages(known, maxRounds){
+        const seen = new Set(known || []);
+        const added = [];
+        const rounds = Math.max(1, Math.min(20, maxRounds || 5));
+        let stall = 0;
+        for(let i = 0; i < rounds; i++){
+            const r = await autoLoadMoreOnce();
+            // 再等一小会儿，让图片节点挂上去（有些卡片是图片懒加载才插 src）
+            await sleep(500);
+            const fresh = extractUrlsFromDoc(document).filter(isContentImageUrl).filter(u => !seen.has(u));
+            if(!fresh.length){
+                // 连续两轮没有新图就认为到底了（第一轮可能是刚好在渲染中）
+                if(++stall >= 2) break;
+                continue;
+            }
+            stall = 0;
+            fresh.forEach(u => { seen.add(u); added.push(u); });
+            if(r === 'none') break;
+        }
+        return added;
+    }
+
+
+    // ========================================================================
     // 十、审查模式
     // ========================================================================
     // 键位显示名（ArrowRight → →）：设置面板和审查模式共用
@@ -2805,10 +2912,15 @@
     }
 
     // 审查模式面板：左键位 / 中预览 / 右 UP 信息，三栏布局
-    function openReviewPanel(urls, onDone){
+    // opts.fetchMore : async () => string[]   —— 翻到最后一张时自动加载下一批（「一直有图」）
+    // opts.maxPerRun : number                 —— 每次最多下载多少张（0 = 不限）
+    function openReviewPanel(urls, onDone, opts){
         const existing = document.getElementById('bili-review-panel');
         if(existing) existing.remove();
         injectUiCss();
+        const options = opts || {};
+        const canFetchMore = typeof options.fetchMore === 'function';
+        const maxPerRun = Math.max(0, Number(options.maxPerRun) || 0);
         const s = Object.assign({}, DEFAULT_SETTINGS, loadSettings());
         const keys = Object.assign({}, DEFAULT_SETTINGS.keys, s.keys || {});
         const panel = document.createElement('div');
@@ -2881,7 +2993,8 @@
             '<button id="bili-review-like" class="bp-btn bp-btn--block" style="border-color:#fb7299;color:#fb7299;margin-bottom:8px;">👍 点赞</button>' +
             '<button id="bili-review-fav" class="bp-btn bp-btn--block" style="border-color:#ffa940;color:#ffa940;margin-bottom:8px;">☆ 收藏</button>' +
             '<button id="bili-review-follow" class="bp-btn bp-btn--block" style="border-color:var(--bp-accent);color:var(--bp-accent);margin-bottom:8px;">＋ 关注</button>' +
-            '<button id="bili-review-dl-all" class="bp-btn bp-btn--primary bp-btn--block" style="margin-bottom:8px;">全部下载</button>' +
+            '<button id="bili-review-dl-all" class="bp-btn bp-btn--primary bp-btn--block" style="margin-bottom:8px;">' +
+                (maxPerRun ? ('全部下载（最多 ' + maxPerRun + ' 张）') : '全部下载') + '</button>' +
             '<button id="bili-review-close" class="bp-btn bp-btn--ghost bp-btn--block">退出审查</button>' +
             '</div>' +
             '</div>';
@@ -2891,6 +3004,9 @@
         let index = 0;
         let downloaded = new Set();
         let busy = false;
+        let fetching = false;                          // 正在加载下一批（防止翻页时重复触发）
+        let exhausted = false;                         // 页面已经到底，没有新图了
+        let lastProbedTotal = 0;                       // 上次探测「有没有更多」时的队列长度（防重复探测）
         const imgEl = panel.querySelector('#bili-review-img');
         const progressEl = panel.querySelector('#bili-review-progress');
         const countEl = panel.querySelector('#bili-review-dl-count');
@@ -2938,10 +3054,48 @@
         const render = () => {
             const cur = urls[index];
             imgEl.src = cur;
-            progressEl.textContent = (index + 1) + ' / ' + urls.length + (downloaded.has(index) ? '  ✅ 已下载' : '');
+            const tail = exhausted ? '' : (fetching ? '  ⏳ 加载更多…' : (canFetchMore ? '  ↻ 还有更多' : ''));
+            progressEl.textContent = (index + 1) + ' / ' + urls.length +
+                (downloaded.has(index) ? '  ✅ 已下载' : '') + tail;
             countEl.textContent = downloaded.size;
             if(barEl) barEl.style.width = urls.length ? Math.round(downloaded.size / urls.length * 100) + '%' : '0%';
             try{ renderUpInfo(cur); }catch(e){ /* 取上下文失败不能影响翻页 */ }
+            // 翻到最后一张就主动探一次，别让用户再按一下右键才知道「到头了」
+            if(canFetchMore && !exhausted && !fetching &&
+                index >= urls.length - 1 && lastProbedTotal !== urls.length){
+                lastProbedTotal = urls.length;
+                setTimeout(() => { maybeFetchMore(true); }, 0);
+            }
+        };
+
+        // ── 一直有图：翻到尾部就自动去页面加载下一批 ──
+        // 不阻塞渲染 —— 先显示当前这张，后台拉新图，拉到了再把尾巴接上
+        const maybeFetchMore = async (force) => {
+            if(!canFetchMore || fetching || exhausted) return 0;
+            if(!force && index < urls.length - 1) return 0;   // 只在最后一张时才拉
+            fetching = true;
+            render();
+            try{
+                const more = await options.fetchMore();
+                const fresh = (Array.isArray(more) ? more : []).filter(u => u && urls.indexOf(u) < 0);
+                if(fresh.length){
+                    urls.push.apply(urls, fresh);
+                    // 进度条的「共 N 张」跟着变
+                    render();
+                    showToast('➕ 又加载到 ' + fresh.length + ' 张新图');
+                    return fresh.length;
+                }
+                exhausted = true;
+                render();
+                return 0;
+            }catch(e){
+                exhausted = false;
+                render();
+                return 0;
+            }finally{
+                fetching = false;
+                try{ render(); }catch(e){}
+            }
         };
 
         // ── 关闭面板（回调已下载数量，必要时弹出打赏面板）──
@@ -2993,10 +3147,13 @@
         // ── 全部下载（跳过已下载）──
         const dlAll = async () => {
             if(busy) return;
-            const remaining = urls.filter((u, i) => !downloaded.has(i));
+            let remaining = urls.filter((u, i) => !downloaded.has(i));
             if(!remaining.length){ showToast('全部已下载'); return; }
+            // 「每次最多下载 N 张」：先下这一批，剩下的留在队列里（翻到最后还会自动加载新图）
+            const capped = maxPerRun > 0 && remaining.length > maxPerRun;
+            if(capped) remaining = remaining.slice(0, maxPerRun);
             busy = true;
-            showToast('⬇️ 正在全部下载 ' + remaining.length + ' 张...');
+            showToast('⬇️ 正在下载 ' + remaining.length + ' 张' + (capped ? '（本次上限 ' + maxPerRun + ' 张）' : '') + '...');
             try{
                 const json = await sendUrlsToServer(remaining);
                 if(json && json.results){
@@ -3012,9 +3169,17 @@
                     });
                     countEl.textContent = downloaded.size;
                     const c = countResults(json);
-                    showToast(`✅ 全部下载完成：新增 ${c.saved} 张，已存在 ${c.exists} 张，失败 ${c.failed} 张`
-                        + (IS_PORTABLE ? '' : '\n想看已存的图？右下角「📁 下载目录」'));
-                    close();
+                    const left = urls.filter((u, i) => !downloaded.has(i)).length;
+                    if(capped && left > 0){
+                        // 还有没下完的：留在面板里，别直接关掉（否则用户以为全下完了）
+                        showToast(`✅ 本批完成：新增 ${c.saved} 张，已存在 ${c.exists} 张，失败 ${c.failed} 张` +
+                            `\n还有 ${left} 张没下，再点一次「全部下载」继续`);
+                        render();
+                    } else {
+                        showToast(`✅ 全部下载完成：新增 ${c.saved} 张，已存在 ${c.exists} 张，失败 ${c.failed} 张`
+                            + (IS_PORTABLE ? '' : '\n想看已存的图？右下角「📁 下载目录」'));
+                        close();
+                    }
                 }
             } finally {
                 busy = false;
@@ -3026,7 +3191,18 @@
             if(busy || capturing){ return; }
             const k = e.key;
             if(k === keys.download){ e.preventDefault(); dlCurrent(); }
-            else if(k === keys.next){ e.preventDefault(); index = Math.min(urls.length - 1, index + 1); render(); }
+            else if(k === keys.next){
+                e.preventDefault();
+                // 已经是最后一张：先看看页面还能不能加载更多，能就接着往下翻
+                if(index >= urls.length - 1 && canFetchMore && !exhausted){
+                    maybeFetchMore(true).then(n => {
+                        if(n > 0){ index = Math.min(urls.length - 1, index + 1); render(); }
+                    });
+                    return;
+                }
+                index = Math.min(urls.length - 1, index + 1);
+                render();
+            }
             else if(k === keys.prev){ e.preventDefault(); index = Math.max(0, index - 1); render(); }
             else if(k === keys.exit){ e.preventDefault(); close(); }
         }
@@ -3035,10 +3211,24 @@
         // ── 滚轮翻页（仅图片区生效，侧栏滚动不触发）──
         centerEl.addEventListener('wheel', (e) => {
             if(busy) return;
-            if(e.deltaY > 0) index = Math.min(urls.length - 1, index + 1);
-            else index = Math.max(0, index - 1);
+            if(e.deltaY > 0){
+                // 滚到最后一张同样触发「加载下一批」
+                if(index >= urls.length - 1 && canFetchMore && !exhausted){
+                    maybeFetchMore(true).then(n => {
+                        if(n > 0){ index = Math.min(urls.length - 1, index + 1); render(); }
+                    });
+                    return;
+                }
+                index = Math.min(urls.length - 1, index + 1);
+            }else{
+                index = Math.max(0, index - 1);
+            }
             render();
         }, { passive: true });
+
+        // 打开就先探一次：初始这一批可能只有十几张，先悄悄把下一页挂上，
+        // 用户翻到第 15 张时就不会「没图了」
+        if(canFetchMore) setTimeout(() => { maybeFetchMore(true); }, 400);
 
         panel.querySelector('#bili-review-dl-all').addEventListener('click', dlAll);
         panel.querySelector('#bili-review-close').addEventListener('click', close);
@@ -3220,7 +3410,28 @@
 
         const urlsAll = Array.from(pageUrls).filter(isContentImageUrl);
         const settings = Object.assign({}, DEFAULT_SETTINGS, loadSettings());
-        const urls = urlsAll;                          // 不再限制单次下载数量：ZIP 会自动分批
+        const maxPerRun = Math.max(0, Number(settings.maxPerRun) || 0);
+        const knownSet = new Set(urlsAll);
+        // 自动续载：翻页时去页面加载下一批，把新出现的图追加回来
+        const makeFetchMore = () => async () => {
+            let added = [];
+            if(settings.autoLoadMore){
+                added = await autoLoadMoreForImages(Array.from(knownSet), 3);
+            } else {
+                // 没开自动续载：只把「已经在 DOM 里的新图」再收一次（用户自己滚过页面也算）
+                await sleep(300);
+                added = extractUrlsFromDoc(document).filter(isContentImageUrl).filter(u => !knownSet.has(u));
+            }
+            added.forEach(u => knownSet.add(u));
+            return added;
+        };
+        // 每次最多下载 N 张：自动下载模式下直接截断；审查模式交给面板分批
+        const urls = (maxPerRun > 0 && settings.downloadMode !== 'review')
+            ? urlsAll.slice(0, maxPerRun)
+            : urlsAll;
+        if(maxPerRun > 0 && urlsAll.length > urls.length){
+            showToast('本次只处理前 ' + urls.length + ' 张（设置里「每次最多下载」= ' + maxPerRun + '）');
+        }
         if(urls.length === 0){
 
             const retry = (window.__biliRetryCount || 0) + 1;
@@ -3239,13 +3450,13 @@
         if(settings.downloadMode === 'review'){
             const statusEl = document.getElementById('bili-save-status');
             if(statusEl) statusEl.style.display = 'none';
-            openReviewPanel(urls, (downloadedCount) => {
+            openReviewPanel(urls.slice(), (downloadedCount) => {
                 if(downloadedCount > 0){
                     showToast('审查结束，共下载 ' + downloadedCount + ' 张');
                 } else {
                     showToast('已退出审查（未下载）');
                 }
-            });
+            }, { fetchMore: makeFetchMore(), maxPerRun: maxPerRun });
             return;
         }
         // 抓取阶段可以停；进入保存阶段后没法中断，就不放一个点了没反应的「停止」按钮了
@@ -3464,10 +3675,13 @@
             '<div><div class="bp-label">间隔 (ms)</div><input id="bili-int-input" class="bp-input" type="number" min="0" step="100" value="' + s.intervalMs + '"></div>' +
             '<div><div class="bp-label">超时 (ms)</div><input id="bili-timeout-input" class="bp-input" type="number" min="5000" step="1000" value="' + s.timeoutMs + '"></div>' +
             '</div>' +
-            '<div style="display:flex;gap:18px;margin-top:12px;">' +
+            '<div class="bp-label" style="margin-top:12px;">每次最多下载（张，0 = 不限）</div>' +
+            '<input id="bili-max-input" class="bp-input" type="number" min="0" step="10" value="' + (Number(s.maxPerRun) || 0) + '">' +
+            '<div style="display:flex;gap:18px;margin-top:12px;flex-wrap:wrap;">' +
             '<label class="bp-check"><input type="checkbox" id="bili-dedupe-input"' + (s.dedupe ? ' checked' : '') + '> 查重</label>' +
             '<label class="bp-check"><input type="checkbox" id="bili-autorun-input"' + (s.autoRun ? ' checked' : '') + '> 打开页面自动提取</label>' +
             '</div>' +
+            '<label class="bp-check" style="margin-top:10px;"><input type="checkbox" id="bili-automore-input"' + (s.autoLoadMore ? ' checked' : '') + '> 自动续载：脚本自动触发「加载更多」，审查模式一直有图</label>' +
             '</div>';
 
         // 审查模式是**图片专属**：视频是勾选后批量下载，没有逐条确认这回事。
@@ -3623,6 +3837,9 @@
                 const psaveRadio = panel.querySelector('input[name="bili-psave"]:checked');
                 const intervalMsP = Math.max(0, parseInt(panel.querySelector('#bili-int-input').value, 10) || 0);
                 const timeoutMsP = Math.max(5000, parseInt(panel.querySelector('#bili-timeout-input').value, 10) || 30000);
+                const maxInputP = panel.querySelector('#bili-max-input');
+                const maxPerRunP = Math.max(0, parseInt(maxInputP ? maxInputP.value : '0', 10) || 0);
+                const autoMoreP = panel.querySelector('#bili-automore-input');
                 const modeRadioP = pickedMode();
                 const vsaveRadio = panel.querySelector('input[name="bili-vsave"]:checked');
                 saveSettings({
@@ -3630,6 +3847,8 @@
                     dedupe: panel.querySelector('#bili-dedupe-input').checked,
                     downloadMode: modeRadioP,
                     autoRun: panel.querySelector('#bili-autorun-input').checked,
+                    maxPerRun: maxPerRunP,
+                    autoLoadMore: !!(autoMoreP && autoMoreP.checked),
                     portableSave: psaveRadio ? psaveRadio.value : 'zip',
                     portableVideoSave: vsaveRadio ? vsaveRadio.value : 'single',
                     envNotice: prev.envNotice, envNoticeShown: prev.envNoticeShown, hideEnvOnly: prev.hideEnvOnly,
@@ -3654,10 +3873,15 @@
             const timeoutMs = Math.max(5000, parseInt(panel.querySelector('#bili-timeout-input').value, 10) || 30000);
             const dedupe = panel.querySelector('#bili-dedupe-input').checked;
             const autoRun = panel.querySelector('#bili-autorun-input').checked;
+            const maxInput = panel.querySelector('#bili-max-input');
+            const maxPerRun = Math.max(0, parseInt(maxInput ? maxInput.value : '0', 10) || 0);
+            const autoMoreInput = panel.querySelector('#bili-automore-input');
             const downloadMode = pickedMode();
             const keys = Object.assign({}, DEFAULT_SETTINGS.keys, window.__biliPendingKeys || {});
             const prevSettings = loadSettings();
             const ns = { saveDir: dir, intervalMs, timeoutMs, dedupe, downloadMode, autoRun, keys,
+                maxPerRun,
+                autoLoadMore: !!(autoMoreInput && autoMoreInput.checked),
                 portableSave: prevSettings.portableSave, portableVideoSave: prevSettings.portableVideoSave,
                 envNotice: prevSettings.envNotice,
                 videoQuality: prevSettings.videoQuality, hiResAudio: prevSettings.hiResAudio,
@@ -5054,6 +5278,15 @@
                         '<button class="bp-seg__item bp-cc-mode" data-mode="auto" aria-pressed="' + (isReview ? 'false' : 'true') + '">⬇️ 自动下载</button>' +
                         '<button class="bp-seg__item bp-cc-mode" data-mode="review" aria-pressed="' + (isReview ? 'true' : 'false') + '">🔍 审查模式</button>' +
                     '</div>' +
+                    '<div class="bp-label" style="margin-top:12px;">每次最多下载</div>' +
+                    '<div style="display:flex;gap:8px;align-items:center;">' +
+                        '<input id="bili-cc-max" class="bp-input" type="number" min="0" step="10" ' +
+                            'style="flex:1;min-width:0;" value="' + (Number(s.maxPerRun) || 0) + '" ' +
+                            'title="0 = 不限；大于 0 时每次只处理这么多张">' +
+                        '<span class="bp-hint" style="flex-shrink:0;">张（0 = 不限）</span>' +
+                    '</div>' +
+                    '<label class="bp-check" style="margin-top:10px;" title="脚本自动帮你触发页面的「加载更多」，审查模式翻到最后一页会接着拉新图">' +
+                        '<input type="checkbox" id="bili-cc-automore"' + (s.autoLoadMore ? ' checked' : '') + '> 自动续载（一直有图）</label>' +
                     '<div class="bp-hint" style="margin-top:6px;">只对<b>图片</b>生效；审查模式的键位在「更多设置」里改</div>' +
                 '</div>' +
                 // ── Box 2：视频下载（和图片分开，免得两套规则混在一起看不懂）──
@@ -5175,6 +5408,30 @@
             });
         });
 
+        // ── 每次最多下载 / 自动续载 ──
+        const maxEl = panel.querySelector('#bili-cc-max');
+        if(maxEl){
+            let maxTimer = null;
+            const applyMax = () => {
+                const n = Math.max(0, parseInt(maxEl.value, 10) || 0);
+                saveSwitch({ maxPerRun: n });
+            };
+            maxEl.addEventListener('input', () => {
+                clearTimeout(maxTimer);
+                maxTimer = setTimeout(applyMax, 400);       // 打字时别每击键都写一次
+            });
+            maxEl.addEventListener('blur', () => { clearTimeout(maxTimer); applyMax(); });
+        }
+        const autoMoreEl = panel.querySelector('#bili-cc-automore');
+        if(autoMoreEl){
+            autoMoreEl.addEventListener('change', () => {
+                saveSwitch({ autoLoadMore: autoMoreEl.checked });
+                showToast(autoMoreEl.checked
+                    ? '✅ 自动续载已开启：审查模式翻到底会自动加载新图'
+                    : '✅ 自动续载已关闭');
+            });
+        }
+
         // ── 底部入口 ──
         panel.querySelector('#bili-cc-intro').addEventListener('click', () => { closeControlCenter(); openFeatureIntroPanel(); });
         panel.querySelector('#bili-cc-settings').addEventListener('click', () => { closeControlCenter(); openSettingsPanel(); });
@@ -5295,6 +5552,11 @@
             openSettingsPanel: openSettingsPanel,
             openVideoPanel: openVideoPanel,
             openReviewPanel: openReviewPanel,
+            // 自动续载（给单测/浏览器实测用）
+            autoLoadMoreOnce: autoLoadMoreOnce,
+            autoLoadMoreForImages: autoLoadMoreForImages,
+            ensureAutoMoreAnchor: ensureAutoMoreAnchor,
+            findLoadMoreControl: findLoadMoreControl,
             // UP 上下文（按图取所属动态的作者/文案），给单测用
             upInfoForImageUrl: upInfoForImageUrl,
             upInfoFromContainer: upInfoFromContainer,
