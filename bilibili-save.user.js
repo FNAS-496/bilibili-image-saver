@@ -495,6 +495,8 @@
                 '    word-break:break-all;color:var(--bp-text);}',
                 '.bp-review__uptext{line-height:1.75;font-size:var(--bp-fs-sm);color:var(--bp-text-2);',
                 '    white-space:pre-wrap;word-break:break-word;margin-bottom:12px;padding:8px 10px;',
+                // 动态文案动辄几百字：限高并内部滚动，否则会把下面的「全部下载」推出屏幕
+                '    max-height:34vh;overflow-y:auto;scrollbar-width:thin;',
                 '    background:var(--bp-subtle);border-radius:var(--bp-radius-md);}',
                 '@media (max-width:760px){',
                 '    .bp-review__side{width:150px;padding:10px;}',
@@ -2579,7 +2581,101 @@
         });
     }
 
-    // 提取 UP 主名称、头像与动态文案
+    // 一条动态/作品/视频卡片的容器：按「离图片最近的那个」取作者与文案。
+    // 动态列表一页里有好几条、作者可能不同，全局取第一个必然张冠李戴。
+    const UP_CONTAINER_SEL = [
+        '.bili-dyn-item', '.bili-dyn-list__item',
+        '.opus-module', '.opus-detail', '.opus-item',
+        '.video-page-card', '.bili-video-card', '.video-card'
+    ].join(',');
+
+    // 把一段文本里的按钮/时间戳剔掉再取文字。
+    // 直接对 .bili-dyn-content 取 textContent 会把「转发 12 评论 34 点赞 56」一起抓进来。
+    function cleanUpText(el){
+        if(!el) return '';
+        let text = '';
+        try{
+            const clone = el.cloneNode(true);
+            clone.querySelectorAll([
+                '.bili-dyn-footer', '[class*="dyn-footer"]',
+                '[class*="dyn-action"]', '[class*="dyn-time"]', '[class*="dyn-bottom"]',
+                'button', '.bili-dyn-share', '[class*="action-count"]'
+            ].join(',')).forEach(n => n.remove());
+            text = clone.textContent || '';
+        }catch(e){
+            text = el.textContent || '';
+        }
+        return String(text).replace(/\s+/g, ' ').trim();
+    }
+
+    // 从一个容器里取 UP 名 / 头像 / 文案（找不到就返回空串，由调用方决定怎么兜底）
+    function upInfoFromContainer(box){
+        if(!box) return null;
+        const pickName = () => {
+            for(const sel of [
+                '.bili-dyn-title__text', '[class*="dyn-title__text"]', '[class*="dyn-title"]',
+                '.opus-module-author__name', '[class*="opus-module-author__name"]',
+                '[class*="dyn-item__author"]', '[class*="dyn-member__name"]',
+                '[class*="author__name"]', '[class*="author-name"]', '.up-name'
+            ]){
+                const el = box.querySelector(sel);
+                const t = el ? (el.textContent || '').trim() : '';
+                if(t) return t;
+            }
+            const link = box.querySelector('a[href*="space.bilibili.com"]');
+            return link ? (link.textContent || '').trim() : '';
+        };
+        const pickText = () => {
+            // 正文优先取「纯文本」节点；实在没有才回退到大容器（并清洗掉按钮）
+            for(const sel of [
+                '.bili-dyn-content__text', '[class*="dyn-content__text"]',
+                '.opus-module-title__content', '[class*="module-title__content"]',
+                '[class*="opus-module-content"]', '.opus-content',
+                '.desc-info', '.video-desc', '.bili-video-card__info--tit'
+            ]){
+                const el = box.querySelector(sel);
+                const t = cleanUpText(el);
+                if(t) return t;
+            }
+            const fallback = box.querySelector('.bili-dyn-content, [class*="dyn-content"], [class*="opus-detail__content"]');
+            return cleanUpText(fallback);
+        };
+        const pickAvatar = () => {
+            for(const sel of [
+                '.bili-dyn-item__avatar', '[class*="dyn-avatar"]', '[class*="dyn-item__avatar"]',
+                '.opus-module-author img', '[class*="opus-author"] img',
+                '[class*="author"] img[src*="hdslb.com"]'
+            ]){
+                const img = box.querySelector(sel);
+                if(img && img.src) return img.src;
+                const lazy = img && (img.getAttribute('data-src') || img.getAttribute('data-original'));
+                if(lazy) return lazy;
+            }
+            return '';
+        };
+        const info = { upName: pickName(), upText: pickText(), upAvatar: pickAvatar() };
+        if(!info.upName && !info.upText && !info.upAvatar) return null;
+        return info;
+    }
+
+    // 按「这张图属于哪条动态」取上下文。
+    // 图片可能已经因虚拟滚动被移除（那时返回 null，由调用方决定要不要用页面级信息兜底）。
+    function upInfoForImageUrl(url){
+        if(!url) return null;
+        const want = toOriginalImageUrl(url) || url;
+        for(const img of document.querySelectorAll('img')){
+            const cands = [img.currentSrc, img.src, img.getAttribute('data-src'),
+                img.getAttribute('data-original'), img.getAttribute('data-origin')].filter(Boolean);
+            const hit = cands.some(c => c === url || toOriginalImageUrl(c) === want);
+            if(!hit) continue;
+            const box = img.closest ? img.closest(UP_CONTAINER_SEL) : null;
+            const info = upInfoFromContainer(box);
+            if(info) return info;
+        }
+        return null;
+    }
+
+    // 提取 UP 主名称、头像与动态文案（页面级：整页取第一个，作为兜底）
     function extractUpInfo(){
         let upName = '';
         let upText = '';
@@ -2591,7 +2687,8 @@
             if(owner && owner.face) upAvatar = owner.face;
             if(!upName && st.user && st.user.name) upName = st.user.name;
             if(st.videoData && st.videoData.title) upText = st.videoData.title;
-            if(!upName && st.opusData && st.opusData.title) upText = st.opusData.title;
+            // 这里原先是 if(!upName && ...)：拿到 UP 名反而不会设文案，条件写反了
+            if(!upText && st.opusData && st.opusData.title) upText = st.opusData.title;
             if(st.userInfo && st.userInfo.data && st.userInfo.data.name) upName = st.userInfo.data.name;
             if(st.opusDetail && st.opusDetail.opus) {
                 const o = st.opusDetail.opus;
@@ -2609,6 +2706,7 @@
             const selectors = [
                 '.opus-module-author__name', '[class*="opus-module-author__name"]',
                 '[class*="opus-author"]', '[class*="opus-owner"]',
+                '.bili-dyn-title__text', '[class*="dyn-title__text"]', '[class*="dyn-title"]',
                 '.bili-dyn-item__author', '[class*="dyn-item__author"]',
                 '.bili-dyn-member__name', '[class*="dyn-member__name"]',
                 '.up-name', '.name.medium', '[class*="author__name"]',
@@ -2636,22 +2734,29 @@
             }
         }
         if(!upAvatar){
-            const avatarImg = document.querySelector('.opus-module-author img, [class*="opus-author"] img, [class*="dyn-member__avatar"] img, [class*="author"] img[src*="hdslb.com"]');
+            const avatarImg = document.querySelector('.bili-dyn-item__avatar, [class*="dyn-avatar"], .opus-module-author img, [class*="opus-author"] img, [class*="dyn-member__avatar"] img, [class*="author"] img[src*="hdslb.com"]');
             if(avatarImg) upAvatar = avatarImg.src;
         }
         if(!upText){
             const txtSelectors = [
                 '.opus-module-title__content', '[class*="module-title__content"]',
-                '.bili-dyn-content', '[class*="dyn-content"]',
+                '.bili-dyn-content__text', '[class*="dyn-content__text"]',
                 '.opus-detail__content', '[class*="post-content"]',
                 '.desc-info', '.video-desc', '.opus-content',
+                '.bili-dyn-content', '[class*="dyn-content"]',
                 'meta[property="og:description"]'
             ];
             for(const sel of txtSelectors){
                 const el = document.querySelector(sel);
                 if(el){
-                    const t = sel.indexOf('meta') === 0 ? (el.content || '') : (el.textContent || '');
-                    if(t){ upText = t.trim().slice(0, 500); break; }
+                    // 「纯文本节点」直接取；整块容器要走 cleanUpText，把「转发/评论/点赞」剔掉
+                    const t = sel.indexOf('meta') === 0
+                        ? (el.content || '')
+                        : (/content__text|module-title__content|post-content|desc-info|video-desc|opus-content/.test(sel)
+                            ? (el.textContent || '')
+                            : cleanUpText(el));
+                    const clean = String(t).replace(/\s+/g, ' ').trim();
+                    if(clean){ upText = clean.slice(0, 500); break; }
                 }
             }
         }
@@ -2687,6 +2792,17 @@
     // 键位显示名（ArrowRight → →）：设置面板和审查模式共用
     const KEY_DISPLAY = { ArrowDown:'↓', ArrowUp:'↑', ArrowLeft:'←', ArrowRight:'→', Escape:'Esc', Space:'空格', Enter:'回车' };
     const keyName = k => KEY_DISPLAY[k] || k;
+
+    // 头像 DOM（审查面板用；没有头像时给一个灰色占位，避免整块塌掉）
+    function avatarHtml(src){
+        if(src){
+            return '<img src="' + String(src).replace(/"/g, '&quot;') + '" ' +
+                'style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:1px solid var(--bp-border);flex-shrink:0;display:block;" ' +
+                'referrerpolicy="no-referrer" alt="">';
+        }
+        return '<span style="width:36px;height:36px;border-radius:50%;background:var(--bp-hover);' +
+            'display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;">👤</span>';
+    }
 
     // 审查模式面板：左键位 / 中预览 / 右 UP 信息，三栏布局
     function openReviewPanel(urls, onDone){
@@ -2750,19 +2866,17 @@
             '</div>' +
             '</div>' +
             // ── 右栏：UP 信息 + 点赞/收藏/关注/全部下载/退出 ──
+            // 注意：这里是「按当前这张图」动态更新的（见 render()），因为动态列表一页里
+            // 可能有好几条不同作者的动态，写成静态就等于给乙的图标成甲的作者。
             '<div id="bili-review-right" class="bp-review__side bp-review__side--right">' +
             '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">' +
-            (upInfo.upAvatar
-                ? '<img src="' + esc(upInfo.upAvatar) + '" style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:1px solid var(--bp-border);flex-shrink:0;" referrerpolicy="no-referrer">'
-                : '<div style="width:36px;height:36px;border-radius:50%;background:var(--bp-hover);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;">👤</div>') +
+            '<span id="bili-review-avatar">' + avatarHtml(upInfo.upAvatar) + '</span>' +
             '<div style="min-width:0;">' +
-            '<div class="bp-review__upname">' + esc(upInfo.upName) + '</div>' +
-            '<div class="bp-hint">UP主' + (upInfo.upText ? ' · 动态文案见下方' : '') + '</div>' +
+            '<div class="bp-review__upname" id="bili-review-upname">' + esc(upInfo.upName) + '</div>' +
+            '<div class="bp-hint" id="bili-review-upsub">UP主</div>' +
             '</div>' +
             '</div>' +
-            (upInfo.upText
-                ? '<div class="bp-review__uptext">' + esc(upInfo.upText) + '</div>'
-                : '<div class="bp-hint" style="margin-bottom:12px;">（未获取到动态文案）</div>') +
+            '<div class="bp-review__uptext" id="bili-review-uptext">' + (upInfo.upText ? esc(upInfo.upText) : '') + '</div>' +
             '<div style="margin-top:4px;padding-top:10px;border-top:1px solid var(--bp-border);">' +
             '<button id="bili-review-like" class="bp-btn bp-btn--block" style="border-color:#fb7299;color:#fb7299;margin-bottom:8px;">👍 点赞</button>' +
             '<button id="bili-review-fav" class="bp-btn bp-btn--block" style="border-color:#ffa940;color:#ffa940;margin-bottom:8px;">☆ 收藏</button>' +
@@ -2793,11 +2907,41 @@
         let pendingKeyListener = null;                 // 正在等待按键的那次录制，面板关掉时要注销，否则会吞掉下一次按键
 
         // ── 渲染当前图片与下载进度 ──
+        const avatarEl = panel.querySelector('#bili-review-avatar');
+        const upNameEl = panel.querySelector('#bili-review-upname');
+        const upSubEl = panel.querySelector('#bili-review-upsub');
+        const upTextEl = panel.querySelector('#bili-review-uptext');
+        // 一页里有多条动态时，页面级（整页第一个）信息不可信：那种情况下只认「这张图所属的那条」
+        const pageInfo = detectPageType();
+        const multiAuthorPage = !!(pageInfo && (pageInfo.type === 'dynamic-list' || pageInfo.type === 'favlist'));
+
+        // 把右栏的 UP 区刷成「这张图所属」的那条动态
+        const renderUpInfo = (url) => {
+            const ctx = upInfoForImageUrl(url);
+            const fallback = multiAuthorPage ? null : upInfo;
+            const info = ctx || fallback;
+            if(!info){
+                upNameEl.textContent = ctx === null && multiAuthorPage ? '（这条的作者没认出来）' : '未知UP主';
+                upSubEl.textContent = 'UP主';
+                upTextEl.textContent = '';
+                upTextEl.style.display = 'none';
+                avatarEl.innerHTML = avatarHtml('');
+                return;
+            }
+            upNameEl.textContent = info.upName || '未知UP主';
+            upSubEl.textContent = info.upText ? 'UP主 · 动态文案见下方' : 'UP主';
+            upTextEl.textContent = info.upText || '';
+            upTextEl.style.display = info.upText ? '' : 'none';
+            avatarEl.innerHTML = avatarHtml(info.upAvatar || '');
+        };
+
         const render = () => {
-            imgEl.src = urls[index];
+            const cur = urls[index];
+            imgEl.src = cur;
             progressEl.textContent = (index + 1) + ' / ' + urls.length + (downloaded.has(index) ? '  ✅ 已下载' : '');
             countEl.textContent = downloaded.size;
             if(barEl) barEl.style.width = urls.length ? Math.round(downloaded.size / urls.length * 100) + '%' : '0%';
+            try{ renderUpInfo(cur); }catch(e){ /* 取上下文失败不能影响翻页 */ }
         };
 
         // ── 关闭面板（回调已下载数量，必要时弹出打赏面板）──
@@ -5151,6 +5295,9 @@
             openSettingsPanel: openSettingsPanel,
             openVideoPanel: openVideoPanel,
             openReviewPanel: openReviewPanel,
+            // UP 上下文（按图取所属动态的作者/文案），给单测用
+            upInfoForImageUrl: upInfoForImageUrl,
+            upInfoFromContainer: upInfoFromContainer,
             showDonatePanel: showDonatePanel,
             // 纯函数（无 DOM 依赖），给单测用
             planVideoTargets: planVideoTargets,

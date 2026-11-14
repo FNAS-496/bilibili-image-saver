@@ -468,6 +468,55 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         assert.ok(/视频下载不受影响/.test(seg), '切到审查模式时的提示没说明视频不受影响');
     });
 
+    check(label + '：审查面板的 UP 信息按「当前这张图」刷新（不是整页取第一个）', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        // 必须能按图反查它所属的那条动态
+        assert.ok(/function upInfoForImageUrl\(url\)/.test(t), '缺 upInfoForImageUrl（按图取上下文）');
+        assert.ok(/function upInfoFromContainer\(box\)/.test(t), '缺 upInfoFromContainer');
+        assert.ok(/img\.closest\(UP_CONTAINER_SEL\)/.test(t), '没按「离图片最近的动态容器」取信息');
+        // 审查面板的三块 UP 信息必须是可更新节点，不能是静态字符串
+        for (const id of ['bili-review-upname', 'bili-review-upsub', 'bili-review-uptext', 'bili-review-avatar']) {
+            assert.ok(t.includes('id="' + id + '"'), '审查面板缺可更新节点：' + id);
+        }
+        assert.ok(/const renderUpInfo = \(url\) =>/.test(t), '缺 renderUpInfo');
+        // render() 必须带上当前图片的 URL
+        const at = t.indexOf('const render = () => {');
+        const seg = t.slice(at, at + 500);
+        assert.ok(/renderUpInfo\(cur\)/.test(seg), 'render() 没按当前图刷新 UP 信息');
+        // 一页多条动态时，整页取第一个的结果不可信，不能拿来兜底
+        assert.ok(/const multiAuthorPage = /.test(t), '没有区分「一页多条动态」的页面');
+        assert.ok(/const fallback = multiAuthorPage \? null : upInfo;/.test(t),
+            '多作者页面仍然用整页第一个做兜底（会张冠李戴）');
+    });
+
+    check(label + '：动态文案要取纯文本节点，不能把「转发/评论/点赞」一起抓进来', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/function cleanUpText\(el\)/.test(t), '缺 cleanUpText');
+        const at = t.indexOf('function cleanUpText(el)');
+        const seg = t.slice(at, at + 900);
+        for (const bad of ['dyn-action', 'dyn-footer', 'button']) {
+            assert.ok(seg.indexOf(bad) >= 0, 'cleanUpText 没剔除 ' + bad + '（文案会脏）');
+        }
+        // 正文优先取 __text 这类纯文本节点
+        const pick = t.indexOf('const pickText = () => {');
+        assert.ok(pick > 0, '缺 pickText');
+        const order = t.slice(pick, pick + 700);
+        const iText = order.indexOf("'.bili-dyn-content__text'");
+        const iBlock = order.indexOf("'.bili-dyn-content, ");
+        assert.ok(iText > 0, 'pickText 没优先用 .bili-dyn-content__text');
+        if (iBlock > 0) assert.ok(iText < iBlock, '整块 .bili-dyn-content 排在纯文本节点前面（文案会夹带按钮）');
+    });
+
+    check(label + '：UP 信息选择器覆盖动态列表真实类名（.bili-dyn-title__text / 头像）', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/\.bili-dyn-title__text/.test(t), '缺 .bili-dyn-title__text（动态列表的作者名）');
+        assert.ok(/\.bili-dyn-item__avatar/.test(t), '缺 .bili-dyn-item__avatar（动态列表的头像）');
+        // 曾经写反的条件：拿到 UP 名反而不会设文案
+        assert.ok(!/if\(!upName && st\.opusData && st\.opusData\.title\)/.test(t),
+            'st.opusData 的文案条件还是写反的（应该判 upText）');
+        assert.ok(/if\(!upText && st\.opusData && st\.opusData\.title\)/.test(t), '缺 opusData 文案兜底');
+    });
+
     check(label + '：「已下载」以磁盘真实文件为准，不只信 IndexedDB 记账', () => {
         const t = fs.readFileSync(file, 'utf8');
         assert.ok(/async function localDirList\(force\)/.test(t), '缺 localDirList');

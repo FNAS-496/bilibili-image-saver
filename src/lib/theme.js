@@ -434,6 +434,8 @@
             '    word-break:break-all;color:var(--bp-text);}',
             '.bp-review__uptext{line-height:1.75;font-size:var(--bp-fs-sm);color:var(--bp-text-2);',
             '    white-space:pre-wrap;word-break:break-word;margin-bottom:12px;padding:8px 10px;',
+            // 动态文案动辄几百字：限高并内部滚动，否则会把下面的「全部下载」推出屏幕
+            '    max-height:34vh;overflow-y:auto;scrollbar-width:thin;',
             '    background:var(--bp-subtle);border-radius:var(--bp-radius-md);}',
             '@media (max-width:760px){',
             '    .bp-review__side{width:150px;padding:10px;}',
