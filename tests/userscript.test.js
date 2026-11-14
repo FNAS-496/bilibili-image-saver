@@ -523,20 +523,26 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         assert.ok(/function ensureAutoMoreAnchor\(\)/.test(t), '缺 ensureAutoMoreAnchor');
         // 锚点必须是 1×1 + 透明 + 不挡点击，且**不能** display:none（隐藏元素不会被 IO 观察到）
         const at = t.indexOf('function ensureAutoMoreAnchor()');
-        const seg = t.slice(at, at + 900);
+        const seg = t.slice(at, at + 1400);
         assert.ok(/width:1px;height:1px/.test(seg), '锚点不是 1×1');
         assert.ok(/opacity:0/.test(seg), '锚点不是透明');
         assert.ok(/pointer-events:none/.test(seg), '锚点会挡住鼠标');
         // 只看真正写进 cssText 的那串样式（注释里提到 display:none 是说明文字，不算）
-        const css = /a\.style\.cssText = '([^']+)'/.exec(seg);
+        const css = /a\.style\.cssText = '([\s\S]*?)';/.exec(seg);
         assert.ok(css, '没找到锚点的 cssText 赋值');
         assert.ok(css[1].indexOf('display:none') < 0, '锚点真的用了 display:none（触发不了无限滚动）');
+        // 固定/绝对定位的包含块不是滚动容器 —— 对它 scrollIntoView 页面根本不会滚（实测 scrollY 不变）
+        assert.ok(!/position:\s*(fixed|absolute)/.test(css[1]),
+            '锚点用了 fixed/absolute 定位：scrollIntoView 不会滚动页面，自动续载会静默失效');
         // 有按钮优先点，没有才滚动
         assert.ok(/function findLoadMoreControl\(\)/.test(t), '缺 findLoadMoreControl');
         const once = t.slice(t.indexOf('async function autoLoadMoreOnce'), t.indexOf('async function autoLoadMoreForImages'));
         assert.ok(/if\(btn\)\{[\s\S]{0,120}return 'click'/.test(once), '没有「优先点按钮」的分支');
         assert.ok(/return 'scroll'/.test(once), '没有滚动触发的兜底');
-        assert.ok(/scrollIntoView\(\{ block: 'end'/.test(once), '滚动分支没把锚点滚进视口');
+        assert.ok(/a\.scrollIntoView\(\{ block: 'end'/.test(once), '滚动分支没把锚点滚进视口');
+        // scrollIntoView 没生效时（固定/绝对定位、或页面用 overflow 容器滚动）要能兜底
+        assert.ok(/window\.scrollTo\(0, document\.documentElement\.scrollHeight\)/.test(once),
+            '缺「直接滚到文档底部」的兜底');
     });
 
     check(label + '：审查模式能「一直有图」——翻到尾部自动续载', () => {

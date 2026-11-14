@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）@@NAME_SUFFIX@@
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader@@NAME_SUFFIX_EN@@
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.11.3
+// @version      0.11.4
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -1754,10 +1754,15 @@
         a.setAttribute('aria-hidden', 'true');
         a.setAttribute('tabindex', '-1');
         a.setAttribute('href', 'javascript:void 0');
-        // 注意：不能用 display:none —— 隐藏元素不会被 IntersectionObserver 观察到，
-        // 也就永远触发不了无限滚动。用 1×1 + opacity:0 才算真正「隐形但存在」。
-        a.style.cssText = 'position:fixed;left:0;bottom:0;width:1px;height:1px;' +
-            'opacity:0;overflow:hidden;pointer-events:none;z-index:-1;';
+        // 三条硬性要求，缺一条就失效：
+        //  1) 不能用 display:none —— 隐藏元素不会被 IntersectionObserver 观察到
+        //  2) 不能用 position:fixed/absolute —— 对固定定位元素 scrollIntoView 不会滚动页面
+        //     （它的包含块是视口，不是滚动容器；实测 scrollY 一动不动）
+        //  3) 必须留在文档流末尾 —— 这样 scrollIntoView 才会滚到「页面最低端」
+        // 所以用静态定位 + 1×1 + opacity:0：占位极小、完全看不见，但确实在流里可被滚动到。
+        a.style.cssText = 'display:block;width:1px;height:1px;margin:0;padding:0;border:0;' +
+            'opacity:0;overflow:hidden;pointer-events:none;font-size:0;line-height:0;' +
+            'user-select:none;';
         (document.body || document.documentElement).appendChild(a);
         return a;
     }
@@ -1804,10 +1809,11 @@
             return 'click';
         }
         const a = ensureAutoMoreAnchor();
-        try{
-            // 隐形锚点滚进视口 → 无限滚动的哨兵被触发
-            a.scrollIntoView({ block: 'end', inline: 'nearest' });
-        }catch(e){
+        const beforeY = (typeof window.scrollY === 'number') ? window.scrollY : 0;
+        try{ a.scrollIntoView({ block: 'end', inline: 'nearest' }); }catch(e){}
+        // 兜底：页面用某个 overflow 容器滚动、或锚点被样式挤开时，直接怼到文档底部
+        const moved = Math.abs(((typeof window.scrollY === 'number') ? window.scrollY : 0) - beforeY);
+        if(moved < 10){
             try{ window.scrollTo(0, document.documentElement.scrollHeight); }catch(_e){}
         }
         await sleep(waitMs || AUTO_MORE_WAIT);
