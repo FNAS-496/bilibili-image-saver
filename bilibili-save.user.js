@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.11.0
+// @version      0.11.1
 // @updateURL    https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @downloadURL  https://raw.githubusercontent.com/FNAS-496/bilibili-image-saver/main/bilibili-save.user.js
 // @author       FNAS-496 <sijiudeliu@outlook.com>
@@ -2357,15 +2357,15 @@
             '<div class="bp-section">' +
             '<div class="bp-section__title">✅ 开箱即用（无需任何环境）</div>' +
             feat('🖼️', '<b>原图批量保存</b>：收藏夹 / 动态 / 作品页自动提取原图并保存') +
-            feat('🔍', '<b>审查模式</b>：逐张确认后再存，键位可自定义') +
-            feat('🎬', '<b>视频下载</b>：B 站官方 mp4 单文件（含音轨，最高 1080P），无需 ffmpeg') +
-            feat('🗂️', '<b>已下载标记</b>：本地记账，重复下载自动跳过') +
+            feat('🔍', '<b>审查模式（仅图片）</b>：一张张确认后再存，键位可自定义；<b>视频不走审查</b>') +
+            feat('🎬', '<b>视频下载</b>：勾选当前视频 / 分P / 合集后批量下载，B 站官方 mp4 单文件（含音轨，最高 1080P），无需 ffmpeg') +
+            feat('🗂️', '<b>已下载标记</b>：以磁盘上真实文件为准，重复下载自动跳过') +
             feat('🔥', '<b>页面增强</b>：只看大图、点赞/关注/收藏状态、多套主题') +
             '</div>' +
             '<div class="bp-section">' +
             '<div class="bp-section__title">🔌 需要本地环境（Node.js + ffmpeg）</div>' +
             feat('🎞️', '<b>4K/HDR 与音画合并</b>：DASH 流合并成带声音的 mp4') +
-            feat('🖼️', '<b>图片相册页</b>：本机 127.0.0.1 页面里浏览已存图片') +
+            feat('📁', '<b>下载目录页</b>：本机 127.0.0.1 页面里搜索 / 筛选 / 播放已存文件（图片和视频都算）') +
             feat('⚡', '<b>静默自动落盘</b>：后台直接写入自定义绝对路径，无需点击') +
             '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;">' +
             '<a class="bp-link" href="' + ENV_LINKS.node + '" target="_blank" rel="noopener">Node.js</a>' +
@@ -2727,7 +2727,8 @@
             keyRow('上一张', keyName(keys.prev), 'prev') +
             keyRow('退出审查', keyName(keys.exit), 'exit') +
             '<div class="bp-hint" style="margin-top:14px;line-height:1.9;">' +
-            '<div class="bp-strong" style="margin-bottom:4px;">📋 审查模式说明</div>' +
+            '<div class="bp-strong" style="margin-bottom:4px;">📋 图片审查模式说明</div>' +
+            '<div>· 仅用于<b>图片</b>；视频不走这里，直接在视频面板勾选批量下载</div>' +
             '<div>· 单张预览，满意后再下载</div>' +
             '<div>· 按 <kbd class="bp-kbd" id="bili-review-mode-dl-key">' + keyName(keys.download) + '</kbd> 保存当前这张</div>' +
             '<div>· 已下载的图标记 ✅</div>' +
@@ -3325,14 +3326,18 @@
             '</div>' +
             '</div>';
 
+        // 审查模式是**图片专属**：视频是勾选后批量下载，没有逐条确认这回事。
+        // 标题和按钮文案都写明「仅图片」，不然用户会以为切了审查连视频也要一张张点。
         const modeCard =
             '<div class="bp-section">' +
-            '<div class="bp-section__title">🖼️ 下载模式</div>' +
-            '<div class="bp-seg" role="group" aria-label="下载模式">' +
+            '<div class="bp-section__title">🖼️ 图片下载模式</div>' +
+            '<div class="bp-seg" role="group" aria-label="图片下载模式">' +
             '<button class="bp-seg__item bp-mode-opt" data-mode="auto" aria-pressed="' + (s.downloadMode !== 'review' ? 'true' : 'false') + '">⬇️ 自动下载</button>' +
             '<button class="bp-seg__item bp-mode-opt" data-mode="review" aria-pressed="' + (s.downloadMode === 'review' ? 'true' : 'false') + '">🔍 审查模式</button>' +
             '</div>' +
-            '<div class="bp-label" style="margin-top:12px;">审查键位（点击后按任意键）</div>' +
+            '<div class="bp-hint" style="margin-top:8px;">只对**图片**生效：开启后一张张确认再保存。' +
+            '<b>视频下载不走审查</b>，始终是勾选后批量下载</div>' +
+            '<div class="bp-label" style="margin-top:12px;">审查键位（仅图片审查时使用，点击后按任意键）</div>' +
             '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">' +
             '<button class="bili-key-btn bp-btn bp-btn--sm" data-key="next">下一页 <b class="bp-kbd" id="bili-key-next">' + keyName(s.keys && s.keys.next || '→') + '</b></button>' +
             '<button class="bili-key-btn bp-btn bp-btn--sm" data-key="prev">上一页 <b class="bp-kbd" id="bili-key-prev">' + keyName(s.keys && s.keys.prev || '←') + '</b></button>' +
@@ -3380,11 +3385,17 @@
                     b.setAttribute('aria-pressed', String(b.getAttribute('data-theme') === t)));
             });
         });
-        // 下载模式：分段控件本身维护选中态，保存时按 aria-pressed 取值
+        // 图片下载模式：和「主题」一样点了就落盘 —— 它是个状态开关，不是待提交的表单字段。
+        // 以前要再点「保存设置」才生效，用户切了审查模式、直接关掉面板就白切了。
         panel.querySelectorAll('.bp-mode-opt').forEach(btn => {
             btn.addEventListener('click', () => {
+                const mode = btn.getAttribute('data-mode');
                 panel.querySelectorAll('.bp-mode-opt').forEach(b =>
                     b.setAttribute('aria-pressed', String(b === btn)));
+                saveSettings(Object.assign({}, DEFAULT_SETTINGS, loadSettings(), { downloadMode: mode }));
+                showToast(mode === 'review'
+                    ? '🔍 图片改为审查模式（逐张确认）\n视频下载不受影响，仍是勾选后批量下载'
+                    : '⬇️ 图片改为自动下载（全部直接存）');
             });
         });
         const pickedMode = () => {
@@ -4147,6 +4158,7 @@
             '<button class="bp-seg__item" data-f="done" aria-pressed="false">已下载</button>' +
             '<button class="bp-seg__item" data-f="fail" aria-pressed="false">失败</button>' +
             '</div>' +
+            '<div class="bp-hint" style="font-size:11px;">勾选后批量下载，<b>不走图片的审查模式</b></div>' +
             '</div>' +
             '<div id="bili-video-list" class="bp-scroll" style="flex:1;min-height:0;padding:6px;border-bottom:1px solid var(--bp-border);"></div>' +
             '<div id="bili-video-progress" style="display:none;padding:10px 16px 0;">' +
@@ -4873,6 +4885,7 @@
         panel.style.cssText = 'right:20px;bottom:88px;width:380px;max-height:calc(100vh - 120px);';
 
         const curTheme = themeState.current;
+        const isReview = s.downloadMode === 'review';        // 审查模式只作用于图片
         const themeSeg = TH ? TH.THEMES.map(t =>
             '<button class="bp-seg__item bp-cc-theme" data-theme="' + t + '" aria-pressed="' + (t === curTheme ? 'true' : 'false') + '">' +
             (THEME_ICON[t] || '') + ' ' + (THEME_SHORT[t] || t) + '</button>').join('') : '';
@@ -4884,13 +4897,24 @@
                 '<button class="bp-close" id="bili-cc-x" aria-label="关闭">✕</button>' +
             '</div>' +
             '<div class="bp-scroll">' +
-                // 下载：最高频的三件事放最上面，少点一层是一层
+                // 下载：最高频的三件事放最上面，每个都带一句「它能干什么」，
+                // 免得用户对着三个按钮猜（这是「功能不够直观」的直接修法）
                 '<div class="bp-section">' +
                     '<div class="bp-section__title">⬇️ 下载</div>' +
-                    '<button id="bili-cc-extract" class="bp-btn bp-btn--primary bp-btn--block" style="margin-bottom:8px;">⬇️ 提取图片并保存</button>' +
-                    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">' +
-                        '<button id="bili-cc-video" class="bp-btn bp-btn--sm">📹 视频下载</button>' +
-                        '<button id="bili-cc-dir" class="bp-btn bp-btn--sm">📁 下载目录</button>' +
+                    '<button id="bili-cc-extract" class="bp-btn bp-btn--primary bp-btn--block">' +
+                        (isReview ? '🔍 审查图片并保存' : '⬇️ 提取图片并保存') + '</button>' +
+                    '<div class="bp-hint" id="bili-cc-extract-hint" style="margin-top:6px;">' +
+                        '存入「保存位置」　·　当前：' +
+                        (isReview ? '<b>审查模式</b>（逐张确认）' : '<b>自动下载</b>（全部直接存）') + '</div>' +
+                    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">' +
+                        '<div>' +
+                            '<button id="bili-cc-video" class="bp-btn bp-btn--sm bp-btn--block">📹 视频下载</button>' +
+                            '<div class="bp-hint" style="margin-top:4px;font-size:11px;">本视频 · 分P · 合集</div>' +
+                        '</div>' +
+                        '<div>' +
+                            '<button id="bili-cc-dir" class="bp-btn bp-btn--sm bp-btn--block">📁 下载目录</button>' +
+                            '<div class="bp-hint" style="margin-top:4px;font-size:11px;">已存的文件，可搜索</div>' +
+                        '</div>' +
                     '</div>' +
                 '</div>' +
                 '<div class="bp-section">' +
@@ -4903,25 +4927,24 @@
                     '<button id="bili-cc-changedir" class="bp-btn bp-btn--sm" style="margin-top:8px;">更改…</button>' +
                 '</div>' +
                 '<div class="bp-section">' +
+                    '<div class="bp-section__title">🎛 图片下载模式</div>' +
+                    '<div class="bp-seg" role="group" aria-label="图片下载模式">' +
+                        '<button class="bp-seg__item bp-cc-mode" data-mode="auto" aria-pressed="' + (isReview ? 'false' : 'true') + '">⬇️ 自动下载</button>' +
+                        '<button class="bp-seg__item bp-cc-mode" data-mode="review" aria-pressed="' + (isReview ? 'true' : 'false') + '">🔍 审查模式</button>' +
+                    '</div>' +
+                    '<div class="bp-hint" style="margin-top:6px;">只对<b>图片</b>生效；' +
+                        '<b>视频下载不走审查</b>，始终是勾选后批量下载</div>' +
+                '</div>' +
+                '<div class="bp-section">' +
                     '<div class="bp-section__title">⚡ 快捷开关</div>' +
                     '<label class="bp-check" style="margin-bottom:8px;"><input type="checkbox" id="bili-cc-autorun"' + (s.autoRun ? ' checked' : '') + '> 打开页面自动提取</label>' +
                     '<label class="bp-check"><input type="checkbox" id="bili-cc-dedupe"' + (s.dedupe ? ' checked' : '') + '> 跳过已下载过的文件</label>' +
-                    '<div class="bp-label" style="margin-top:10px;">下载模式</div>' +
-                    '<div class="bp-seg" role="group" aria-label="下载模式">' +
-                        '<button class="bp-seg__item bp-cc-mode" data-mode="auto" aria-pressed="' + (s.downloadMode !== 'review' ? 'true' : 'false') + '">⬇️ 自动下载</button>' +
-                        '<button class="bp-seg__item bp-cc-mode" data-mode="review" aria-pressed="' + (s.downloadMode === 'review' ? 'true' : 'false') + '">🔍 审查模式</button>' +
-                    '</div>' +
-                '</div>' +
-                '<div class="bp-section">' +
-                    '<div class="bp-section__title">ℹ️ 帮助</div>' +
-                    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">' +
-                        '<button id="bili-cc-intro" class="bp-btn bp-btn--sm">📖 功能介绍</button>' +
-                        '<button id="bili-cc-donate" class="bp-btn bp-btn--sm">💝 打赏</button>' +
-                    '</div>' +
                 '</div>' +
             '</div>' +
+            // 「功能介绍」「打赏」不在这里再放一遍：设置面板里本来就有，重复只会把面板撑长
             '<div class="bp-foot">' +
                 '<button id="bili-cc-settings" class="bp-btn bp-btn--sm bp-btn--ghost">⚙️ 更多设置</button>' +
+                '<button id="bili-cc-intro" class="bp-btn bp-btn--sm bp-btn--ghost">📖 功能</button>' +
                 '<span class="bp-foot__spacer"></span>' +
                 '<button id="bili-cc-close" class="bp-btn bp-btn--ghost">关闭</button>' +
             '</div>';
@@ -4938,13 +4961,24 @@
         });
 
         // ── 三个下载入口 ──
+        // 按钮文案跟着「图片下载模式」走：开了审查就写「审查图片并保存」，
+        // 这样不点开设置也知道点下去会发生什么
         const extractBtn = panel.querySelector('#bili-cc-extract');
+        const extractHint = panel.querySelector('#bili-cc-extract-hint');
+        const refreshExtractBtn = () => {
+            const review = Object.assign({}, DEFAULT_SETTINGS, loadSettings()).downloadMode === 'review';
+            extractBtn.textContent = review ? '🔍 审查图片并保存' : '⬇️ 提取图片并保存';
+            extractHint.innerHTML = '存入「保存位置」　·　当前：' +
+                (review ? '<b>审查模式</b>（逐张确认）' : '<b>自动下载</b>（全部直接存）');
+            return review;
+        };
         extractBtn.addEventListener('click', () => {
+            const review = refreshExtractBtn();
             extractBtn.disabled = true;
-            extractBtn.textContent = '正在提取…';
+            extractBtn.textContent = review ? '正在打开审查…' : '正在提取…';
             collectAndSave().finally(() => {
                 extractBtn.disabled = false;
-                extractBtn.textContent = '⬇️ 提取图片并保存';
+                refreshExtractBtn();
             });
         });
         panel.querySelector('#bili-cc-video').addEventListener('click', () => { closeControlCenter(); openVideoPanel(); });
@@ -4993,13 +5027,15 @@
                 const mode = b.getAttribute('data-mode');
                 saveSwitch({ downloadMode: mode });
                 panel.querySelectorAll('.bp-cc-mode').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-                showToast(mode === 'review' ? '🔍 已切到审查模式（逐张确认）' : '⬇️ 已切到自动下载');
+                refreshExtractBtn();                     // 主按钮文案立刻跟着变
+                showToast(mode === 'review'
+                    ? '🔍 图片改为审查模式（逐张确认）\n视频下载不受影响，仍是勾选后批量下载'
+                    : '⬇️ 图片改为自动下载（全部直接存）');
             });
         });
 
-        // ── 帮助 ──
+        // ── 底部入口 ──
         panel.querySelector('#bili-cc-intro').addEventListener('click', () => { closeControlCenter(); openFeatureIntroPanel(); });
-        panel.querySelector('#bili-cc-donate').addEventListener('click', () => { closeControlCenter(); showDonatePanel({}); });
         panel.querySelector('#bili-cc-settings').addEventListener('click', () => { closeControlCenter(); openSettingsPanel(); });
 
         // 焦点进面板，键盘用户能直接 Tab / Esc
@@ -5022,7 +5058,8 @@
         rootBtn.addEventListener('click', openControlCenter);
         rootBtn.addEventListener('contextmenu', e => {
             e.preventDefault();
-            showToast('⬇️ 开始提取图片…');
+            const review = Object.assign({}, DEFAULT_SETTINGS, loadSettings()).downloadMode === 'review';
+            showToast(review ? '🔍 开始审查图片（逐张确认）…' : '⬇️ 开始提取图片…');
             collectAndSave();
         });
         wrap.appendChild(rootBtn);

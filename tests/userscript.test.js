@@ -404,6 +404,52 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         assert.ok(/if\(IS_PORTABLE\)\{[\s\S]{0,140}下载目录页只有环境版有/.test(t), '便携版点目录没提示');
     });
 
+    check(label + '：审查模式明确是「图片专属」，UI 上说清楚、代码里也只作用于图片', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        // 1) 三个 UI 位置都必须写明「只对图片」/「视频不走审查」
+        const places = [
+            ['控制中心', /只对<b>图片<\/b>生效；[\s\S]{0,60}<b>视频下载不走审查<\/b>/],
+            ['设置面板', /只对\*\*图片\*\*生效[\s\S]{0,80}<b>视频下载不走审查<\/b>/],
+            ['视频面板', /不走图片的审查模式/]
+        ];
+        for (const [where, re] of places) {
+            assert.ok(re.test(t), where + ' 没说明「审查只作用于图片、视频不走审查」');
+        }
+        // 2) 审查面板自己的说明里也要有边界
+        assert.ok(/仅用于<b>图片<\/b>；视频不走这里/.test(t), '审查面板没说明它是图片专属');
+        // 3) 功能列表里标注「仅图片」
+        assert.ok(/<b>审查模式（仅图片）<\/b>/.test(t), '功能介绍没标「仅图片」');
+        // 4) 代码层面：downloadMode === 'review' 只在图片链路里判断，绝不进视频链路
+        const reviewChecks = t.match(/downloadMode === 'review'/g) || [];
+        assert.ok(reviewChecks.length >= 1, '找不到审查模式判断');
+        const videoPanel = t.slice(t.indexOf('function openVideoPanel'), t.indexOf('function openControlCenter'));
+        assert.ok(!/downloadMode/.test(videoPanel), '视频面板里出现了 downloadMode（视频不该受审查模式影响）');
+        // 5) 章节标题不能只写「下载模式」，否则看不出作用范围
+        assert.ok(!/<div class="bp-section__title">🖼️ 下载模式<\/div>/.test(t), '设置面板标题还叫「下载模式」（应写明图片）');
+    });
+
+    check(label + '：当前图片模式一眼可见（提取按钮文案随模式变）', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        // 按钮文案反映模式，不点开设置也知道点下去会发生什么
+        assert.ok(/isReview \? '🔍 审查图片并保存' : '⬇️ 提取图片并保存'/.test(t),
+            '控制中心的提取按钮没跟着模式变文案');
+        assert.ok(/const refreshExtractBtn = \(\) =>/.test(t), '缺 refreshExtractBtn');
+        assert.ok(/const review = refreshExtractBtn\(\);/.test(t), '点按钮前没重新同步模式');
+        // 每个下载动作都要有一句「它能干什么」
+        for (const hint of ['本视频 · 分P · 合集', '已存的文件，可搜索', '存入「保存位置」']) {
+            assert.ok(t.indexOf(hint) >= 0, '缺少功能说明：' + hint);
+        }
+    });
+
+    check(label + '：设置面板里切「图片下载模式」立刻落盘（不必再点保存）', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        const at = t.indexOf("panel.querySelectorAll('.bp-mode-opt')");
+        assert.ok(at > 0, '找不到设置面板的模式按钮绑定');
+        const seg = t.slice(at, at + 900);
+        assert.ok(/saveSettings\(/.test(seg), '设置面板切模式没即时落盘（关掉面板就白切了）');
+        assert.ok(/视频下载不受影响/.test(seg), '切到审查模式时的提示没说明视频不受影响');
+    });
+
     check(label + '：「已下载」以磁盘真实文件为准，不只信 IndexedDB 记账', () => {
         const t = fs.readFileSync(file, 'utf8');
         assert.ok(/async function localDirList\(force\)/.test(t), '缺 localDirList');
