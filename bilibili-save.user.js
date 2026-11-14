@@ -4897,25 +4897,27 @@
                 '<button class="bp-close" id="bili-cc-x" aria-label="关闭">✕</button>' +
             '</div>' +
             '<div class="bp-scroll">' +
-                // 下载：最高频的三件事放最上面，每个都带一句「它能干什么」，
-                // 免得用户对着三个按钮猜（这是「功能不够直观」的直接修法）
-                '<div class="bp-section">' +
-                    '<div class="bp-section__title">⬇️ 下载</div>' +
+                // ── Box 1：图片下载（动作 + 它自己的设置放在一起，改设置不用再跑去别处）──
+                '<div class="bp-section" id="bili-cc-box-image">' +
+                    '<div class="bp-section__title">🖼️ 图片下载</div>' +
                     '<button id="bili-cc-extract" class="bp-btn bp-btn--primary bp-btn--block">' +
                         (isReview ? '🔍 审查图片并保存' : '⬇️ 提取图片并保存') + '</button>' +
                     '<div class="bp-hint" id="bili-cc-extract-hint" style="margin-top:6px;">' +
                         '存入「保存位置」　·　当前：' +
                         (isReview ? '<b>审查模式</b>（逐张确认）' : '<b>自动下载</b>（全部直接存）') + '</div>' +
-                    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">' +
-                        '<div>' +
-                            '<button id="bili-cc-video" class="bp-btn bp-btn--sm bp-btn--block">📹 视频下载</button>' +
-                            '<div class="bp-hint" style="margin-top:4px;font-size:11px;">本视频 · 分P · 合集</div>' +
-                        '</div>' +
-                        '<div>' +
-                            '<button id="bili-cc-dir" class="bp-btn bp-btn--sm bp-btn--block">📁 下载目录</button>' +
-                            '<div class="bp-hint" style="margin-top:4px;font-size:11px;">已存的文件，可搜索</div>' +
-                        '</div>' +
+                    '<div class="bp-label" style="margin-top:12px;">下载模式</div>' +
+                    '<div class="bp-seg" role="group" aria-label="图片下载模式">' +
+                        '<button class="bp-seg__item bp-cc-mode" data-mode="auto" aria-pressed="' + (isReview ? 'false' : 'true') + '">⬇️ 自动下载</button>' +
+                        '<button class="bp-seg__item bp-cc-mode" data-mode="review" aria-pressed="' + (isReview ? 'true' : 'false') + '">🔍 审查模式</button>' +
                     '</div>' +
+                    '<div class="bp-hint" style="margin-top:6px;">只对<b>图片</b>生效；审查模式的键位在「更多设置」里改</div>' +
+                '</div>' +
+                // ── Box 2：视频下载（和图片分开，免得两套规则混在一起看不懂）──
+                '<div class="bp-section" id="bili-cc-box-video">' +
+                    '<div class="bp-section__title">📹 视频下载</div>' +
+                    '<button id="bili-cc-video" class="bp-btn bp-btn--block">📹 打开视频下载面板</button>' +
+                    '<div class="bp-hint" style="margin-top:6px;">列出本视频 · 分P · 合集，勾选后批量下载；' +
+                        '<b>不走图片的审查模式</b></div>' +
                 '</div>' +
                 '<div class="bp-section">' +
                     '<div class="bp-section__title">🎨 主题</div>' +
@@ -4924,16 +4926,11 @@
                 '<div class="bp-section">' +
                     '<div class="bp-section__title">📂 保存位置</div>' +
                     '<div class="bp-hint" id="bili-cc-dirpath" style="word-break:break-all;">读取中…</div>' +
-                    '<button id="bili-cc-changedir" class="bp-btn bp-btn--sm" style="margin-top:8px;">更改…</button>' +
-                '</div>' +
-                '<div class="bp-section">' +
-                    '<div class="bp-section__title">🎛 图片下载模式</div>' +
-                    '<div class="bp-seg" role="group" aria-label="图片下载模式">' +
-                        '<button class="bp-seg__item bp-cc-mode" data-mode="auto" aria-pressed="' + (isReview ? 'false' : 'true') + '">⬇️ 自动下载</button>' +
-                        '<button class="bp-seg__item bp-cc-mode" data-mode="review" aria-pressed="' + (isReview ? 'true' : 'false') + '">🔍 审查模式</button>' +
+                    '<div style="display:flex;gap:8px;margin-top:8px;">' +
+                        '<button id="bili-cc-changedir" class="bp-btn bp-btn--sm">更改…</button>' +
+                        '<button id="bili-cc-dir" class="bp-btn bp-btn--sm">📁 下载目录</button>' +
                     '</div>' +
-                    '<div class="bp-hint" style="margin-top:6px;">只对<b>图片</b>生效；' +
-                        '<b>视频下载不走审查</b>，始终是勾选后批量下载</div>' +
+                    '<div class="bp-hint" style="margin-top:6px;font-size:11px;">「下载目录」可搜索已存的图片和视频</div>' +
                 '</div>' +
                 '<div class="bp-section">' +
                     '<div class="bp-section__title">⚡ 快捷开关</div>' +

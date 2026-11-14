@@ -406,15 +406,13 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
 
     check(label + '：审查模式明确是「图片专属」，UI 上说清楚、代码里也只作用于图片', () => {
         const t = fs.readFileSync(file, 'utf8');
-        // 1) 三个 UI 位置都必须写明「只对图片」/「视频不走审查」
-        const places = [
-            ['控制中心', /只对<b>图片<\/b>生效；[\s\S]{0,60}<b>视频下载不走审查<\/b>/],
-            ['设置面板', /只对\*\*图片\*\*生效[\s\S]{0,80}<b>视频下载不走审查<\/b>/],
-            ['视频面板', /不走图片的审查模式/]
-        ];
-        for (const [where, re] of places) {
-            assert.ok(re.test(t), where + ' 没说明「审查只作用于图片、视频不走审查」');
-        }
+        // 1) 图片 box 与视频 box 各自把边界说清楚
+        assert.ok(/只对<b>图片<\/b>生效/.test(t), '图片 box 没说明「只对图片生效」');
+        assert.ok(/<b>不走图片的审查模式<\/b>/.test(t), '视频 box 没说明「不走图片的审查模式」');
+        // 设置面板、视频面板也要有
+        assert.ok(/只对\*\*图片\*\*生效[\s\S]{0,80}<b>视频下载不走审查<\/b>/.test(t),
+            '设置面板没说明「审查只作用于图片、视频不走审查」');
+        assert.ok(/不走图片的审查模式/.test(t), '视频面板没说明审查与它无关');
         // 2) 审查面板自己的说明里也要有边界
         assert.ok(/仅用于<b>图片<\/b>；视频不走这里/.test(t), '审查面板没说明它是图片专属');
         // 3) 功能列表里标注「仅图片」
@@ -428,6 +426,26 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         assert.ok(!/<div class="bp-section__title">🖼️ 下载模式<\/div>/.test(t), '设置面板标题还叫「下载模式」（应写明图片）');
     });
 
+    check(label + '：控制中心分两个 box：图片（含它自己的设置）与视频', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        const atImg = t.indexOf('id="bili-cc-box-image"');
+        const atVid = t.indexOf('id="bili-cc-box-video"');
+        assert.ok(atImg > 0, '缺图片 box（id="bili-cc-box-image"）');
+        assert.ok(atVid > 0, '缺视频 box（id="bili-cc-box-video"）');
+        assert.ok(atImg < atVid, '图片 box 应该在视频 box 前面（下载图片更高频）');
+        // 图片 box：提取按钮 + 模式分段都要在里面（设置和动作放一起）
+        const imgBox = t.slice(atImg, atVid);
+        assert.ok(/id="bili-cc-extract"/.test(imgBox), '图片 box 里没有提取按钮');
+        assert.ok(/bp-cc-mode/.test(imgBox), '图片下载设置没并进图片 box（还散在别处）');
+        assert.ok(/id="bili-cc-extract-hint"/.test(imgBox), '图片 box 缺当前模式说明');
+        // 视频 box：只有视频按钮与说明，不能混进图片的模式分段
+        const themeAt = t.indexOf('🎨 主题', atVid);
+        const vidBox = t.slice(atVid, themeAt > atVid ? themeAt : atVid + 900);
+        assert.ok(/id="bili-cc-video"/.test(vidBox), '视频 box 里没有视频下载按钮');
+        assert.ok(!/bp-cc-mode/.test(vidBox), '视频 box 里混进了图片下载模式（两套规则混着看不懂）');
+        assert.ok(!/bili-cc-extract/.test(vidBox), '视频 box 里混进了图片提取按钮');
+    });
+
     check(label + '：当前图片模式一眼可见（提取按钮文案随模式变）', () => {
         const t = fs.readFileSync(file, 'utf8');
         // 按钮文案反映模式，不点开设置也知道点下去会发生什么
@@ -436,7 +454,7 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         assert.ok(/const refreshExtractBtn = \(\) =>/.test(t), '缺 refreshExtractBtn');
         assert.ok(/const review = refreshExtractBtn\(\);/.test(t), '点按钮前没重新同步模式');
         // 每个下载动作都要有一句「它能干什么」
-        for (const hint of ['本视频 · 分P · 合集', '已存的文件，可搜索', '存入「保存位置」']) {
+        for (const hint of ['本视频 · 分P · 合集', '可搜索已存的图片和视频', '存入「保存位置」']) {
             assert.ok(t.indexOf(hint) >= 0, '缺少功能说明：' + hint);
         }
     });
