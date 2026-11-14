@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）（便携版·无需环境）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader (Portable)
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.11.5
+// @version      0.11.6
 // @author       FNAS-496 <sijiudeliu@outlook.com>
 // @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、四套主题（跟随系统/云白/夜空/樱花）（默认不自动下载，需点击按钮）；便携版纯浏览器运行，无需安装任何环境）
 // @description:en Bilibili-Plus: auto-download original images from Bilibili favorites, dynamics, opus and space pages; video batch download, review mode, custom keys (needs the local server started via "一键启动.bat")
@@ -495,6 +495,9 @@
                 // 动态文案动辄几百字：限高并内部滚动，否则会把下面的「全部下载」推出屏幕
                 '    max-height:34vh;overflow-y:auto;scrollbar-width:thin;',
                 '    background:var(--bp-subtle);border-radius:var(--bp-radius-md);}',
+                // 审查面板点 📍 时给「这条内容」套的高亮圈（作用域提示，1.8 秒后自动摘掉）
+                '.bp-action-scope{outline:3px solid var(--bp-accent) !important;outline-offset:3px !important;',
+                '    border-radius:6px;transition:outline-color var(--bp-dur);}',
                 '@media (max-width:760px){',
                 '    .bp-review__side{width:150px;padding:10px;}',
                 '    .bp-review__side--right{width:150px;}',
@@ -2444,8 +2447,14 @@
             return { type:'dynamic-list', uid, imagePage:true, label:'动态列表' };
         }
 
-        if(host === 't.bilibili.com' && /^\d+$/.test(path.replace(/^\//,'').replace(/\/$/,''))){
-            return { type:'dynamic-detail', uid, imagePage:true, label:'动态' };
+        if(host === 't.bilibili.com'){
+            const seg = path.replace(/^\//, '').replace(/\/$/, '');
+            // /<动态id> 是单条详情；首页（关注流）是多条不同作者的列表。
+            // 首页以前落到 'other'，于是审查面板只能拿「整页第一个 UP 名」兜底 —— 张冠李戴。
+            if(/^\d+$/.test(seg)){
+                return { type:'dynamic-detail', uid, imagePage:true, label:'动态' };
+            }
+            return { type:'dynamic-list', uid, imagePage:true, label:'动态列表' };
         }
 
         if(/\/opus\//.test(path)){
@@ -2663,21 +2672,48 @@
         return info;
     }
 
-    // 按「这张图属于哪条动态」取上下文。
-    // 图片可能已经因虚拟滚动被移除（那时返回 null，由调用方决定要不要用页面级信息兜底）。
-    function upInfoForImageUrl(url){
+    // 找到「这张图」对应的 <img> 节点与它所属的容器（动态/作品/视频卡片）。
+    // 图片可能已经因虚拟滚动被移除，那时返回命中的 img 但 box 为 null。
+    function findImageNode(url){
         if(!url) return null;
         const want = toOriginalImageUrl(url) || url;
+        const hits = [];
         for(const img of document.querySelectorAll('img')){
             const cands = [img.currentSrc, img.src, img.getAttribute('data-src'),
                 img.getAttribute('data-original'), img.getAttribute('data-origin')].filter(Boolean);
             const hit = cands.some(c => c === url || toOriginalImageUrl(c) === want);
             if(!hit) continue;
             const box = img.closest ? img.closest(UP_CONTAINER_SEL) : null;
-            const info = upInfoFromContainer(box);
-            if(info) return info;
+            hits.push({ img, box });
         }
-        return null;
+        if(!hits.length) return null;
+        // 同一张图会在列表里出现多次（转发、虚拟滚动复用节点）。这时优先取「视口里」的那一个，
+        // 才和用户「盯着面板里这张图」的直觉一致；判断不了可见性就退回第一个带容器的。
+        const withBox = hits.filter(h => h.box);
+        const visible = withBox.find(h => {
+            try{
+                const rect = h.img.getBoundingClientRect ? h.img.getBoundingClientRect() : null;
+                const vh = (typeof window !== 'undefined' && window.innerHeight) || 0;
+                if(!rect || !vh) return false;
+                return rect.bottom > 0 && rect.top < vh && rect.width > 0;
+            }catch(e){ return false; }
+        });
+        if(visible) return visible;
+        if(withBox.length) return withBox[0];
+        return { img: hits[0].img, box: null };
+    }
+
+    // 这张图所属的那条内容（点赞/收藏/关注必须作用在它上面）
+    function containerForImageUrl(url){
+        const hit = findImageNode(url);
+        return hit ? hit.box : null;
+    }
+
+    // 按「这张图属于哪条动态」取上下文。
+    // 图片可能已经因虚拟滚动被移除（那时返回 null，由调用方决定要不要用页面级信息兜底）。
+    function upInfoForImageUrl(url){
+        const box = containerForImageUrl(url);
+        return box ? upInfoFromContainer(box) : null;
     }
 
     // 提取 UP 主名称、头像与动态文案（页面级：整页取第一个，作为兜底）
@@ -2773,23 +2809,83 @@
         if(!el) return false;
         let cls = '';
         try{ cls = (typeof el.className === 'string') ? el.className : (el.className && el.className.baseVal) || ''; }catch(e){}
-        if(/\b(active|on|liked|followed|collect|checked|selected|sel|is-active|enabled)\b/i.test(cls)) return true;
+        // 只认「状态词」，不能放 collect / sel 这类会误伤静态类名的词：
+        // `.collect-btn` 里含 collect，放进去会让收藏按钮永远显示「已收藏」。
+        if(/\b(active|actived|on|liked|followed|checked|selected|is-active|enabled)\b/i.test(cls)) return true;
         if(el.getAttribute('aria-pressed') === 'true') return true;
         if(el.getAttribute('aria-checked') === 'true') return true;
         const state = el.getAttribute('data-state') || el.getAttribute('data-status');
         if(state === 'active' || state === 'on' || state === 'liked' || state === 'followed' || state === 'true') return true;
+        // 动态卡片的按钮状态经常只体现在文案上（.bili-dyn-follow-btn 已关注 / 点赞后图标的 title）
+        try{
+            const txt = ((el.textContent || '') + ' ' + (el.getAttribute('title') || '')).trim();
+            if(/已关注|已点赞|已收藏|已投币|已赞/.test(txt)) return true;
+        }catch(e){}
         return false;
     }
-    // 按选择器组查找页面上的操作按钮
-    function findActionButton(groups){
+    // 在指定作用域里按选择器组找操作按钮（scope 可以是某个动态/作品容器，也可以是 document）
+    function findActionButtonIn(scope, groups){
+        if(!scope || typeof scope.querySelector !== 'function') return null;
         for(const group of groups){
             for(const sel of group.selectors){
-                const el = document.querySelector(sel);
+                let el = null;
+                try{ el = scope.querySelector(sel); }catch(e){ el = null; }
                 if(el) return { el, active: elementIsActive(el) };
             }
         }
         return null;
     }
+
+    // 页面级兜底：只认「全页只匹配到一个」的按钮。
+    // 列表页里点赞/收藏按钮是按条目重复出现的，那时必须拒绝——退回「取第一个」
+    // 就是「给甲的内容点赞，却以为赞的是乙的图」。
+    function findUniqueActionButton(groups){
+        for(const group of groups){
+            for(const sel of group.selectors){
+                let list = [];
+                try{ list = document.querySelectorAll(sel); }catch(e){ continue; }
+                if(list.length === 1){
+                    return { el: list[0], active: elementIsActive(list[0]) };
+                }
+            }
+        }
+        return null;
+    }
+
+    // 解析某个动作的点击目标：先在这张图所属的容器里找；容器里没有才尝试页面唯一目标。
+    // scope: 'box'（这条内容） / 'page'（页面唯一内容） / 'none'（无法确定，禁止点）
+    function findActionTarget(groups, box){
+        const inBox = findActionButtonIn(box, groups);
+        if(inBox) return { el: inBox.el, active: inBox.active, scope: 'box' };
+        const uniq = findUniqueActionButton(groups);
+        if(uniq) return { el: uniq.el, active: uniq.active, scope: 'page' };
+        return { el: null, active: false, scope: 'none' };
+    }
+
+    // 点赞/收藏/关注各自「页面上的按钮长什么样」。
+    // 定义在模块级是为了让单测和实测脚本用的是同一份，而不是各写一遍。
+    // 选择器按「实测过的真实结构」排序，常见形态放前面：
+    //   · 动态卡片（t.bilibili.com / 空间动态）：<div class="bili-dyn-action like" data-type="like">
+    //     注意是 `bili-dyn-action like` 两个类，不是 `dyn-action__like`——后者从未存在过。
+    //   · 动态卡片的关注：<div class="bili-dyn-follow-btn">，图标是 __icon 子节点，别选错。
+    //   · 动态卡片没有收藏按钮（B 站把它放进卡片右上角「更多」菜单），这里找不到属正常。
+    const ACTION_SELECTOR_GROUPS = {
+        like: [
+            { name:'点赞', selectors:['.bili-dyn-action.like', '[class*="bili-dyn-action"][class*="like"]', '[data-type="like"][class*="bili-dyn-action"]'] },
+            { name:'点赞', selectors:['.bili-dyn-action__like', '[class*="dyn-action__like"]'] },
+            { name:'点赞', selectors:['.opus-like', '[class*="opus-like"]', '[class*="opus-detail__like"]', '[class*="like-btn"]'] },
+            { name:'点赞', selectors:['[data-action="like"]', '[class*="action-like"]', '[class*="like-action"]'] }
+        ],
+        fav: [
+            { name:'收藏', selectors:['.opus-collect', '[class*="opus-collect"]', '[class*="opus-detail__collect"]'] },
+            { name:'收藏', selectors:['[class*="fav-btn"]', '[class*="collect-btn"]', '[class*="star-btn"]', '[class*="favorite"]'] },
+            { name:'收藏', selectors:['[data-action="favorite"]', '[data-action="collect"]', '[class*="action-fav"]'] }
+        ],
+        follow: [
+            { name:'关注', selectors:['.bili-dyn-follow-btn', '[class*="bili-dyn-follow-btn"]:not([class*="__icon"])'] },
+            { name:'关注', selectors:['[class*="follow-btn"]:not([class*="icon"])', '[class*="header-follow"]', '[class*="relation-btn"]'] }
+        ]
+    };
 
     // ========================================================================
     // 自动续载：让页面/接口吐出更多内容
@@ -3120,6 +3216,12 @@
             '</div>' +
             '<div class="bp-review__uptext" id="bili-review-uptext">' + (upInfo.upText ? esc(upInfo.upText) : '') + '</div>' +
             '<div style="margin-top:4px;padding-top:10px;border-top:1px solid var(--bp-border);">' +
+            // 这三个动作都作用在「当前这张图所属的那条动态」上，所以先把目标写出来，
+            // 不然用户无从判断点下去会落到谁的头上。
+            '<div id="bili-review-target" class="bp-hint" style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">' +
+                '<span id="bili-review-target-text" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>' +
+                '<button id="bili-review-locate" class="bp-btn bp-btn--sm" title="在页面里滚动到并高亮这条内容" style="flex-shrink:0;padding:2px 7px;">📍</button>' +
+            '</div>' +
             '<button id="bili-review-like" class="bp-btn bp-btn--block" style="border-color:#fb7299;color:#fb7299;margin-bottom:8px;">👍 点赞</button>' +
             '<button id="bili-review-fav" class="bp-btn bp-btn--block" style="border-color:#ffa940;color:#ffa940;margin-bottom:8px;">☆ 收藏</button>' +
             '<button id="bili-review-follow" class="bp-btn bp-btn--block" style="border-color:var(--bp-accent);color:var(--bp-accent);margin-bottom:8px;">＋ 关注</button>' +
@@ -3150,6 +3252,8 @@
         const likeBtn = panel.querySelector('#bili-review-like');
         const favBtn = panel.querySelector('#bili-review-fav');
         const followBtn = panel.querySelector('#bili-review-follow');
+        const targetTextEl = panel.querySelector('#bili-review-target-text');
+        const locateBtn = panel.querySelector('#bili-review-locate');
         let fullMode = false;
         let capturing = false;
         let pendingKeyListener = null;                 // 正在等待按键的那次录制，面板关掉时要注销，否则会吞掉下一次按键
@@ -3217,6 +3321,8 @@
             if(barEl) barEl.style.width = urls.length ? Math.round(downloaded.size / urls.length * 100) + '%' : '0%';
             try{ renderUpInfo(cur); }catch(e){ /* 取上下文失败不能影响翻页 */ }
             try{ refreshMoreUi(); }catch(e){}
+            // 点赞/收藏/关注的目标跟着这张图走：翻页就重算，绝不复用上一张的那条
+            try{ refreshActionButtons(cur); }catch(e){ /* 页面结构不认识时不该影响翻页 */ }
             // 翻到最后一张就主动探一次，别让用户再按一下右键才知道「到头了」
             if(canFetchMore && !exhausted && !fetching && autoMoreOn &&
                 index >= urls.length - 1 && lastProbedTotal !== urls.length){
@@ -3469,69 +3575,144 @@
             showToast('✅ 键位已恢复默认');
         });
 
-        const LIKE_GROUPS = [
-            { name:'点赞', selectors:['.opus-like', '[class*="opus-like"]', '[class*="opus-detail__like"]', '[class*="like-btn"]'] },
-            { name:'点赞', selectors:['.bili-dyn-action__like', '[class*="dyn-action__like"]'] },
-            { name:'点赞', selectors:['[data-action="like"]', '[class*="action-like"]', '[class*="like-action"]'] }
-        ];
-        const FAV_GROUPS = [
-            { name:'收藏', selectors:['[class*="favorite"]', '[class*="fav-btn"]', '[class*="collect-btn"]', '[class*="star-btn"]'] },
-            { name:'收藏', selectors:['[data-action="favorite"]', '[data-action="collect"]', '[class*="action-fav"]'] }
-        ];
-        const FOLLOW_GROUPS = [
-            { name:'关注', selectors:['[class*="follow-btn"]', '[class*="follow-btn"]', '[class*="header-follow"]', '[class*="be-followed"]', '[class*="relation-btn"]'] }
-        ];
+        // 选择器只有一份（模块级 ACTION_SELECTOR_GROUPS），单测/实测与运行时用的是同一套
+        const LIKE_GROUPS = ACTION_SELECTOR_GROUPS.like;
+        const FAV_GROUPS = ACTION_SELECTOR_GROUPS.fav;
+        const FOLLOW_GROUPS = ACTION_SELECTOR_GROUPS.follow;
         const actionStates = { like: null, fav: null, follow: null };
+        const ACTION_GROUPS = { like: LIKE_GROUPS, fav: FAV_GROUPS, follow: FOLLOW_GROUPS };
 
-        function refreshActionButtons(){
-            const likeHit = findActionButton(LIKE_GROUPS);
-            const favHit = findActionButton(FAV_GROUPS);
-            const followHit = findActionButton(FOLLOW_GROUPS);
-            actionStates.like = likeHit;
-            actionStates.fav = favHit;
-            actionStates.follow = followHit;
-            if(likeBtn){
-                const on = !!(likeHit && likeHit.active);
-                likeBtn.textContent = on ? '❤️ 已点赞' : '👍 点赞';
-                likeBtn.style.background = on ? 'rgba(251,114,153,.16)' : 'transparent';
+        // 每个按钮对应的「悬停说明」——直接告诉用户这次点击会落到谁身上
+        const ACTION_HINTS = {
+            like: { on: '❤️ 已点赞', off: '👍 点赞', label: '点赞' },
+            fav: { on: '★ 已收藏', off: '☆ 收藏', label: '收藏' },
+            follow: { on: '✔ 已关注', off: '＋ 关注', label: '关注' }
+        };
+
+        // 当前这张图的操作目标容器（点赞/收藏/关注都只在这条内容里找）
+        const currentBox = () => {
+            try{ return containerForImageUrl(urls[index] || ''); }catch(e){ return null; }
+        };
+
+        // scope 说明：box=这是当前那张图所在的那条内容；page=页面里只有一个目标；
+        // none=定位不到（列表页多条目时故意不给点，避免点到别人头上）
+        function describeScope(hit, key, box){
+            if(!hit || !hit.el){
+                // 动态卡片底部只有转发/评论/点赞，收藏在卡片右上角「更多」里 —— 说清楚而不是让人以为坏了
+                const isDynCard = !!(box && box.classList && box.classList.contains &&
+                    box.classList.contains('bili-dyn-item'));
+                if(key === 'fav' && isDynCard){
+                    return { text: '✕ 动态卡片无收藏', tip: '动态卡片底部只有转发/评论/点赞；收藏在卡片右上角「更多」菜单里，请到页面操作' };
+                }
+                if(key === 'fav'){
+                    return { text: '✕ 找不到收藏按钮', tip: '当前这条内容里没有可点的收藏按钮，请到页面直接操作' };
+                }
+                return { text: '✕ 定位不到目标', tip: '当前这张图不在页面里，或页面上有多个同类按钮无法区分' };
             }
-            if(favBtn){
-                const on = !!(favHit && favHit.active);
-                favBtn.textContent = on ? '★ 已收藏' : '☆ 收藏';
-                favBtn.style.background = on ? 'rgba(255,169,64,.16)' : 'transparent';
+            if(hit.scope === 'box') return { text: '✓ 这条动态', tip: '操作对象＝当前这张图所属的那条动态' };
+            return { text: '⚠ 页面唯一目标', tip: '这张图不在页面里，退回页面里唯一的那个目标' };
+        }
+
+        function refreshActionButtons(cur){
+            const url = cur || urls[index] || '';
+            let box = null;
+            try{ box = containerForImageUrl(url); }catch(e){ box = null; }
+            const hits = {
+                like: findActionTarget(LIKE_GROUPS, box),
+                fav: findActionTarget(FAV_GROUPS, box),
+                follow: findActionTarget(FOLLOW_GROUPS, box)
+            };
+            actionStates.like = hits.like;
+            actionStates.fav = hits.fav;
+            actionStates.follow = hits.follow;
+            const paint = (btn, hit, key) => {
+                if(!btn) return;
+                const h = ACTION_HINTS[key];
+                const available = !!(hit && hit.el);
+                btn.textContent = available && hit.active ? h.on : h.off;
+                btn.style.background = available && hit.active
+                    ? (key === 'like' ? 'rgba(251,114,153,.16)' : key === 'fav' ? 'rgba(255,169,64,.16)' : 'rgba(0,161,214,.16)')
+                    : 'transparent';
+                btn.style.opacity = available ? '' : '.45';
+                btn.title = available
+                    ? ('作用于' + (hit.scope === 'box' ? '当前这条内容' : '页面上唯一的目标'))
+                    : describeScope(hit, key, box).tip;
+            };
+            paint(likeBtn, hits.like, 'like');
+            paint(favBtn, hits.fav, 'fav');
+            paint(followBtn, hits.follow, 'follow');
+            if(targetTextEl){
+                // 最能说明问题的是「点赞」这个几乎每个页面都有的动作
+                const primaryKey = hits.like.el ? 'like' : (hits.fav.el ? 'fav' : 'follow');
+                const d = describeScope(hits[primaryKey], primaryKey, box);
+                targetTextEl.textContent = d.text;
+                targetTextEl.title = d.tip;
             }
-            if(followBtn){
-                const on = !!(followHit && followHit.active);
-                followBtn.textContent = on ? '✔ 已关注' : '＋ 关注';
-                followBtn.style.background = on ? 'rgba(0,161,214,.16)' : 'transparent';
+        }
+
+        // 把这条内容滚进视口并高亮一下，让用户确认「操作对象就是它」
+        function locateCurrentTarget(){
+            const hit = (() => { try{ return findImageNode(urls[index] || ''); }catch(e){ return null; } })();
+            const box = hit && hit.box;
+            const node = box || (hit && hit.img);
+            if(!node){
+                showToast('这张图当前不在页面里，没法定位\n（列表虚拟滚动会把滚走的内容回收）');
+                return;
             }
+            try{ node.scrollIntoView({ block:'center', behavior:'smooth' }); }
+            catch(e){ try{ node.scrollIntoView(); }catch(_){} }
+            try{
+                box.classList.add('bp-action-scope');
+                setTimeout(() => { try{ box.classList.remove('bp-action-scope'); }catch(e){} }, 1800);
+            }catch(e){}
         }
 
         const bindAction = (btn, key, label) => {
             if(!btn) return;
             btn.addEventListener('click', () => {
-                const hit = actionStates[key];
-                if(!hit || !hit.el){
-                    showToast('未找到' + label + '按钮，请在页面右侧直接操作');
+                // 每次都按「当前这张图」重新解析，不用打开面板时的缓存：
+                // 翻页之后目标就变了，用旧引用一定会点到上一张所属的那条。
+                const cur = urls[index] || '';
+                let box = null;
+                try{ box = containerForImageUrl(cur); }catch(e){ box = null; }
+                const hit = findActionTarget(ACTION_GROUPS[key], box);
+                actionStates[key] = hit;
+                const d = describeScope(hit, key, box);
+                if(!hit.el){
+                    showToast('没法确定要' + label + '哪一条：' + d.tip + '\n请在页面里直接操作');
+                    refreshActionButtons(cur);
                     return;
                 }
                 try{
                     hit.el.click();
-                }catch(e){}
-                showToast((hit.active ? '已取消' : '已') + label);
-                setTimeout(refreshActionButtons, 600);
+                }catch(e){
+                    showToast('点' + label + '按钮失败，请在页面里直接操作');
+                    return;
+                }
+                // 提示文案按「点完之后」的真实状态写：B 站的按钮状态常常只体现在
+                // 类名/文案变化上，用点击前的快照报「已点赞」会谎报。
+                setTimeout(() => {
+                    let on = false;
+                    try{
+                        const after = findActionTarget(ACTION_GROUPS[key], box);
+                        on = !!(after && after.el && after.active);
+                    }catch(e){}
+                    showToast((on ? '已' : '已取消') + label +
+                        (hit.scope === 'box' ? '（当前这条）' : '（页面唯一目标）'));
+                    refreshActionButtons(cur);
+                }, 600);
             });
         };
         bindAction(likeBtn, 'like', '点赞');
         bindAction(favBtn, 'fav', '收藏');
         bindAction(followBtn, 'follow', '关注');
+        if(locateBtn) locateBtn.addEventListener('click', locateCurrentTarget);
 
         panel.addEventListener('click', (e) => {
             if(e.target === panel) close();
         });
 
         render();
-        refreshActionButtons();
 
         serverApi('/check', { urls }).then(json => {
             if(json && Array.isArray(json.results)){
@@ -5957,6 +6138,14 @@
             // UP 上下文（按图取所属动态的作者/文案），给单测用
             upInfoForImageUrl: upInfoForImageUrl,
             upInfoFromContainer: upInfoFromContainer,
+            // 动作作用域：点赞/收藏/关注必须落在「当前这张图所属的那条」上
+            findImageNode: findImageNode,
+            containerForImageUrl: containerForImageUrl,
+            findActionButtonIn: findActionButtonIn,
+            findUniqueActionButton: findUniqueActionButton,
+            findActionTarget: findActionTarget,
+            elementIsActive: elementIsActive,
+            ACTION_SELECTOR_GROUPS: ACTION_SELECTOR_GROUPS,
             showDonatePanel: showDonatePanel,
             // 纯函数（无 DOM 依赖），给单测用
             planVideoTargets: planVideoTargets,

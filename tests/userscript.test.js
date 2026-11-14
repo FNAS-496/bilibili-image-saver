@@ -726,6 +726,31 @@ check('detectPageType：收藏夹页（含旧版 medialist）识别为 favlist',
     assert.notStrictEqual(loadUserscript(FULL, 'https://www.bilibili.com/video/BV1xx411c7mD').detectPageType().type, 'favlist');
 });
 
+// t.bilibili.com 首页以前落到 'other'，审查面板于是只能拿「整页第一个 UP 名」兜底：
+// 关注流里一条条不同作者，翻第二张图时名字还是第一个作者的。
+check('detectPageType：t.bilibili.com 首页是多条动态列表，单条才是动态详情', () => {
+    for (const href of ['https://t.bilibili.com/', 'https://t.bilibili.com']) {
+        assert.strictEqual(loadUserscript(FULL, href).detectPageType().type, 'dynamic-list', href);
+    }
+    for (const href of ['https://t.bilibili.com/123456789', 'https://space.bilibili.com/2/dynamic']) {
+        assert.notStrictEqual(loadUserscript(FULL, href).detectPageType().type, 'other', href);
+    }
+    assert.strictEqual(loadUserscript(FULL, 'https://t.bilibili.com/123456789').detectPageType().type, 'dynamic-detail');
+});
+
+check('elementIsActive：只有状态词才算「已操作」，静态类名不能误判', () => {
+    const el = cls => ({ className: cls, getAttribute: () => null, textContent: '' });
+    const { elementIsActive } = hooks['环境版'];
+    // .collect-btn 里含 "collect"：若把 collect 当状态词，收藏按钮会永远显示「已收藏」
+    assert.strictEqual(elementIsActive(el('collect-btn')), false, 'collect-btn 被误判成已收藏');
+    assert.strictEqual(elementIsActive(el('favorite-btn')), false, 'favorite-btn 被误判');
+    assert.strictEqual(elementIsActive(el('like-btn')), false, 'like-btn 被误判成已点赞');
+    assert.strictEqual(elementIsActive(el('like-btn active')), true, '真正的 active 没识别出来');
+    assert.strictEqual(elementIsActive(el('bili-dyn-follow-btn')), false, '关注按钮被误判成已关注');
+    assert.strictEqual(elementIsActive({ className: 'bili-dyn-follow-btn', getAttribute: () => null, textContent: '已关注' }),
+        true, '文案「已关注」没被识别');
+});
+
 // 造一页收藏夹接口响应
 const favPage = (pn, n, opts) => {
     const o = opts || {};
@@ -875,7 +900,171 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         assert.ok(/const ACCEPT_JSON = 'application\/json/.test(t), '没有 JSON 用的 Accept 常量');
         assert.ok(/\{ accept: ACCEPT_JSON \}/.test(t), '收藏夹接口没有显式传 accept: ACCEPT_JSON');
     });
+
+    // 点赞/收藏/关注曾经用 document.querySelector 全局取第一个：动态列表里一页好几条，
+    // 于是「给当前这张图点赞」实际赞的是页面第一条，图上显示甲的 UP 名、赞却落在乙身上。
+    check(label + '：点赞/收藏/关注不能全局取第一个（必须限定到当前图所属的那条）', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(!/function findActionButton\(groups\)/.test(t),
+            '还在用「全局取第一个」的 findActionButton');
+        assert.ok(/function findActionButtonIn\(scope, groups\)/.test(t), '缺作用域版 findActionButtonIn');
+        assert.ok(/function findUniqueActionButton\(groups\)/.test(t), '缺页面唯一兜底 findUniqueActionButton');
+        assert.ok(/function findActionTarget\(groups, box\)/.test(t), '缺 findActionTarget');
+        // 页面级兜底必须要求「全页只匹配到一个」，多于一个就拒绝（宁可点不了也不能点错）
+        const at = t.indexOf('function findUniqueActionButton(groups)');
+        const seg = t.slice(at, at + 700);
+        assert.ok(/list\.length === 1/.test(seg), '页面级兜底没有「唯一」这个前提');
+        assert.ok(!/querySelectorAll\(sel\)\[0\]/.test(seg), '页面级兜底仍在直接取第 0 个');
+
+        // 点下去那一刻必须按当前图重新解析，不能用打开面板时的缓存引用
+        const bind = t.indexOf('const bindAction = (btn, key, label) => {');
+        assert.ok(bind > 0, '缺 bindAction');
+        const bindSeg = t.slice(bind, bind + 1200);
+        assert.ok(/containerForImageUrl\(cur\)/.test(bindSeg),
+            'bindAction 点击时没有按当前图重新定位容器（翻页后会点到上一张所属的那条）');
+        assert.ok(/findActionTarget\(ACTION_GROUPS\[key\], box\)/.test(bindSeg),
+            'bindAction 没有用 findActionTarget 重新解析');
+
+        // 翻页时目标要跟着换
+        const renderAt = t.indexOf('const render = () => {');
+        const renderSeg = t.slice(renderAt, renderAt + 1100);
+        assert.ok(/refreshActionButtons\(cur\)/.test(renderSeg), 'render() 没刷新动作按钮的目标');
+
+        // 目标要写出来，并且能一键定位高亮（否则用户不知道点下去会落到谁头上）
+        assert.ok(/id="bili-review-target-text"/.test(t), '审查面板没有「操作目标」提示');
+        assert.ok(/id="bili-review-locate"/.test(t), '审查面板没有「在页面里定位」按钮');
+        assert.ok(/bp-action-scope/.test(t), '高亮定位没用 bp-action-scope');
+    });
+
+    // 选择器必须用「实测过的真实类名」：动态卡片的点赞是 `bili-dyn-action like`（两个类），
+    // 曾经写的 `.dyn-action__like` / `[class*="action-like"]` 在真实页面上一个都匹配不到 ——
+    // 结果是按钮永远「定位不到」，功能静默失效。
+    check(label + '：动作选择器用实测过的真实类名', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(t.indexOf("'.bili-dyn-action.like'") >= 0, '缺实测类名 .bili-dyn-action.like');
+        assert.ok(/\[data-type="like"\]/.test(t), '缺 data-type="like"（B 站用的是 data-type，不是 data-action）');
+        assert.ok(t.indexOf("'.bili-dyn-follow-btn'") >= 0, '缺实测类名 .bili-dyn-follow-btn');
+        assert.ok(/:not\(\[class\*="__icon"\]\)/.test(t), '关注按钮没排除 __icon 子节点（会点到图标上）');
+    });
 }
+
+// ── 10. 动作作用域（假 DOM）：容器优先 / 多目标拒绝 / 唯一兜底 ──
+// 这一组是那个 bug 的直接回归测试：动态列表里两条不同动态各有按钮，
+// 点「点赞」必须落在「当前这张图所属的那条」上，而不是页面第一条。
+const ACT_LIKE = [{ name: '点赞', selectors: ['.like-btn'] }];
+
+function makeActEl(cls) {
+    return {
+        className: cls || '',
+        getAttribute() { return null; },
+        clicks: 0,
+        click() { this.clicks++; }
+    };
+}
+
+// 假 <img>：能按 URL 命中，并能 closest 到指定容器
+function makeFakeImg(url, box) {
+    return {
+        currentSrc: url,
+        src: url,
+        getAttribute() { return null; },
+        closest() { return box || null; }
+    };
+}
+
+function loadWithFakeDom() {
+    const sb = loadWithMockFetch(FULL, 'https://space.bilibili.com/123/dynamic', () => ({ body: { code: 0 } }));
+    return { sb, hooks: sb.window.__biliPlusTest };
+}
+
+const domCase = loadWithFakeDom();
+
+check('动作作用域：容器内有按钮就用容器内的（即使页面里另有同名按钮）', () => {
+    const { sb, hooks } = domCase;
+    const inner = makeActEl('like-btn');
+    const other = makeActEl('like-btn');
+    const box = { querySelector: sel => (sel === '.like-btn' ? inner : null) };
+    sb.document.querySelectorAll = sel => (sel === '.like-btn' ? [other] : []);
+    const hit = hooks.findActionTarget(ACT_LIKE, box);
+    assert.strictEqual(hit.el, inner, '没有优先用容器内的按钮');
+    assert.strictEqual(hit.scope, 'box');
+});
+
+check('动作作用域：容器内没有 + 页面多个同名按钮 → 拒绝（宁可点不了也不能点错）', () => {
+    const { sb, hooks } = domCase;
+    const box = { querySelector: () => null };
+    sb.document.querySelectorAll = sel => (sel === '.like-btn' ? [makeActEl(), makeActEl()] : []);
+    const hit = hooks.findActionTarget(ACT_LIKE, box);
+    assert.strictEqual(hit.el, null, '页面里有两个目标时仍然选中了一个（会点到别人头上）');
+    assert.strictEqual(hit.scope, 'none');
+});
+
+check('动作作用域：容器找不到（图被虚拟列表回收）+ 页面唯一目标 → 采用页面唯一', () => {
+    const { sb, hooks } = domCase;
+    const only = makeActEl('like-btn');
+    sb.document.querySelectorAll = sel => (sel === '.like-btn' ? [only] : []);
+    const hit = hooks.findActionTarget(ACT_LIKE, null);
+    assert.strictEqual(hit.el, only, '视频页/作品页这类单目标页面反而点不了了');
+    assert.strictEqual(hit.scope, 'page');
+});
+
+check('动作作用域：完全没有按钮时返回 none（不抛错、不误点）', () => {
+    const { sb, hooks } = domCase;
+    sb.document.querySelectorAll = () => [];
+    const hit = hooks.findActionTarget(ACT_LIKE, { querySelector: () => null });
+    assert.strictEqual(hit.el, null);
+    assert.strictEqual(hit.scope, 'none');
+});
+
+check('动作作用域：能识别「已点赞」状态（读容器内那个按钮的类名）', () => {
+    const { sb, hooks } = domCase;
+    const inner = makeActEl('like-btn active');
+    sb.document.querySelectorAll = () => [];
+    const hit = hooks.findActionTarget(ACT_LIKE, { querySelector: () => inner });
+    assert.strictEqual(hit.active, true, '容器内的「已点赞」没被识别');
+});
+
+check('按图找容器：两条动态的图各回各家（第二个作者不会被认成第一个）', () => {
+    const { sb, hooks } = domCase;
+    const boxA = { tag: 'A' };
+    const boxB = { tag: 'B' };
+    const urlA = 'https://i0.hdslb.com/bfs/new_dyn/a.jpg';
+    const urlB = 'https://i0.hdslb.com/bfs/new_dyn/b.jpg';
+    sb.document.querySelectorAll = sel => (sel === 'img'
+        ? [makeFakeImg(urlA, boxA), makeFakeImg(urlB, boxB)]
+        : []);
+    assert.strictEqual(hooks.containerForImageUrl(urlB), boxB, 'B 的图被认成了 A 的容器');
+    assert.strictEqual(hooks.containerForImageUrl(urlA), boxA);
+});
+
+check('按图找容器：同图多份时跳过不在动态容器里的那份', () => {
+    const { sb, hooks } = domCase;
+    const box = { tag: 'card' };
+    const url = 'https://i0.hdslb.com/bfs/new_dyn/dup.jpg';
+    sb.document.querySelectorAll = sel => (sel === 'img'
+        ? [makeFakeImg(url, null), makeFakeImg(url, box)]
+        : []);
+    assert.strictEqual(hooks.containerForImageUrl(url), box, '命中了没有容器的那个 <img> 就放弃了');
+});
+
+check('按图找容器：URL 带 @ 后缀 / webp 也能匹配到原图', () => {
+    const { sb, hooks } = domCase;
+    const box = { tag: 'card' };
+    sb.document.querySelectorAll = sel => (sel === 'img'
+        ? [makeFakeImg('https://i0.hdslb.com/bfs/new_dyn/x.jpg@100w.webp', box)]
+        : []);
+    assert.strictEqual(
+        hooks.containerForImageUrl('https://i0.hdslb.com/bfs/new_dyn/x.jpg'),
+        box,
+        '带 @ 后缀的缩略图地址匹配不到原图');
+});
+
+check('按图找容器：图不在页面里时返回 null（虚拟滚动回收）', () => {
+    const { sb, hooks } = domCase;
+    sb.document.querySelectorAll = () => [];
+    assert.strictEqual(hooks.containerForImageUrl('https://i0.hdslb.com/bfs/new_dyn/gone.jpg'), null);
+    assert.strictEqual(hooks.findImageNode(''), null);
+});
 
 check('版本号三处同步（package.json / 环境版 / 便携版）', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;

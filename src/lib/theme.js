@@ -437,6 +437,9 @@
             // 动态文案动辄几百字：限高并内部滚动，否则会把下面的「全部下载」推出屏幕
             '    max-height:34vh;overflow-y:auto;scrollbar-width:thin;',
             '    background:var(--bp-subtle);border-radius:var(--bp-radius-md);}',
+            // 审查面板点 📍 时给「这条内容」套的高亮圈（作用域提示，1.8 秒后自动摘掉）
+            '.bp-action-scope{outline:3px solid var(--bp-accent) !important;outline-offset:3px !important;',
+            '    border-radius:6px;transition:outline-color var(--bp-dur);}',
             '@media (max-width:760px){',
             '    .bp-review__side{width:150px;padding:10px;}',
             '    .bp-review__side--right{width:150px;}',
