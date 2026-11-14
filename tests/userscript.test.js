@@ -517,7 +517,7 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         assert.ok(/if\(!upText && st\.opusData && st\.opusData\.title\)/.test(t), '缺 opusData 文案兜底');
     });
 
-    check(label + '：自动续载 = 隐形锚点 + 优先点「加载更多」', () => {
+    check(label + '：自动续载三层降级（按钮 → 页面哨兵 → 容器/锚点）', () => {
         const t = fs.readFileSync(file, 'utf8');
         assert.ok(/const AUTO_MORE_ID = 'bili-auto-more'/.test(t), '缺隐形锚点 id');
         assert.ok(/function ensureAutoMoreAnchor\(\)/.test(t), '缺 ensureAutoMoreAnchor');
@@ -534,15 +534,40 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         // 固定/绝对定位的包含块不是滚动容器 —— 对它 scrollIntoView 页面根本不会滚（实测 scrollY 不变）
         assert.ok(!/position:\s*(fixed|absolute)/.test(css[1]),
             '锚点用了 fixed/absolute 定位：scrollIntoView 不会滚动页面，自动续载会静默失效');
-        // 有按钮优先点，没有才滚动
+
+        // 三层降级都要在
         assert.ok(/function findLoadMoreControl\(\)/.test(t), '缺 findLoadMoreControl');
+        assert.ok(/function findPageSentinel\(\)/.test(t), '缺 findPageSentinel（页面自己的哨兵）');
+        assert.ok(/function findScrollContainer\(\)/.test(t), '缺 findScrollContainer（内部滚动容器）');
+
         const once = t.slice(t.indexOf('async function autoLoadMoreOnce'), t.indexOf('async function autoLoadMoreForImages'));
-        assert.ok(/if\(btn\)\{[\s\S]{0,120}return 'click'/.test(once), '没有「优先点按钮」的分支');
-        assert.ok(/return 'scroll'/.test(once), '没有滚动触发的兜底');
-        assert.ok(/a\.scrollIntoView\(\{ block: 'end'/.test(once), '滚动分支没把锚点滚进视口');
-        // scrollIntoView 没生效时（固定/绝对定位、或页面用 overflow 容器滚动）要能兜底
+        const iBtn = once.indexOf('findLoadMoreControl()');
+        const iSentinel = once.indexOf('findPageSentinel()');
+        const iScroller = once.indexOf('findScrollContainer()');
+        assert.ok(iBtn > 0 && iSentinel > iBtn && iScroller > iSentinel,
+            '三层顺序不对：应为 按钮 → 哨兵 → 容器');
+        assert.ok(/return grew \? 'click' : 'none'/.test(once), '点按钮分支没返回 click');
+        assert.ok(/return 'sentinel'/.test(once), '没有哨兵分支');
+        assert.ok(/return grew \? 'scroll' : 'none'/.test(once), '滚动分支没返回结果');
+        assert.ok(/scroller\.scrollTo\(0, scroller\.scrollHeight\)/.test(once), '没滚真正的容器');
         assert.ok(/window\.scrollTo\(0, document\.documentElement\.scrollHeight\)/.test(once),
             '缺「直接滚到文档底部」的兜底');
+    });
+
+    check(label + '：用 MutationObserver 等页面变化，不再死等固定毫秒', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/function waitUntil\(cond, timeoutMs\)/.test(t), '缺 waitUntil');
+        const at = t.indexOf('function waitUntil(cond, timeoutMs)');
+        const seg = t.slice(at, at + 1200);
+        assert.ok(/new MutationObserver/.test(seg), 'waitUntil 没用 MutationObserver');
+        assert.ok(/obs\.disconnect/.test(seg), 'waitUntil 没在结束时断开观察（会泄漏）');
+        assert.ok(/function pageSignature\(\)/.test(t), '缺 pageSignature');
+        // 触发之后必须「等变化」，不能又退回 sleep(固定值)
+        const once = t.slice(t.indexOf('async function autoLoadMoreOnce'), t.indexOf('async function autoLoadMoreForImages'));
+        assert.ok(/await waitUntil\(\(\) => pageSignature\(\) !== sig/.test(once),
+            'autoLoadMoreOnce 没等页面真的变化');
+        assert.ok(!/await sleep\(waitMs \|\| AUTO_MORE_WAIT\)/.test(once),
+            '又退回固定 sleep 了（网慢会漏）');
     });
 
     check(label + '：审查模式能「一直有图」——翻到尾部自动续载', () => {
@@ -580,6 +605,58 @@ for (const [label, file] of [['环境版', FULL], ['便携版', PORTABLE]]) {
         // 参数 0 时按钮文案不能写成「最多 0 张」
         assert.ok(/\(maxPerRun \? \('全部下载（最多 ' \+ maxPerRun \+ ' 张）'\) : '全部下载'\)/.test(t),
             '按钮文案没按上限切换');
+    });
+
+    check(label + '：动态接口分页（最优路径）：字段解析正确、必须用 JSON Accept', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/async function fetchDynamicPage\(mid, offset\)/.test(t), '缺 fetchDynamicPage');
+        assert.ok(/x\/polymer\/web-dynamic\/v1\/feed\/space/.test(t), '接口地址不对');
+        // 用 text/html 请求 JSON 接口会被回 412（收藏夹那轮踩过），这里必须显式要 JSON
+        assert.ok(/\{ accept: ACCEPT_JSON \}/.test(t), '请求 JSON 接口没带 Accept: application/json');
+        // 三个取图位置 + 转发里的原动态
+        for (const f of ['major.draw', 'major.opus', 'major.article', 'node.orig']) {
+            assert.ok(t.indexOf(f) >= 0, '取图逻辑漏了 ' + f);
+        }
+        assert.ok(/function dynamicItemImageUrls\(item\)/.test(t), '缺 dynamicItemImageUrls');
+        assert.ok(/function dynamicItemMeta\(item\)/.test(t), '缺 dynamicItemMeta');
+        const metaAt = t.indexOf('function dynamicItemMeta(item)');
+        const metaSeg = t.slice(metaAt, metaAt + 700);
+        assert.ok(/module_author/.test(metaSeg), '作者应从 module_author 取');
+        assert.ok(/module_dynamic/.test(metaSeg), '文案应从 module_dynamic 取');
+        // 分页循环要有：has_more 判断、offset 前进、限速、页数上限
+        const colAt = t.indexOf('async function collectDynamicImages(mid, opts)');
+        const colSeg = t.slice(colAt, colAt + 2200);
+        assert.ok(/data\.has_more/.test(colSeg), '没判 has_more（会无限翻页）');
+        assert.ok(/offset = next/.test(colSeg), 'offset 没前进');
+        assert.ok(/await sleep\(DYN_PAGE_DELAY\)/.test(colSeg), '没有限速（容易被风控）');
+        assert.ok(/maxPages/.test(colSeg), '没有页数上限');
+    });
+
+    check(label + '：动态页的自动续载走接口，而不是滚动 DOM', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/const useDynamicApi = !!\(pageInfo && pageInfo\.type === 'dynamic-list' && pageInfo\.uid\)/.test(t),
+            '没识别「空间动态页」');
+        assert.ok(/const makeFetchMore = \(\) => useDynamicApi \? makeDynamicApiFetcher\(\) : makeDomFetcher\(\)/.test(t),
+            'fetchMore 没按页面类型分流（接口优先）');
+        // 接口路径要带上每条动态自己的作者/文案，交给面板用
+        assert.ok(/apiMeta\.set\(k, meta\)/.test(t), '接口拿到的作者/文案没存起来');
+        assert.ok(/metaFor: useDynamicApi \?/.test(t), '没把 metaFor 传给审查面板');
+        // 被风控要立刻停手
+        assert.ok(/if\(isRateLimited\(e && e\.message\)\) done = true/.test(t), '412 时没有停止翻页');
+    });
+
+    check(label + '：审查面板可以暂停自动续载，且有总量保护', () => {
+        const t = fs.readFileSync(file, 'utf8');
+        assert.ok(/id="bili-review-more-stop"/.test(t), '缺「暂停自动续载」按钮');
+        assert.ok(/id="bili-review-more-state"/.test(t), '缺续载状态文本');
+        assert.ok(/let autoMoreOn = canFetchMore;/.test(t), '缺 autoMoreOn 开关');
+        const fetchSeg = t.slice(t.indexOf('const maybeFetchMore = async (force) =>'), t.indexOf('const maybeFetchMore = async (force) =>') + 1600);
+        assert.ok(/!autoMoreOn\) return 0/.test(fetchSeg), '暂停后仍在续载');
+        assert.ok(/urls\.length >= AUTO_MORE_MAX_IMAGES/.test(fetchSeg), '没有总量保护');
+        assert.ok(/autoMoreOn = false;/.test(fetchSeg), '到上限后没自动停');
+        assert.ok(/autoMoreOn = !autoMoreOn;/.test(t), '暂停按钮没接上');
+        // 暂停时状态栏要说清楚
+        assert.ok(/⏸ 已暂停/.test(t), '进度胶囊/状态栏没显示「已暂停」');
     });
 
     check(label + '：「已下载」以磁盘真实文件为准，不只信 IndexedDB 记账', () => {

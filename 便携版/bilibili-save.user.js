@@ -2,7 +2,7 @@
 // @name         Bilibili-Plus 哔哩哔哩增强（原图/视频批量下载）（便携版·无需环境）
 // @name:en      Bilibili-Plus - Enhanced Bilibili Downloader (Portable)
 // @namespace    https://github.com/FNAS-496/bilibili-image-saver
-// @version      0.11.4
+// @version      0.11.5
 // @author       FNAS-496 <sijiudeliu@outlook.com>
 // @description  Bilibili-Plus：B 站原图/视频批量下载增强。审查模式显示全部图片并标记已下载、点赞/关注/收藏状态检测、只看大图、自定义键位、四套主题（跟随系统/云白/夜空/樱花）（默认不自动下载，需点击按钮）；便携版纯浏览器运行，无需安装任何环境）
 // @description:en Bilibili-Plus: auto-download original images from Bilibili favorites, dynamics, opus and space pages; video batch download, review mode, custom keys (needs the local server started via "一键启动.bat")
@@ -2792,14 +2792,62 @@
     }
 
     // ========================================================================
-    // 自动续载：让页面自己「加载更多」
+    // 自动续载：让页面/接口吐出更多内容
     // ========================================================================
-    // 动态列表 / 新版收藏夹都是**无限滚动**：不滚动到底，新内容永远不出现，
-    // 审查模式审到第 20 张就断了。这里注入一个 1×1 的隐形锚点挂在页面最底端，
-    // 需要时把它滚进视口（B 站的 IntersectionObserver 就会去拉下一页）；
-    // 能直接找到「加载更多 / 下一页」按钮时优先点按钮（分页式页面只能这样）。
+    // 不同站点、同一站点的不同版本，加载方式差别很大，所以分三层，逐级降级：
+    //   ① 接口分页（最优）：能拿到总数、能自己限速、能断点续传、不依赖 DOM，也不受懒加载影响
+    //   ② 页面自己的哨兵 / 加载更多按钮：合作式触发，命中最准
+    //   ③ 自塞隐形锚点 + 滚动容器探测：最后的兜底
+    // 触发之后一律用 MutationObserver **等变化**，不再死等固定毫秒数
+    //（原来固定 1400ms 是猜的：网慢就漏、网快就白等）。
     const AUTO_MORE_ID = 'bili-auto-more';
-    const AUTO_MORE_WAIT = 1400;                       // 等页面把新内容渲染出来
+    const AUTO_MORE_WAIT = 2500;            // 单轮最多等这么久（一有变化就立刻返回）
+    const AUTO_MORE_MAX_IMAGES = 3000;      // 总量保护：到顶就停，别让页面一路滚到天亮
+    const AUTO_MORE_RATE_MS = 600;          // 每轮之间至少间隔，别把页面/接口打得太急
+
+    // 等条件成立（MutationObserver 驱动）。网快立刻返回，网慢也不会漏。
+    function waitUntil(cond, timeoutMs){
+        return new Promise(resolve => {
+            let done = false, obs = null, timer = null;
+            const finish = (v) => {
+                if(done) return;
+                done = true;
+                try{ if(obs) obs.disconnect(); }catch(e){}
+                if(timer) clearTimeout(timer);
+                resolve(v);
+            };
+            try{ if(cond()) return finish(true); }catch(e){}
+            try{
+                obs = new MutationObserver(() => { try{ if(cond()) finish(true); }catch(e){} });
+                obs.observe(document.body || document.documentElement, {
+                    childList: true, subtree: true, attributes: true,
+                    attributeFilter: ['src', 'srcset', 'data-src', 'data-original']
+                });
+            }catch(e){}
+            timer = setTimeout(() => {
+                let v = false;
+                try{ v = !!cond(); }catch(e){}
+                finish(v);
+            }, Math.max(300, timeoutMs || AUTO_MORE_WAIT));
+        });
+    }
+
+    // 「页面长没长」的指纹：图片节点数、带 src 的图片数、文档高度、条目数。
+    // 用它判断「这一轮触发到底有没有效果」，比固定 sleep 可靠。
+    function pageSignature(){
+        try{
+            const imgs = document.querySelectorAll('img').length;
+            const withSrc = document.querySelectorAll(
+                'img[src*="hdslb.com"],img[data-src],img[data-original]'
+            ).length;
+            const de = document.scrollingElement || document.documentElement;
+            const h = de ? de.scrollHeight : 0;
+            const items = document.querySelectorAll(
+                '.bili-dyn-list__item,[class*="dyn-item"],[class*="video-card"],[class*="opus-item"]'
+            ).length;
+            return imgs + ':' + withSrc + ':' + h + ':' + items;
+        }catch(e){ return '0:0:0:0'; }
+    }
 
     function ensureAutoMoreAnchor(){
         let a = document.getElementById(AUTO_MORE_ID);
@@ -2814,7 +2862,6 @@
         //  2) 不能用 position:fixed/absolute —— 对固定定位元素 scrollIntoView 不会滚动页面
         //     （它的包含块是视口，不是滚动容器；实测 scrollY 一动不动）
         //  3) 必须留在文档流末尾 —— 这样 scrollIntoView 才会滚到「页面最低端」
-        // 所以用静态定位 + 1×1 + opacity:0：占位极小、完全看不见，但确实在流里可被滚动到。
         a.style.cssText = 'display:block;width:1px;height:1px;margin:0;padding:0;border:0;' +
             'opacity:0;overflow:hidden;pointer-events:none;font-size:0;line-height:0;' +
             'user-select:none;';
@@ -2830,6 +2877,45 @@
             const cs = getComputedStyle(el);
             return cs.display !== 'none' && cs.visibility !== 'hidden';
         }catch(e){ return false; }
+    }
+
+    // 真正的滚动容器。默认是 window/document，但很多 SPA 用内部 overflow 容器，
+    // 这时候 window.scrollTo 是空转 —— 必须把容器找出来。
+    function findScrollContainer(){
+        const de = document.scrollingElement || document.documentElement;
+        if(de && de.scrollHeight > de.clientHeight + 40) return de;
+        // 只在「看着像容器」的少量候选里找，避免遍历整棵 DOM（B 站页面节点上千）
+        let cands = [];
+        try{
+            cands = document.querySelectorAll(
+                '[class*="scroll"],[class*="list"],[class*="feed"],main,section,[style*="overflow"]'
+            );
+        }catch(e){ return de; }
+        let best = null, bestGap = 40;
+        for(let i = 0; i < cands.length && i < 400; i++){
+            const el = cands[i];
+            try{
+                const cs = getComputedStyle(el);
+                if(!/(auto|scroll|overlay)/.test(cs.overflowY)) continue;
+                const gap = el.scrollHeight - el.clientHeight;
+                if(gap > bestGap){ bestGap = gap; best = el; }
+            }catch(e){}
+        }
+        return best || de;
+    }
+
+    // 页面自己的哨兵 / 加载更多区：它才是页面 IntersectionObserver 真正观察的对象
+    function findPageSentinel(){
+        for(const sel of ['[class*="sentinel"]', '[class*="load-more"]', '[class*="loadmore"]', '[class*="load_more"]']){
+            const el = document.querySelector(sel);
+            if(elementVisible(el)) return el;
+        }
+        // 退一步：列表容器的最后一个条目（滚到它 ≈ 滚到已知内容的末尾）
+        for(const sel of ['.bili-dyn-list__items', '[class*="dyn-list__items"]', '[class*="feed-items"]', '[class*="video-list"]']){
+            const box = document.querySelector(sel);
+            if(box && box.lastElementChild && elementVisible(box.lastElementChild)) return box.lastElementChild;
+        }
+        return null;
     }
 
     // 页面上「加载更多 / 下一页」的入口（找到就点，比滚动可靠）
@@ -2855,45 +2941,73 @@
         return null;
     }
 
-    // 触发一次「加载更多」。返回 'click' | 'scroll' | 'none'
+    // 触发一次「加载更多」。返回 'click' | 'sentinel' | 'scroll' | 'none'
+    // 'none' 表示三种方式都没让页面长出新内容（通常意味着真的到底了）
     async function autoLoadMoreOnce(waitMs){
+        const timeout = Math.max(400, waitMs || AUTO_MORE_WAIT);
+
+        // ① 有按钮：直接点（最确定）
         const btn = findLoadMoreControl();
         if(btn){
+            const sig = pageSignature();
             try{ btn.click(); }catch(e){}
-            await sleep(waitMs || AUTO_MORE_WAIT);
-            return 'click';
+            const grew = await waitUntil(() => pageSignature() !== sig, timeout);
+            return grew ? 'click' : 'none';
         }
+
+        // ② 滚到页面自己的哨兵
+        const sentinel = findPageSentinel();
+        if(sentinel){
+            const sig = pageSignature();
+            try{ sentinel.scrollIntoView({ block: 'end', inline: 'nearest' }); }catch(e){}
+            if(await waitUntil(() => pageSignature() !== sig, timeout)) return 'sentinel';
+        }
+
+        // ③ 兜底：滚动真正的容器 + 自塞锚点
+        const scroller = findScrollContainer();
+        const sig = pageSignature();
         const a = ensureAutoMoreAnchor();
-        const beforeY = (typeof window.scrollY === 'number') ? window.scrollY : 0;
         try{ a.scrollIntoView({ block: 'end', inline: 'nearest' }); }catch(e){}
-        // 兜底：页面用某个 overflow 容器滚动、或锚点被样式挤开时，直接怼到文档底部
-        const moved = Math.abs(((typeof window.scrollY === 'number') ? window.scrollY : 0) - beforeY);
-        if(moved < 10){
+        try{
+            // 用 scrollTo 而不是只依赖场景：锚点可能被某个 overflow 容器隔离在外面
+            if(scroller && typeof scroller.scrollTo === 'function'){
+                scroller.scrollTo(0, scroller.scrollHeight);
+            }
+        }catch(e){
+            try{ if(scroller) scroller.scrollTop = scroller.scrollHeight; }catch(_e){}
+        }
+        if(scroller !== (document.scrollingElement || document.documentElement)){
             try{ window.scrollTo(0, document.documentElement.scrollHeight); }catch(_e){}
         }
-        await sleep(waitMs || AUTO_MORE_WAIT);
-        return 'scroll';
+        const grew = await waitUntil(() => pageSignature() !== sig, timeout);
+        return grew ? 'scroll' : 'none';
     }
 
     // 连续加载，直到图片数量不再增长（或到达上限次数）。返回本次新出现的 URL
     async function autoLoadMoreForImages(known, maxRounds){
-        const seen = new Set(known || []);
+        const norm = u => toOriginalImageUrl(u) || u;
+        const seen = new Set((known || []).map(norm));
         const added = [];
-        const rounds = Math.max(1, Math.min(20, maxRounds || 5));
+        const rounds = Math.max(1, Math.min(30, maxRounds || 5));
         let stall = 0;
         for(let i = 0; i < rounds; i++){
+            if(seen.size >= AUTO_MORE_MAX_IMAGES) break;
             const r = await autoLoadMoreOnce();
-            // 再等一小会儿，让图片节点挂上去（有些卡片是图片懒加载才插 src）
-            await sleep(500);
-            const fresh = extractUrlsFromDoc(document).filter(isContentImageUrl).filter(u => !seen.has(u));
+            const fresh = extractUrlsFromDoc(document).filter(isContentImageUrl).filter(u => !seen.has(norm(u)));
             if(!fresh.length){
-                // 连续两轮没有新图就认为到底了（第一轮可能是刚好在渲染中）
-                if(++stall >= 2) break;
+                if(r === 'none') break;          // 三种触发方式都没效果：确实到头了
+                if(++stall >= 2) break;          // 连续两轮没新图也认为到底
                 continue;
             }
             stall = 0;
-            fresh.forEach(u => { seen.add(u); added.push(u); });
-            if(r === 'none') break;
+            for(const u of fresh){
+                const k = norm(u);
+                if(seen.has(k)) continue;
+                seen.add(k);
+                added.push(u);
+                if(seen.size >= AUTO_MORE_MAX_IMAGES) break;
+            }
+            await sleep(AUTO_MORE_RATE_MS);
         }
         return added;
     }
@@ -2920,12 +3034,15 @@
     // 审查模式面板：左键位 / 中预览 / 右 UP 信息，三栏布局
     // opts.fetchMore : async () => string[]   —— 翻到最后一张时自动加载下一批（「一直有图」）
     // opts.maxPerRun : number                 —— 每次最多下载多少张（0 = 不限）
+    // opts.metaFor   : (url) => {upName,upText,upAvatar} | null
+    //                  按图给上下文（接口分页时用，比翻 DOM 准；图不在 DOM 也能用）
     function openReviewPanel(urls, onDone, opts){
         const existing = document.getElementById('bili-review-panel');
         if(existing) existing.remove();
         injectUiCss();
         const options = opts || {};
         const canFetchMore = typeof options.fetchMore === 'function';
+        const hasMetaFor = typeof options.metaFor === 'function';
         const maxPerRun = Math.max(0, Number(options.maxPerRun) || 0);
         const s = Object.assign({}, DEFAULT_SETTINGS, loadSettings());
         const keys = Object.assign({}, DEFAULT_SETTINGS.keys, s.keys || {});
@@ -2968,9 +3085,16 @@
             '<div>· 已下载的图标记 ✅</div>' +
             '<div>· 「全部下载」一键保存全部</div>' +
             '</div>' +
+            // 自动续载状态 + 暂停（无限续载必须有刹车）
+            (canFetchMore
+                ? '<div id="bili-review-more" style="margin-top:12px;">' +
+                    '<div class="bp-hint" id="bili-review-more-state" style="margin-bottom:6px;"></div>' +
+                    '<button id="bili-review-more-stop" class="bp-btn bp-btn--sm bp-btn--block">⏸ 暂停自动续载</button>' +
+                  '</div>'
+                : '') +
             '<div class="bp-review__progress">' +
             '<div style="display:flex;justify-content:space-between;margin-bottom:6px;">' +
-            '<span>下载进度</span><span><b id="bili-review-dl-count" style="color:var(--bp-accent);">0</b> / ' + urls.length + '</span>' +
+            '<span>下载进度</span><span><b id="bili-review-dl-count" style="color:var(--bp-accent);">0</b> / <span id="bili-review-dl-total">' + urls.length + '</span></span>' +
             '</div>' +
             '<div class="bp-progress"><div class="bp-progress__bar" id="bili-review-bar"></div></div>' +
             '</div>' +
@@ -3013,9 +3137,11 @@
         let fetching = false;                          // 正在加载下一批（防止翻页时重复触发）
         let exhausted = false;                         // 页面已经到底，没有新图了
         let lastProbedTotal = 0;                       // 上次探测「有没有更多」时的队列长度（防重复探测）
+        let autoMoreOn = canFetchMore;                 // 本会话的自动续载开关（暂停按钮用它）
         const imgEl = panel.querySelector('#bili-review-img');
         const progressEl = panel.querySelector('#bili-review-progress');
         const countEl = panel.querySelector('#bili-review-dl-count');
+        const totalEl = panel.querySelector('#bili-review-dl-total');
         const barEl = panel.querySelector('#bili-review-bar');
         const leftEl = panel.querySelector('#bili-review-left');
         const rightEl = panel.querySelector('#bili-review-right');
@@ -3033,17 +3159,25 @@
         const upNameEl = panel.querySelector('#bili-review-upname');
         const upSubEl = panel.querySelector('#bili-review-upsub');
         const upTextEl = panel.querySelector('#bili-review-uptext');
-        // 一页里有多条动态时，页面级（整页第一个）信息不可信：那种情况下只认「这张图所属的那条」
+        const moreStateEl = panel.querySelector('#bili-review-more-state');
+        const moreStopEl = panel.querySelector('#bili-review-more-stop');
+        // 一页里有多条动态时，页面级（整页第一个）信息不可信：那种情况下只认「这张图所属的那条」。
+        // 走接口分页时（hasMetaFor）更是完全以接口为准，连 DOM 都不用查。
         const pageInfo = detectPageType();
-        const multiAuthorPage = !!(pageInfo && (pageInfo.type === 'dynamic-list' || pageInfo.type === 'favlist'));
+        const multiAuthorPage = hasMetaFor ||
+            !!(pageInfo && (pageInfo.type === 'dynamic-list' || pageInfo.type === 'favlist'));
 
         // 把右栏的 UP 区刷成「这张图所属」的那条动态
         const renderUpInfo = (url) => {
-            const ctx = upInfoForImageUrl(url);
+            let ctx = null;
+            if(hasMetaFor){
+                try{ ctx = options.metaFor(url) || null; }catch(e){ ctx = null; }
+            }
+            if(!ctx) ctx = upInfoForImageUrl(url);
             const fallback = multiAuthorPage ? null : upInfo;
             const info = ctx || fallback;
             if(!info){
-                upNameEl.textContent = ctx === null && multiAuthorPage ? '（这条的作者没认出来）' : '未知UP主';
+                upNameEl.textContent = multiAuthorPage ? '（这条的作者没认出来）' : '未知UP主';
                 upSubEl.textContent = 'UP主';
                 upTextEl.textContent = '';
                 upTextEl.style.display = 'none';
@@ -3057,28 +3191,54 @@
             avatarEl.innerHTML = avatarHtml(info.upAvatar || '');
         };
 
+        // 续载状态与暂停按钮（无限续载必须有刹车，否则会一路滚到天亮）
+        const refreshMoreUi = () => {
+            if(!moreStateEl || !moreStopEl) return;
+            if(exhausted){
+                moreStateEl.textContent = '已到最后一页（共 ' + urls.length + ' 张）';
+                moreStopEl.style.display = 'none';
+                return;
+            }
+            moreStateEl.textContent = (autoMoreOn ? '♾ 自动续载中' : '⏸ 已暂停续载') +
+                ' · 已加载 ' + urls.length + ' 张';
+            moreStopEl.style.display = '';
+            moreStopEl.textContent = autoMoreOn ? '⏸ 暂停自动续载' : '▶ 继续自动续载';
+        };
+
         const render = () => {
             const cur = urls[index];
             imgEl.src = cur;
-            const tail = exhausted ? '' : (fetching ? '  ⏳ 加载更多…' : (canFetchMore ? '  ↻ 还有更多' : ''));
+            const tail = exhausted ? '' : (fetching ? '  ⏳ 加载更多…' :
+                (canFetchMore ? (autoMoreOn ? '  ↻ 还有更多' : '  ⏸ 已暂停') : ''));
             progressEl.textContent = (index + 1) + ' / ' + urls.length +
                 (downloaded.has(index) ? '  ✅ 已下载' : '') + tail;
             countEl.textContent = downloaded.size;
+            if(totalEl) totalEl.textContent = urls.length;     // 续载后总数会变，底部也要跟着更新
             if(barEl) barEl.style.width = urls.length ? Math.round(downloaded.size / urls.length * 100) + '%' : '0%';
             try{ renderUpInfo(cur); }catch(e){ /* 取上下文失败不能影响翻页 */ }
+            try{ refreshMoreUi(); }catch(e){}
             // 翻到最后一张就主动探一次，别让用户再按一下右键才知道「到头了」
-            if(canFetchMore && !exhausted && !fetching &&
+            if(canFetchMore && !exhausted && !fetching && autoMoreOn &&
                 index >= urls.length - 1 && lastProbedTotal !== urls.length){
                 lastProbedTotal = urls.length;
                 setTimeout(() => { maybeFetchMore(true); }, 0);
             }
         };
 
-        // ── 一直有图：翻到尾部就自动去页面加载下一批 ──
+        // ── 一直有图：翻到尾部就自动去加载下一批 ──
         // 不阻塞渲染 —— 先显示当前这张，后台拉新图，拉到了再把尾巴接上
         const maybeFetchMore = async (force) => {
-            if(!canFetchMore || fetching || exhausted) return 0;
+            if(!canFetchMore || fetching || exhausted || !autoMoreOn) return 0;
             if(!force && index < urls.length - 1) return 0;   // 只在最后一张时才拉
+            // 总量保护：一路无限续载可能把页面/接口打爆，到顶就停机
+            if(urls.length >= AUTO_MORE_MAX_IMAGES){
+                autoMoreOn = false;
+                showToast('已加载 ' + urls.length + ' 张，达到自动续载上限\n' +
+                    '再要更多就分批来：先下完这批，再重新提取');
+                refreshMoreUi();
+                render();
+                return 0;
+            }
             fetching = true;
             render();
             try{
@@ -3095,7 +3255,7 @@
                 render();
                 return 0;
             }catch(e){
-                exhausted = false;
+                // 出错不算「到底」，但也不无限重试：交给用户再按一次
                 render();
                 return 0;
             }finally{
@@ -3103,6 +3263,21 @@
                 try{ render(); }catch(e){}
             }
         };
+
+        // 暂停 / 继续自动续载（本会话有效，不改设置）
+        if(moreStopEl){
+            moreStopEl.addEventListener('click', () => {
+                autoMoreOn = !autoMoreOn;
+                if(autoMoreOn){
+                    showToast('▶ 继续自动续载');
+                    maybeFetchMore(true);
+                }else{
+                    showToast('⏸ 已暂停自动续载（已加载的图仍然可以审）');
+                }
+                refreshMoreUi();
+                render();
+            });
+        }
 
         // ── 关闭面板（回调已下载数量，必要时弹出打赏面板）──
         const close = () => {
@@ -3417,22 +3592,95 @@
         const urlsAll = Array.from(pageUrls).filter(isContentImageUrl);
         const settings = Object.assign({}, DEFAULT_SETTINGS, loadSettings());
         const maxPerRun = Math.max(0, Number(settings.maxPerRun) || 0);
-        const knownSet = new Set(urlsAll);
-        // 自动续载：翻页时去页面加载下一批，把新出现的图追加回来
-        const makeFetchMore = () => async () => {
+        const norm = u => toOriginalImageUrl(u) || u;
+        const knownSet = new Set(urlsAll.map(norm));
+        const apiMeta = new Map();                     // 规范化 URL → 那条动态的{作者,文案,头像}
+        const pageInfo = detectPageType();
+        const useDynamicApi = !!(pageInfo && pageInfo.type === 'dynamic-list' && pageInfo.uid);
+
+        // 自动续载：翻页时把新图追加回来。分两层：
+        //   ① 空间动态页走接口（能拿总数、能控速、每条动态的作者/文案也是准的）
+        //   ② 其它页面走 DOM（点按钮 / 滚哨兵 / 滚容器），并等页面真的长出新内容
+        const makeDomFetcher = () => async () => {
             let added = [];
             if(settings.autoLoadMore){
-                added = await autoLoadMoreForImages(Array.from(knownSet), 3);
+                added = await autoLoadMoreForImages(Array.from(knownSet), 4);
             } else {
                 // 没开自动续载：只把「已经在 DOM 里的新图」再收一次（用户自己滚过页面也算）
                 await sleep(300);
-                added = extractUrlsFromDoc(document).filter(isContentImageUrl).filter(u => !knownSet.has(u));
+                added = extractUrlsFromDoc(document).filter(isContentImageUrl).filter(u => !knownSet.has(norm(u)));
             }
-            added.forEach(u => knownSet.add(u));
+            added.forEach(u => knownSet.add(norm(u)));
             return added;
         };
+        const makeDynamicApiFetcher = () => {
+            let offset = '';
+            let done = false;
+            const MAX_CALL_PAGES = 3;                  // 每次翻页最多再拉 3 页，别让一次点击卡太久
+            return async () => {
+                if(done) return [];
+                const added = [];
+                for(let i = 0; i < MAX_CALL_PAGES; i++){
+                    let data;
+                    try{
+                        data = await fetchDynamicPage(pageInfo.uid, offset);
+                    }catch(e){
+                        // 被风控就别再打了（收藏夹那轮已经吃过一次 412 的亏）
+                        if(isRateLimited(e && e.message)) done = true;
+                        break;
+                    }
+                    const items = Array.isArray(data.items) ? data.items : [];
+                    for(const it of items){
+                        const meta = dynamicItemMeta(it);
+                        for(const u of dynamicItemImageUrls(it)){
+                            const k = norm(u);
+                            if(knownSet.has(k)) continue;
+                            knownSet.add(k);
+                            apiMeta.set(k, meta);
+                            added.push(u);
+                        }
+                    }
+                    if(!data.has_more){ done = true; break; }
+                    const next = data.offset;
+                    if(!next || String(next) === String(offset)){ done = true; break; }
+                    offset = next;
+                    await sleep(DYN_PAGE_DELAY);
+                }
+                return added;
+            };
+        };
+        const makeFetchMore = () => useDynamicApi ? makeDynamicApiFetcher() : makeDomFetcher();
+        const isReviewMode = settings.downloadMode === 'review';
+
+        // 自动下载模式 + 开了自动续载 + 空间动态页：干脆用接口把清单一次拉全。
+        // 此时不能靠滚动 —— DOM 里只有当前可见的十来条，滚一遍也拿不全、还慢。
+        if(!isReviewMode && settings.autoLoadMore && useDynamicApi && !stopFlag.stop){
+            const cap = maxPerRun > 0 ? maxPerRun : AUTO_MORE_MAX_IMAGES;
+            const progress = showProgress('正在通过接口拉取动态图片清单…', () => { stopFlag.stop = true; });
+            const span = progress && progress.querySelector('span');
+            try{
+                const got = await collectDynamicImages(pageInfo.uid, {
+                    maxImages: cap,
+                    shouldStop: () => stopFlag.stop,
+                    onBatch: (batch) => {
+                        batch.forEach(u => { if(!knownSet.has(norm(u))){ knownSet.add(norm(u)); urlsAll.push(u); } });
+                        if(span) span.textContent = '正在通过接口拉取动态图片清单… 已找到 ' + urlsAll.length + ' 张';
+                    }
+                });
+                got.metaByUrl.forEach((v, k) => apiMeta.set(k, v));
+                if(got.rateLimited){
+                    showToast('⚠️ 接口限流了，先用已拿到的 ' + urlsAll.length + ' 张\n等几分钟再试能拿到更多');
+                }
+            }catch(e){
+                // 接口不可用就退回 DOM 那一批，别让整个提取失败
+                console.warn('动态接口拉取失败，退回 DOM 结果', e);
+            }finally{
+                if(progress) progress.style.display = 'none';
+            }
+        }
+
         // 每次最多下载 N 张：自动下载模式下直接截断；审查模式交给面板分批
-        const urls = (maxPerRun > 0 && settings.downloadMode !== 'review')
+        const urls = (maxPerRun > 0 && !isReviewMode)
             ? urlsAll.slice(0, maxPerRun)
             : urlsAll;
         if(maxPerRun > 0 && urlsAll.length > urls.length){
@@ -3462,7 +3710,12 @@
                 } else {
                     showToast('已退出审查（未下载）');
                 }
-            }, { fetchMore: makeFetchMore(), maxPerRun: maxPerRun });
+            }, {
+                fetchMore: makeFetchMore(),
+                maxPerRun: maxPerRun,
+                // 走接口时按 URL 直接给上下文：图滚出 DOM 也不会认错作者
+                metaFor: useDynamicApi ? (u => apiMeta.get(norm(u)) || null) : null
+            });
             return;
         }
         // 抓取阶段可以停；进入保存阶段后没法中断，就不放一个点了没反应的「停止」按钮了
@@ -3586,6 +3839,135 @@
     }
     const getSaveDir = () => serverApi('/getdir');
     const setSaveDir = (dir) => serverApi('/setdir', { dir });
+
+    // ========================================================================
+    // 动态列表接口分页（自动续载的第一优先级）
+    // ========================================================================
+    // 空间动态页的 DOM 是虚拟滚动的，查询只能拿到当前可见的十来条；
+    // 接口能稳定翻页、能拿到**每条动态自己的**作者/头像/文案（DOM 里一页多条会张冠李戴），
+    // 还能自己控速（滚动方案对请求节奏零控制，正是之前把 IP 弄限流的原因）。
+    const DYN_PAGE_DELAY = 400;                     // 每页之间的间隔
+    const MAX_DYN_PAGES = 50;                       // 单次采集的页数上限
+
+    async function fetchDynamicPage(mid, offset){
+        const url = 'https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space' +
+            '?host_mid=' + encodeURIComponent(mid) +
+            '&offset=' + encodeURIComponent(offset || '') +
+            '&timezone_offset=-480&features=itemOpusStyle';
+        // 必须用 Accept: application/json —— 用 text/html 会被 B 站回 412（收藏夹那轮踩过）
+        let text;
+        try{
+            text = await fetchText(url, { accept: ACCEPT_JSON });
+        }catch(e){
+            // HTTP 412 走的是异常路径，这里也要标成「被限流」，否则调用方会当成普通错误继续重试
+            const err = new Error((e && e.message) || String(e));
+            if(isRateLimited(err.message)) err.rateLimited = true;
+            throw err;
+        }
+        const j = JSON.parse(text);
+        if(!j || j.code !== 0 || !j.data){
+            const msg = 'code=' + (j && j.code) + (j && j.message ? ' ' + j.message : '');
+            const err = new Error(msg);
+            if(j && j.code === -412) err.rateLimited = true;
+            throw err;
+        }
+        return j.data;
+    }
+
+    // 从一条动态里取出图片地址：图文(draw) / 新版作品(opus.pics) / 专栏封面 / 转发的原动态
+    function dynamicItemImageUrls(item){
+        const out = [];
+        const seen = new Set();
+        const push = (u) => {
+            const s = toOriginalImageUrl(u);
+            if(!s || !isContentImageUrl(s) || seen.has(s)) return;
+            seen.add(s);
+            out.push(s);
+        };
+        const walk = (node) => {
+            if(!node || typeof node !== 'object') return;
+            // 真实结构是 item.modules.module_dynamic.major.{draw|opus|article}；
+            // 也兼容直接给 module_dynamic / major 的简化结构
+            const dyn = node.module_dynamic || (node.modules && node.modules.module_dynamic) || null;
+            const major = node.major || (dyn && dyn.major) || null;
+            if(major){
+                if(major.draw && Array.isArray(major.draw.items)){
+                    major.draw.items.forEach(it => { if(it && it.src) push(it.src); });
+                }
+                if(major.opus && Array.isArray(major.opus.pics)){
+                    major.opus.pics.forEach(p => { if(p) push(p.url || p.src); });
+                }
+                if(major.article && Array.isArray(major.article.covers)){
+                    major.article.covers.forEach(c => { if(c) push(c); });
+                }
+            }
+            if(node.orig) walk(node.orig);         // 转发/引用里也可能带图
+        };
+        walk(item);
+        return out;
+    }
+
+    // 取一条动态的作者、头像、文案（都用接口字段，不猜 DOM）
+    function dynamicItemMeta(item){
+        const mods = (item && item.modules) || {};
+        const author = mods.module_author || {};
+        const dyn = mods.module_dynamic || {};
+        const desc = (dyn.desc && dyn.desc.text) ? dyn.desc.text : '';
+        const opusTitle = (dyn.major && dyn.major.opus && dyn.major.opus.title) ? dyn.major.opus.title : '';
+        return {
+            upName: String(author.name || '').trim(),
+            upAvatar: String(author.face || '').trim(),
+            upText: String(desc || opusTitle || '').replace(/\s+/g, ' ').trim().slice(0, 500)
+        };
+    }
+
+    // 一次性把动态列表拉全（「提取图片」用）
+    // opts: { maxPages, maxImages, onBatch(urls, metaByUrl), shouldStop() }
+    async function collectDynamicImages(mid, opts){
+        const o = opts || {};
+        const onBatch = typeof o.onBatch === 'function' ? o.onBatch : null;
+        const shouldStop = typeof o.shouldStop === 'function' ? o.shouldStop : (() => false);
+        const maxPages = Math.max(1, Math.min(MAX_DYN_PAGES, o.maxPages || MAX_DYN_PAGES));
+        const maxImages = Math.max(1, o.maxImages || AUTO_MORE_MAX_IMAGES);
+
+        const allUrls = [];
+        const metaByUrl = new Map();               // 规范化 URL → {upName, upText, upAvatar}
+        const seen = new Set();
+        let offset = '', pages = 0, rateLimited = false, exhausted = false;
+
+        while(pages < maxPages){
+            if(shouldStop()) break;
+            let data;
+            try{
+                data = await fetchDynamicPage(mid, offset);
+            }catch(e){
+                if(e && e.rateLimited) rateLimited = true;
+                break;
+            }
+            const items = Array.isArray(data.items) ? data.items : [];
+            const batch = [];
+            for(const it of items){
+                const meta = dynamicItemMeta(it);
+                for(const u of dynamicItemImageUrls(it)){
+                    const k = toOriginalImageUrl(u) || u;
+                    if(seen.has(k)) continue;
+                    seen.add(k);
+                    allUrls.push(u);
+                    batch.push(u);
+                    metaByUrl.set(k, meta);
+                }
+            }
+            pages++;
+            if(batch.length && onBatch) onBatch(batch, metaByUrl);
+            if(!data.has_more){ exhausted = true; break; }
+            const next = data.offset;
+            if(!next || String(next) === String(offset)){ exhausted = true; break; }
+            offset = next;
+            if(allUrls.length >= maxImages) break;
+            await sleep(DYN_PAGE_DELAY);
+        }
+        return { urls: allUrls, metaByUrl, pages, rateLimited, exhausted };
+    }
 
     // 本地下载目录清单（服务端 /list）。用途：把**磁盘上真实存在**的文件也算作「已下载」，
     // 不再只信 IndexedDB 记账 —— 换机器、清了站点数据、换过保存目录时记账都会失真，
@@ -5563,6 +5945,15 @@
             autoLoadMoreForImages: autoLoadMoreForImages,
             ensureAutoMoreAnchor: ensureAutoMoreAnchor,
             findLoadMoreControl: findLoadMoreControl,
+            findPageSentinel: findPageSentinel,
+            findScrollContainer: findScrollContainer,
+            waitUntil: waitUntil,
+            pageSignature: pageSignature,
+            // 动态接口分页（最优路径）
+            fetchDynamicPage: fetchDynamicPage,
+            dynamicItemImageUrls: dynamicItemImageUrls,
+            dynamicItemMeta: dynamicItemMeta,
+            collectDynamicImages: collectDynamicImages,
             // UP 上下文（按图取所属动态的作者/文案），给单测用
             upInfoForImageUrl: upInfoForImageUrl,
             upInfoFromContainer: upInfoFromContainer,
